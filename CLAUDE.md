@@ -13,15 +13,18 @@
 ## Структура проекта
 
 ```
-cmd/agent/main.go          — точка входа, сборка всех зависимостей (wiring)
+cmd/agent/main.go          — точка входа, wiring всех зависимостей
 internal/
   config/config.go         — загрузка config.yaml + override через env
   agent/agent.go           — ядро: ReAct loop (LLM → tools → LLM → ответ)
-  llm/client.go            — HTTP-клиент к OpenAI-compatible API (chat + streaming)
+  llm/client.go            — HTTP-клиент к OpenAI-compatible API
   tools/
     registry.go            — реестр инструментов, интерфейс Tool
     notes.go               — инструмент: заметки (create/search/list) через SQLite
     shell.go               — инструмент: безопасный shell (whitelist + sandbox)
+    web_search.go          — инструмент: поиск в интернете
+    web_fetch.go           — инструмент: чтение веб-страниц
+    pi_coder.go            — инструмент: доработка агента через pi
   storage/sqlite.go        — SQLite: схема БД, migrations, CRUD для conversations/messages/notes
   telegram/bot.go          — Telegram bot: long polling, auth по chat_id, обработка команд
 data/                      — БД и логи (в .gitignore)
@@ -73,6 +76,12 @@ llm:
 
 shell:
   enabled: false  # включать осторожно
+
+pi_coder:
+  enabled: true
+  project_dir: "/path/to/agent-shatrov"
+  model: "glm-4.7"
+  timeout: 300
 ```
 
 Либо через переменные окружения:
@@ -100,10 +109,26 @@ type Tool interface {
     Execute(ctx context.Context, args json.RawMessage) (string, error)
 }
 ```
-2. Зарегистрировать в `cmd/agent/main.go`:
+2. Зарегистрировать в `cmd/agent/main.go` (в `registerOptionalTools` или напрямую):
 ```go
 toolRegistry.Register(tools.NewMyTool(...))
 ```
+
+## Инструмент pi_coder
+
+Позволяет агенту изменять собственный исходный код через [pi](https://github.com/mariozechner/pi).
+Запускает `pi --print --model glm-4.7 --no-session <task>` в директории проекта.
+
+| Параметр | Тип | Описание |
+|----------|-----|---------|
+| `task` | string | Что нужно изменить в коде (обязательный) |
+| `rebuild` | bool | Пересобрать бинарник после изменений (`make build`) |
+
+Типичный сценарий:
+1. Пользователь просит добавить функцию через Telegram
+2. Агент вызывает `pi_coder` с описанием задачи
+3. pi редактирует файлы проекта
+4. Агент вызывает `pi_coder` с `rebuild=true` или сообщает сделать `make restart`
 
 ## Безопасность shell
 
@@ -130,14 +155,23 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 | `github.com/go-telegram-bot-api/telegram-bot-api/v5` | Telegram Bot API |
 | `github.com/mattn/go-sqlite3` | SQLite (CGo) |
 | `gopkg.in/yaml.v3` | парсинг конфига |
+| `github.com/stretchr/testify` | assertions в тестах |
+
+## Реализованные функции
+
+- [x] Telegram бот-интерфейс (long polling, auth по chat_id)
+- [x] Диалог с GLM-4.7 / GLM-4.7-Flash
+- [x] История диалогов (SQLite, персистентная)
+- [x] Заметки — создание, поиск, теги
+- [x] Безопасный shell (whitelist, blocked patterns, sandbox, таймаут)
+- [x] Поиск в интернете (Brave / Serper / DuckDuckGo) + чтение страниц
+- [x] Самообновление через `pi_coder` — агент изменяет и пересобирает собственный код
 
 ## Планируемые функции
 
-- [x] Web search tool
 - [ ] News aggregation (RSS)
 - [ ] Полнотекстовый поиск заметок (SQLite FTS5)
 - [ ] Редактирование и удаление заметок
 - [ ] Переключение модели через Telegram (`/model fast`)
-- [ ] Shell tool (после тщательного тестирования)
 - [ ] Системное администрирование
 - [ ] Кодинг-ассистент
