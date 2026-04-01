@@ -91,7 +91,7 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 
 	// Send "typing" action
 	typing := tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)
-	b.api.Send(typing)
+	_, _ = b.api.Send(typing)
 
 	// Process through agent
 	resp, err := b.agent.HandleMessage(ctx, chatID, text)
@@ -121,7 +121,7 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 	case "/start":
 		b.sendText(chatID, "👋 Привет! Я твой персональный AI-агент.\n\nКоманды:\n/new — новый диалог\n/help — помощь")
 	case "/new":
-		if err := b.agent.NewConversation(chatID); err != nil {
+		if err := b.agent.NewConversation(ctx, chatID); err != nil {
 			b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
 			return
 		}
@@ -143,7 +143,7 @@ func (b *Bot) sendText(chatID int64, text string) {
 	if _, err := b.api.Send(msg); err != nil {
 		// Retry without markdown if parsing fails
 		msg.ParseMode = ""
-		b.api.Send(msg)
+		_, _ = b.api.Send(msg)
 	}
 }
 
@@ -155,7 +155,7 @@ func (b *Bot) sendLongText(chatID int64, text string) {
 	}
 
 	// Split by paragraphs
-	for len(text) > 0 {
+	for text != "" {
 		end := maxLen
 		if end > len(text) {
 			end = len(text)
@@ -170,9 +170,9 @@ func (b *Bot) sendLongText(chatID int64, text string) {
 	}
 }
 
-func truncateLog(s string, max int) string {
-	if len(s) <= max {
+func truncateLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
 		return s
 	}
-	return s[:max] + "..."
+	return s[:maxLen] + "..."
 }

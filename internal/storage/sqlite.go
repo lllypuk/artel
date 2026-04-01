@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -21,8 +22,10 @@ func Open(path string) (*DB, error) {
 	}
 
 	s := &DB{db: db}
-	if err := s.migrate(); err != nil {
-		db.Close()
+	if err := s.migrate(context.Background()); err != nil {
+		if closeErr := db.Close(); closeErr != nil {
+			return nil, fmt.Errorf("migrate: %w (also failed to close: %v)", err, closeErr)
+		}
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
@@ -34,7 +37,7 @@ func (s *DB) Close() error {
 	return s.db.Close()
 }
 
-func (s *DB) migrate() error {
+func (s *DB) migrate(ctx context.Context) error {
 	migrations := []string{
 		`CREATE TABLE IF NOT EXISTS conversations (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +71,7 @@ func (s *DB) migrate() error {
 	}
 
 	for _, m := range migrations {
-		if _, err := s.db.Exec(m); err != nil {
+		if _, err := s.db.ExecContext(ctx, m); err != nil {
 			return fmt.Errorf("exec migration: %w", err)
 		}
 	}
@@ -97,8 +100,8 @@ type StoredMessage struct {
 }
 
 // CreateConversation creates a new conversation.
-func (s *DB) CreateConversation(chatID int64, model string) (int64, error) {
-	res, err := s.db.Exec(
+func (s *DB) CreateConversation(ctx context.Context, chatID int64, model string) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
 		"INSERT INTO conversations (chat_id, model) VALUES (?, ?)",
 		chatID, model,
 	)
@@ -109,28 +112,28 @@ func (s *DB) CreateConversation(chatID int64, model string) (int64, error) {
 }
 
 // AddMessage adds a message to a conversation.
-func (s *DB) AddMessage(convID int64, role, content, toolCallID, toolCallsJSON string) error {
-	_, err := s.db.Exec(
+func (s *DB) AddMessage(ctx context.Context, convID int64, role, content, toolCallID, toolCallsJSON string) error {
+	_, err := s.db.ExecContext(ctx,
 		"INSERT INTO messages (conversation_id, role, content, tool_call_id, tool_calls_json) VALUES (?, ?, ?, ?, ?)",
 		convID, role, content, toolCallID, toolCallsJSON,
 	)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", convID)
+	_, err = s.db.ExecContext(ctx, "UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", convID)
 	return err
 }
 
 // GetMessages returns all messages for a conversation.
-func (s *DB) GetMessages(convID int64) ([]StoredMessage, error) {
-	rows, err := s.db.Query(
+func (s *DB) GetMessages(ctx context.Context, convID int64) ([]StoredMessage, error) {
+	rows, err := s.db.QueryContext(ctx,
 		"SELECT id, conversation_id, role, content, tool_call_id, tool_calls_json, created_at FROM messages WHERE conversation_id = ? ORDER BY id",
 		convID,
 	)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	var msgs []StoredMessage
 	for rows.Next() {
@@ -144,9 +147,9 @@ func (s *DB) GetMessages(convID int64) ([]StoredMessage, error) {
 }
 
 // GetActiveConversation returns the most recent conversation for a chat.
-func (s *DB) GetActiveConversation(chatID int64) (*Conversation, error) {
+func (s *DB) GetActiveConversation(ctx context.Context, chatID int64) (*Conversation, error) {
 	var c Conversation
-	err := s.db.QueryRow(
+	err := s.db.QueryRowContext(ctx,
 		"SELECT id, chat_id, title, model, created_at, updated_at FROM conversations WHERE chat_id = ? ORDER BY updated_at DESC LIMIT 1",
 		chatID,
 	).Scan(&c.ID, &c.ChatID, &c.Title, &c.Model, &c.CreatedAt, &c.UpdatedAt)
@@ -171,8 +174,8 @@ type Note struct {
 }
 
 // CreateNote creates a new note.
-func (s *DB) CreateNote(chatID int64, title, content, tags string) (int64, error) {
-	res, err := s.db.Exec(
+func (s *DB) CreateNote(ctx context.Context, chatID int64, title, content, tags string) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
 		"INSERT INTO notes (chat_id, title, content, tags) VALUES (?, ?, ?, ?)",
 		chatID, title, content, tags,
 	)
@@ -183,15 +186,15 @@ func (s *DB) CreateNote(chatID int64, title, content, tags string) (int64, error
 }
 
 // SearchNotes searches notes by content or tags.
-func (s *DB) SearchNotes(chatID int64, query string) ([]Note, error) {
-	rows, err := s.db.Query(
+func (s *DB) SearchNotes(ctx context.Context, chatID int64, query string) ([]Note, error) {
+	rows, err := s.db.QueryContext(ctx,
 		"SELECT id, chat_id, title, content, tags, created_at, updated_at FROM notes WHERE chat_id = ? AND (title LIKE ? OR content LIKE ? OR tags LIKE ?) ORDER BY updated_at DESC",
 		chatID, "%"+query+"%", "%"+query+"%", "%"+query+"%",
 	)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	var notes []Note
 	for rows.Next() {

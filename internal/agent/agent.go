@@ -64,12 +64,12 @@ type Response struct {
 // It implements the ReAct loop: LLM → tool calls → LLM → ... → final text.
 func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage string) (*Response, error) {
 	// Get or create conversation
-	conv, err := a.db.GetActiveConversation(chatID)
+	conv, err := a.db.GetActiveConversation(ctx, chatID)
 	if err != nil {
 		return nil, fmt.Errorf("get conversation: %w", err)
 	}
 	if conv == nil {
-		convID, err := a.db.CreateConversation(chatID, a.model)
+		convID, err := a.db.CreateConversation(ctx, chatID, a.model)
 		if err != nil {
 			return nil, fmt.Errorf("create conversation: %w", err)
 		}
@@ -77,7 +77,7 @@ func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage str
 	}
 
 	// Load conversation history
-	storedMsgs, err := a.db.GetMessages(conv.ID)
+	storedMsgs, err := a.db.GetMessages(ctx, conv.ID)
 	if err != nil {
 		return nil, fmt.Errorf("get messages: %w", err)
 	}
@@ -98,7 +98,7 @@ func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage str
 
 	// Add user message
 	messages = append(messages, llm.Message{Role: "user", Content: userMessage})
-	if err := a.db.AddMessage(conv.ID, "user", userMessage, "", ""); err != nil {
+	if err := a.db.AddMessage(ctx, conv.ID, "user", userMessage, "", ""); err != nil {
 		return nil, fmt.Errorf("store user message: %w", err)
 	}
 
@@ -138,7 +138,7 @@ func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage str
 		// If no tool calls — return the text response
 		if len(choice.Message.ToolCalls) == 0 {
 			text := choice.Message.Content
-			if err := a.db.AddMessage(conv.ID, "assistant", text, "", ""); err != nil {
+			if err := a.db.AddMessage(ctx, conv.ID, "assistant", text, "", ""); err != nil {
 				a.logger.Error("store assistant message", "error", err)
 			}
 			return &Response{Text: text, Usage: &totalUsage}, nil
@@ -146,7 +146,7 @@ func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage str
 
 		// Store assistant message with tool calls
 		toolCallsJSON, _ := json.Marshal(choice.Message.ToolCalls)
-		if err := a.db.AddMessage(conv.ID, "assistant", choice.Message.Content, "", string(toolCallsJSON)); err != nil {
+		if err := a.db.AddMessage(ctx, conv.ID, "assistant", choice.Message.Content, "", string(toolCallsJSON)); err != nil {
 			a.logger.Error("store assistant tool call message", "error", err)
 		}
 		messages = append(messages, choice.Message)
@@ -167,7 +167,7 @@ func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage str
 				ToolCallID: tc.ID,
 			}
 			messages = append(messages, toolMsg)
-			if err := a.db.AddMessage(conv.ID, "tool", result, tc.ID, ""); err != nil {
+			if err := a.db.AddMessage(ctx, conv.ID, "tool", result, tc.ID, ""); err != nil {
 				a.logger.Error("store tool result", "error", err)
 			}
 		}
@@ -177,8 +177,8 @@ func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage str
 }
 
 // NewConversation starts a new conversation for the chat.
-func (a *Agent) NewConversation(chatID int64) error {
-	_, err := a.db.CreateConversation(chatID, a.model)
+func (a *Agent) NewConversation(ctx context.Context, chatID int64) error {
+	_, err := a.db.CreateConversation(ctx, chatID, a.model)
 	return err
 }
 

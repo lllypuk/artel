@@ -44,13 +44,16 @@ func main() {
 
 	var logHandler slog.Handler
 	if cfg.Logging.File != "" {
-		os.MkdirAll(filepath.Dir(cfg.Logging.File), 0755)
-		f, err := os.OpenFile(cfg.Logging.File, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err := os.MkdirAll(filepath.Dir(cfg.Logging.File), 0o750); err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating log directory: %s\n", err)
+			os.Exit(1)
+		}
+		f, err := os.OpenFile(cfg.Logging.File, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error opening log file: %s\n", err)
 			os.Exit(1)
 		}
-		defer f.Close()
+		defer f.Close() //nolint:errcheck
 		logHandler = slog.NewTextHandler(f, &slog.HandlerOptions{Level: logLevel})
 	} else {
 		logHandler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})
@@ -58,13 +61,16 @@ func main() {
 	logger := slog.New(logHandler)
 
 	// Open database
-	os.MkdirAll(filepath.Dir(cfg.Database.Path), 0755)
+	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o750); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating data directory: %s\n", err)
+		os.Exit(1)
+	}
 	db, err := storage.Open(cfg.Database.Path)
 	if err != nil {
 		logger.Error("open database", "error", err)
 		os.Exit(1)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck
 
 	// Create LLM client
 	llmClient := llm.NewClient(cfg.LLM.BaseURL, cfg.LLM.APIKey)

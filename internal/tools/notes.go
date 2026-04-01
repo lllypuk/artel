@@ -71,14 +71,14 @@ func (n *NotesTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 
 	switch a.Action {
 	case "create":
-		id, err := n.db.CreateNote(a.ChatID, a.Title, a.Content, a.Tags)
+		id, err := n.db.CreateNote(ctx, a.ChatID, a.Title, a.Content, a.Tags)
 		if err != nil {
 			return "", fmt.Errorf("create note: %w", err)
 		}
 		return fmt.Sprintf("Note created (id: %d)", id), nil
 
 	case "search":
-		notes, err := n.db.SearchNotes(a.ChatID, a.Query)
+		notes, err := n.db.SearchNotes(ctx, a.ChatID, a.Query)
 		if err != nil {
 			return "", fmt.Errorf("search notes: %w", err)
 		}
@@ -86,14 +86,14 @@ func (n *NotesTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 			return "No notes found.", nil
 		}
 		var result strings.Builder
-		result.WriteString(fmt.Sprintf("Found %d notes:\n", len(notes)))
+		fmt.Fprintf(&result, "Found %d notes:\n", len(notes))
 		for _, note := range notes {
-			result.WriteString(fmt.Sprintf("- [%d] %s (tags: %s)\n  %s\n", note.ID, note.Title, note.Tags, truncate(note.Content, 100)))
+			fmt.Fprintf(&result, "- [%d] %s (tags: %s)\n  %s\n", note.ID, note.Title, note.Tags, truncate(note.Content, 100))
 		}
 		return result.String(), nil
 
 	case "list":
-		notes, err := n.db.SearchNotes(a.ChatID, "")
+		notes, err := n.db.SearchNotes(ctx, a.ChatID, "")
 		if err != nil {
 			return "", fmt.Errorf("list notes: %w", err)
 		}
@@ -101,9 +101,9 @@ func (n *NotesTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 			return "No notes yet.", nil
 		}
 		var result strings.Builder
-		result.WriteString(fmt.Sprintf("%d notes:\n", len(notes)))
+		fmt.Fprintf(&result, "%d notes:\n", len(notes))
 		for _, note := range notes {
-			result.WriteString(fmt.Sprintf("- [%d] %s (tags: %s) %s\n", note.ID, note.Title, note.Tags, note.CreatedAt.Format("2006-01-02")))
+			fmt.Fprintf(&result, "- [%d] %s (tags: %s) %s\n", note.ID, note.Title, note.Tags, note.CreatedAt.Format("2006-01-02"))
 		}
 		return result.String(), nil
 
@@ -112,9 +112,9 @@ func (n *NotesTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 	}
 }
 
-func truncate(s string, max int) string {
-	if len(s) <= max {
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
 		return s
 	}
-	return s[:max] + "..."
+	return s[:maxLen] + "..."
 }

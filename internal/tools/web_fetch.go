@@ -71,7 +71,7 @@ func (w *WebFetchTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		return "", fmt.Errorf("url is required")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", a.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.URL, http.NoBody)
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
@@ -82,7 +82,7 @@ func (w *WebFetchTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	if err != nil {
 		return "", fmt.Errorf("fetch URL: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)

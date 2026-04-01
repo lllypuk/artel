@@ -105,12 +105,12 @@ func (w *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) (stri
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Search results for: %q\n\n", a.Query))
+	fmt.Fprintf(&sb, "Search results for: %q\n\n", a.Query)
 	for i, r := range results {
-		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, r.Title))
-		sb.WriteString(fmt.Sprintf("   URL: %s\n", r.URL))
+		fmt.Fprintf(&sb, "%d. %s\n", i+1, r.Title)
+		fmt.Fprintf(&sb, "   URL: %s\n", r.URL)
 		if r.Snippet != "" {
-			sb.WriteString(fmt.Sprintf("   %s\n", r.Snippet))
+			fmt.Fprintf(&sb, "   %s\n", r.Snippet)
 		}
 		sb.WriteString("\n")
 	}
@@ -140,7 +140,7 @@ func (w *WebSearchTool) searchBrave(ctx context.Context, query string) ([]search
 		url.QueryEscape(query) +
 		fmt.Sprintf("&count=%d", w.maxResults)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +152,7 @@ func (w *WebSearchTool) searchBrave(ctx context.Context, query string) ([]search
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
@@ -202,7 +202,7 @@ func (w *WebSearchTool) searchSerper(ctx context.Context, query string) ([]searc
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
@@ -230,7 +230,7 @@ func (w *WebSearchTool) searchSerper(ctx context.Context, query string) ([]searc
 func (w *WebSearchTool) searchDDG(ctx context.Context, query string) ([]searchResult, error) {
 	searchURL := "https://html.duckduckgo.com/html/?q=" + url.QueryEscape(query)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +242,7 @@ func (w *WebSearchTool) searchDDG(ctx context.Context, query string) ([]searchRe
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
 	if err != nil {

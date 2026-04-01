@@ -1,0 +1,81 @@
+# golangci-lint v2 configuration
+# Docs: https://golangci-lint.run/usage/configuration/
+
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  default: none
+  enable:
+    # --- correctness ---
+    - errcheck        # unchecked errors
+    - govet           # go vet checks
+    - staticcheck     # staticcheck SA/S/ST rules
+    - ineffassign     # unused assignments
+    - unused          # unused code
+
+    # --- style / readability ---
+    - misspell        # common typos
+    - whitespace      # unnecessary blank lines
+
+    # --- bugs & complexity ---
+    - bodyclose       # http response body not closed
+    - noctx           # http requests without context
+    - gocritic        # opinionated code checks
+    - cyclop          # cyclomatic complexity
+
+    # --- security ---
+    - gosec           # security issues (G-rules)
+
+  settings:
+    cyclop:
+      # main() and HandleMessage are legitimately complex orchestrators
+      max-complexity: 20
+
+    gosec:
+      excludes:
+        - G104  # errors unhandled — already covered by errcheck
+        - G117  # APIKey struct field pattern — config structs, not secrets
+        - G204  # subprocess via shell tool — expected by design
+        - G302  # log file permissions 0600+ — 0600 is already used
+        - G304  # file inclusion via variable — reading config by path is expected
+        - G704  # SSRF taint — web search/fetch tools are designed to call external URLs
+        - G703  # path traversal taint — config paths come from config file, not user input
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+      disabled-checks:
+        - commentedOutCode
+        - whyNoLint
+        - exitAfterDefer  # os.Exit in main after deferred log file close is intentional
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 5
+
+  exclude-rules:
+    # defer Close() errors are intentionally ignored (standard Go pattern)
+    - source: "defer .*\\.Close\\(\\)"
+      linters:
+        - errcheck
+
+    # sqlite.go uses non-context DB methods (context refactor is a separate task)
+    - path: "internal/storage/sqlite\\.go"
+      linters:
+        - noctx
+
+    # Test files — relax security and error-check rules
+    - path: "_test\\.go"
+      linters:
+        - gosec
+        - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
