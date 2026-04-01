@@ -12,6 +12,7 @@ type Config struct {
 	LLM      LLMConfig      `yaml:"llm"`
 	Database DatabaseConfig `yaml:"database"`
 	Shell    ShellConfig    `yaml:"shell"`
+	Web      WebConfig      `yaml:"web"`
 	Logging  LoggingConfig  `yaml:"logging"`
 }
 
@@ -42,6 +43,15 @@ type ShellConfig struct {
 	AllowedCommands []string `yaml:"allowed_commands"`
 	BlockedPatterns []string `yaml:"blocked_patterns"`
 	WorkingDir      string   `yaml:"working_dir"`
+}
+
+type WebConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	Provider       string `yaml:"provider"`        // brave, serper, duckduckgo
+	APIKey         string `yaml:"api_key"`
+	MaxResults     int    `yaml:"max_results"`
+	TimeoutSeconds int    `yaml:"timeout"`
+	MaxFetchSizeKB int    `yaml:"max_fetch_size_kb"`
 }
 
 type LoggingConfig struct {

@@ -73,6 +73,32 @@ func main() {
 	toolRegistry := tools.NewRegistry()
 	toolRegistry.Register(tools.NewNotesTool(db))
 
+	if cfg.Web.Enabled {
+		maxResults := cfg.Web.MaxResults
+		if maxResults == 0 {
+			maxResults = 5
+		}
+		timeout := cfg.Web.TimeoutSeconds
+		if timeout == 0 {
+			timeout = 15
+		}
+		maxFetchKB := cfg.Web.MaxFetchSizeKB
+		if maxFetchKB == 0 {
+			maxFetchKB = 100
+		}
+		toolRegistry.Register(tools.NewWebSearchTool(tools.WebSearchConfig{
+			Provider:       cfg.Web.Provider,
+			APIKey:         cfg.Web.APIKey,
+			MaxResults:     maxResults,
+			TimeoutSeconds: timeout,
+		}))
+		toolRegistry.Register(tools.NewWebFetchTool(tools.WebFetchConfig{
+			TimeoutSeconds: timeout,
+			MaxSizeKB:      maxFetchKB,
+		}))
+		logger.Info("Web tools enabled", "max_results", maxResults)
+	}
+
 	if cfg.Shell.Enabled {
 		shellTool := tools.NewShellTool(tools.ShellConfig{
 			AllowedCommands: cfg.Shell.AllowedCommands,

@@ -52,6 +52,21 @@ shell:
   # Рабочая директория (sandbox)
   working_dir: "./sandbox"
 
+web:
+  enabled: true
+  # Провайдер: brave, serper, duckduckgo
+  # brave  — https://api.search.brave.com  (2000 бесплатных запросов/мес)
+  # serper — https://serper.dev            (2500 бесплатных запросов)
+  # duckduckgo — без ключа, но может блокировать боты
+  provider: "brave"
+  api_key: ""  # API ключ для brave/serper
+  # Количество результатов поиска
+  max_results: 5
+  # Таймаут запросов (секунды)
+  timeout: 15
+  # Максимальный размер скачиваемой страницы (КБ)
+  max_fetch_size_kb: 100
+
 logging:
   level: "info"           # debug, info, warn, error
   file: "./data/agent.log"
