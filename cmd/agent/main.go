@@ -32,33 +32,14 @@ func main() {
 	}
 
 	// Setup logger
-	logLevel := slog.LevelInfo
-	switch cfg.Logging.Level {
-	case "debug":
-		logLevel = slog.LevelDebug
-	case "warn":
-		logLevel = slog.LevelWarn
-	case "error":
-		logLevel = slog.LevelError
+	logger, logCloser, err := setupLogger(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error setting up logger: %s\n", err)
+		os.Exit(1)
 	}
-
-	var logHandler slog.Handler
-	if cfg.Logging.File != "" {
-		if err := os.MkdirAll(filepath.Dir(cfg.Logging.File), 0o750); err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating log directory: %s\n", err)
-			os.Exit(1)
-		}
-		f, err := os.OpenFile(cfg.Logging.File, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error opening log file: %s\n", err)
-			os.Exit(1)
-		}
-		defer f.Close() //nolint:errcheck
-		logHandler = slog.NewTextHandler(f, &slog.HandlerOptions{Level: logLevel})
-	} else {
-		logHandler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})
+	if logCloser != nil {
+		defer logCloser() //nolint:errcheck
 	}
-	logger := slog.New(logHandler)
 
 	// Open database
 	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o750); err != nil {
@@ -78,43 +59,7 @@ func main() {
 	// Setup tools
 	toolRegistry := tools.NewRegistry()
 	toolRegistry.Register(tools.NewNotesTool(db))
-
-	if cfg.Web.Enabled {
-		maxResults := cfg.Web.MaxResults
-		if maxResults == 0 {
-			maxResults = 5
-		}
-		timeout := cfg.Web.TimeoutSeconds
-		if timeout == 0 {
-			timeout = 15
-		}
-		maxFetchKB := cfg.Web.MaxFetchSizeKB
-		if maxFetchKB == 0 {
-			maxFetchKB = 100
-		}
-		toolRegistry.Register(tools.NewWebSearchTool(tools.WebSearchConfig{
-			Provider:       cfg.Web.Provider,
-			APIKey:         cfg.Web.APIKey,
-			MaxResults:     maxResults,
-			TimeoutSeconds: timeout,
-		}))
-		toolRegistry.Register(tools.NewWebFetchTool(tools.WebFetchConfig{
-			TimeoutSeconds: timeout,
-			MaxSizeKB:      maxFetchKB,
-		}))
-		logger.Info("Web tools enabled", "max_results", maxResults)
-	}
-
-	if cfg.Shell.Enabled {
-		shellTool := tools.NewShellTool(tools.ShellConfig{
-			AllowedCommands: cfg.Shell.AllowedCommands,
-			BlockedPatterns: cfg.Shell.BlockedPatterns,
-			WorkingDir:      cfg.Shell.WorkingDir,
-			TimeoutSeconds:  cfg.Shell.Timeout,
-		})
-		toolRegistry.Register(shellTool)
-		logger.Info("Shell tool enabled", "allowed_commands", len(cfg.Shell.AllowedCommands))
-	}
+	registerOptionalTools(cfg, toolRegistry, logger)
 
 	// Create agent
 	ag := agent.New(llmClient, cfg.LLM.Models.Default, toolRegistry, db, logger)
@@ -149,4 +94,97 @@ func main() {
 	}
 
 	logger.Info("agent-shatrov stopped")
+}
+
+// setupLogger создаёт slog.Logger согласно конфигурации.
+// Возвращает логгер, функцию закрытия файла (или nil) и ошибку.
+func setupLogger(cfg *config.Config) (*slog.Logger, func() error, error) {
+	logLevel := slog.LevelInfo
+	switch cfg.Logging.Level {
+	case "debug":
+		logLevel = slog.LevelDebug
+	case "warn":
+		logLevel = slog.LevelWarn
+	case "error":
+		logLevel = slog.LevelError
+	}
+
+	opts := &slog.HandlerOptions{Level: logLevel}
+
+	if cfg.Logging.File == "" {
+		return slog.New(slog.NewTextHandler(os.Stderr, opts)), nil, nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(cfg.Logging.File), 0o750); err != nil {
+		return nil, nil, fmt.Errorf("create log directory: %w", err)
+	}
+	f, err := os.OpenFile(cfg.Logging.File, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open log file: %w", err)
+	}
+	return slog.New(slog.NewTextHandler(f, opts)), f.Close, nil
+}
+
+// registerOptionalTools регистрирует инструменты, включённые в конфиге.
+func registerOptionalTools(cfg *config.Config, registry *tools.Registry, logger *slog.Logger) {
+	if cfg.Web.Enabled {
+		registerWebTools(cfg, registry, logger)
+	}
+
+	if cfg.PiCoder.Enabled {
+		registerPiCoderTool(cfg, registry, logger)
+	}
+
+	if cfg.Shell.Enabled {
+		registry.Register(tools.NewShellTool(tools.ShellConfig{
+			AllowedCommands: cfg.Shell.AllowedCommands,
+			BlockedPatterns: cfg.Shell.BlockedPatterns,
+			WorkingDir:      cfg.Shell.WorkingDir,
+			TimeoutSeconds:  cfg.Shell.Timeout,
+		}))
+		logger.Info("Shell tool enabled", "allowed_commands", len(cfg.Shell.AllowedCommands))
+	}
+}
+
+func registerWebTools(cfg *config.Config, registry *tools.Registry, logger *slog.Logger) {
+	maxResults := cfg.Web.MaxResults
+	if maxResults == 0 {
+		maxResults = 5
+	}
+	timeout := cfg.Web.TimeoutSeconds
+	if timeout == 0 {
+		timeout = 15
+	}
+	maxFetchKB := cfg.Web.MaxFetchSizeKB
+	if maxFetchKB == 0 {
+		maxFetchKB = 100
+	}
+	registry.Register(tools.NewWebSearchTool(tools.WebSearchConfig{
+		Provider:       cfg.Web.Provider,
+		APIKey:         cfg.Web.APIKey,
+		MaxResults:     maxResults,
+		TimeoutSeconds: timeout,
+	}))
+	registry.Register(tools.NewWebFetchTool(tools.WebFetchConfig{
+		TimeoutSeconds: timeout,
+		MaxSizeKB:      maxFetchKB,
+	}))
+	logger.Info("Web tools enabled", "max_results", maxResults)
+}
+
+func registerPiCoderTool(cfg *config.Config, registry *tools.Registry, logger *slog.Logger) {
+	projectDir := cfg.PiCoder.ProjectDir
+	if projectDir == "" {
+		projectDir = "."
+	}
+	model := cfg.PiCoder.Model
+	if model == "" {
+		model = "glm-4.7"
+	}
+	registry.Register(tools.NewPiCoderTool(tools.PiCoderConfig{
+		ProjectDir:     projectDir,
+		Model:          model,
+		TimeoutSeconds: cfg.PiCoder.TimeoutSeconds,
+	}))
+	logger.Info("PiCoder tool enabled", "project_dir", projectDir, "model", model)
 }

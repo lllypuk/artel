@@ -13,6 +13,7 @@ type Config struct {
 	Database DatabaseConfig `yaml:"database"`
 	Shell    ShellConfig    `yaml:"shell"`
 	Web      WebConfig      `yaml:"web"`
+	PiCoder  PiCoderConfig  `yaml:"pi_coder"`
 	Logging  LoggingConfig  `yaml:"logging"`
 }
 
@@ -52,6 +53,13 @@ type WebConfig struct {
 	MaxResults     int    `yaml:"max_results"`
 	TimeoutSeconds int    `yaml:"timeout"`
 	MaxFetchSizeKB int    `yaml:"max_fetch_size_kb"`
+}
+
+type PiCoderConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	ProjectDir     string `yaml:"project_dir"`
+	Model          string `yaml:"model"`
+	TimeoutSeconds int    `yaml:"timeout"`
 }
 
 type LoggingConfig struct {
