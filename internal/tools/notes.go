@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/shatrov/agent/internal/storage"
+	"github.com/lllypuk/agent-shatrov/internal/storage"
 )
 
 // NotesTool manages personal notes.

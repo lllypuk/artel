@@ -8,7 +8,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"github.com/shatrov/agent/internal/agent"
+	"github.com/lllypuk/agent-shatrov/internal/agent"
 )
 
 // Bot is the Telegram bot interface.

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/shatrov/agent/internal/llm"
-	"github.com/shatrov/agent/internal/storage"
-	"github.com/shatrov/agent/internal/tools"
+	"github.com/lllypuk/agent-shatrov/internal/llm"
+	"github.com/lllypuk/agent-shatrov/internal/storage"
+	"github.com/lllypuk/agent-shatrov/internal/tools"
 )
 
 const systemPrompt = `Ты — персональный AI-ассистент Саши. Твоё имя — Agent.

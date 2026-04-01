@@ -1,4 +1,4 @@
-module github.com/shatrov/agent
+module github.com/lllypuk/agent-shatrov
 
 go 1.26.1
 

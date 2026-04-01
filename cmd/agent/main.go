@@ -9,12 +9,12 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/shatrov/agent/internal/agent"
-	"github.com/shatrov/agent/internal/config"
-	"github.com/shatrov/agent/internal/llm"
-	"github.com/shatrov/agent/internal/storage"
-	"github.com/shatrov/agent/internal/telegram"
-	"github.com/shatrov/agent/internal/tools"
+	"github.com/lllypuk/agent-shatrov/internal/agent"
+	"github.com/lllypuk/agent-shatrov/internal/config"
+	"github.com/lllypuk/agent-shatrov/internal/llm"
+	"github.com/lllypuk/agent-shatrov/internal/storage"
+	"github.com/lllypuk/agent-shatrov/internal/telegram"
+	"github.com/lllypuk/agent-shatrov/internal/tools"
 )
 
 func main() {
