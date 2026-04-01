@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/lllypuk/agent-shatrov/internal/storage"
 )
@@ -19,7 +20,7 @@ func NewNotesTool(db *storage.DB) *NotesTool {
 }
 
 type notesArgs struct {
-	Action  string `json:"action"`  // create, search, list
+	Action  string `json:"action"` // create, search, list
 	Title   string `json:"title"`
 	Content string `json:"content"`
 	Tags    string `json:"tags"`
@@ -32,28 +33,28 @@ func (n *NotesTool) Description() string {
 	return "Manage personal notes. Actions: create (create a new note), search (search notes by query), list (list recent notes)."
 }
 
-func (n *NotesTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (n *NotesTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"action": map[string]interface{}{
+		"properties": map[string]any{
+			"action": map[string]any{
 				"type":        "string",
 				"enum":        []string{"create", "search", "list"},
 				"description": "Action to perform",
 			},
-			"title": map[string]interface{}{
+			"title": map[string]any{
 				"type":        "string",
 				"description": "Note title (for create)",
 			},
-			"content": map[string]interface{}{
+			"content": map[string]any{
 				"type":        "string",
 				"description": "Note content (for create)",
 			},
-			"tags": map[string]interface{}{
+			"tags": map[string]any{
 				"type":        "string",
 				"description": "Comma-separated tags (for create)",
 			},
-			"query": map[string]interface{}{
+			"query": map[string]any{
 				"type":        "string",
 				"description": "Search query (for search)",
 			},
@@ -84,11 +85,12 @@ func (n *NotesTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 		if len(notes) == 0 {
 			return "No notes found.", nil
 		}
-		result := fmt.Sprintf("Found %d notes:\n", len(notes))
+		var result strings.Builder
+		result.WriteString(fmt.Sprintf("Found %d notes:\n", len(notes)))
 		for _, note := range notes {
-			result += fmt.Sprintf("- [%d] %s (tags: %s)\n  %s\n", note.ID, note.Title, note.Tags, truncate(note.Content, 100))
+			result.WriteString(fmt.Sprintf("- [%d] %s (tags: %s)\n  %s\n", note.ID, note.Title, note.Tags, truncate(note.Content, 100)))
 		}
-		return result, nil
+		return result.String(), nil
 
 	case "list":
 		notes, err := n.db.SearchNotes(a.ChatID, "")
@@ -98,11 +100,12 @@ func (n *NotesTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 		if len(notes) == 0 {
 			return "No notes yet.", nil
 		}
-		result := fmt.Sprintf("%d notes:\n", len(notes))
+		var result strings.Builder
+		result.WriteString(fmt.Sprintf("%d notes:\n", len(notes)))
 		for _, note := range notes {
-			result += fmt.Sprintf("- [%d] %s (tags: %s) %s\n", note.ID, note.Title, note.Tags, note.CreatedAt.Format("2006-01-02"))
+			result.WriteString(fmt.Sprintf("- [%d] %s (tags: %s) %s\n", note.ID, note.Title, note.Tags, note.CreatedAt.Format("2006-01-02")))
 		}
-		return result, nil
+		return result.String(), nil
 
 	default:
 		return "", fmt.Errorf("unknown action: %s", a.Action)

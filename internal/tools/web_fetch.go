@@ -49,11 +49,11 @@ func (w *WebFetchTool) Description() string {
 	return "Fetch and read the text content of a specific web page by URL. Use after web_search to read full articles, documentation or any specific page for deeper analysis."
 }
 
-func (w *WebFetchTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (w *WebFetchTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"url": map[string]interface{}{
+		"properties": map[string]any{
+			"url": map[string]any{
 				"type":        "string",
 				"description": "The full URL of the web page to fetch and read",
 			},

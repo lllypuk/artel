@@ -47,7 +47,7 @@ type ShellConfig struct {
 
 type WebConfig struct {
 	Enabled        bool   `yaml:"enabled"`
-	Provider       string `yaml:"provider"`        // brave, serper, duckduckgo
+	Provider       string `yaml:"provider"` // brave, serper, duckduckgo
 	APIKey         string `yaml:"api_key"`
 	MaxResults     int    `yaml:"max_results"`
 	TimeoutSeconds int    `yaml:"timeout"`

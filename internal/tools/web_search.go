@@ -63,11 +63,11 @@ func (w *WebSearchTool) Description() string {
 	return "Search the internet for information. Returns top results with titles, snippets and URLs. Use this to find current news, facts, documentation, or any web content."
 }
 
-func (w *WebSearchTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (w *WebSearchTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"query": map[string]interface{}{
+		"properties": map[string]any{
+			"query": map[string]any{
 				"type":        "string",
 				"description": "Search query to look up on the internet",
 			},

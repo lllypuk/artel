@@ -107,7 +107,7 @@ func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage str
 
 	// ReAct loop (max 10 iterations to prevent infinite loops)
 	var totalUsage llm.Usage
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		a.logger.Debug("LLM request", "iteration", i, "messages", len(messages))
 
 		req := llm.ChatRequest{
@@ -186,7 +186,7 @@ func (a *Agent) buildToolDefs() []llm.ToolDef {
 	allTools := a.tools.All()
 	defs := make([]llm.ToolDef, 0, len(allTools))
 	for _, t := range allTools {
-		fn := t["function"].(map[string]interface{})
+		fn := t["function"].(map[string]any)
 		defs = append(defs, llm.ToolDef{
 			Type: "function",
 			Function: llm.ToolFuncDef{

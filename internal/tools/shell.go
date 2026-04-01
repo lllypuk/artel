@@ -47,16 +47,16 @@ type shellArgs struct {
 	Command string `json:"command"`
 }
 
-func (s *ShellTool) Name() string        { return "shell" }
+func (s *ShellTool) Name() string { return "shell" }
 func (s *ShellTool) Description() string {
 	return "Execute a shell command on the local machine. Only whitelisted commands are allowed. Dangerous patterns are blocked."
 }
 
-func (s *ShellTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (s *ShellTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"command": map[string]interface{}{
+		"properties": map[string]any{
+			"command": map[string]any{
 				"type":        "string",
 				"description": "Shell command to execute",
 			},

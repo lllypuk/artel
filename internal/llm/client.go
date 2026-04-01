@@ -43,9 +43,9 @@ type ToolDef struct {
 
 // ToolFuncDef describes the function schema.
 type ToolFuncDef struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description"`
-	Parameters  interface{} `json:"parameters"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Parameters  any    `json:"parameters"`
 }
 
 // ChatRequest is the request payload for chat completions.

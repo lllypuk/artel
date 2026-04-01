@@ -13,7 +13,7 @@ type Tool interface {
 	// Description returns a human-readable description.
 	Description() string
 	// Parameters returns the JSON Schema for parameters.
-	Parameters() map[string]interface{}
+	Parameters() map[string]any
 	// Execute runs the tool with given JSON arguments.
 	Execute(ctx context.Context, args json.RawMessage) (string, error)
 }
@@ -49,12 +49,12 @@ func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessag
 }
 
 // All returns all registered tools as LLM tool definitions.
-func (r *Registry) All() []map[string]interface{} {
-	var defs []map[string]interface{}
+func (r *Registry) All() []map[string]any {
+	var defs []map[string]any
 	for _, t := range r.tools {
-		defs = append(defs, map[string]interface{}{
+		defs = append(defs, map[string]any{
 			"type": "function",
-			"function": map[string]interface{}{
+			"function": map[string]any{
 				"name":        t.Name(),
 				"description": t.Description(),
 				"parameters":  t.Parameters(),
