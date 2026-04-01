@@ -1,7 +1,7 @@
 BINARY=bin/agent
 CONFIG=config.yaml
 
-.PHONY: build run stop restart logs clean lint
+.PHONY: build run stop restart logs clean lint test
 
 build:
 	go build -o $(BINARY) ./cmd/agent/
@@ -28,4 +28,9 @@ clean:
 	rm -f $(BINARY)
 
 lint:
+	go fix ./...
+	go fmt ./...
 	golangci-lint run ./...
+
+test:
+	go test ./...
