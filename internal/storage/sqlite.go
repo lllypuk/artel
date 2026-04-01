@@ -150,7 +150,7 @@ func (s *DB) GetMessages(ctx context.Context, convID int64) ([]StoredMessage, er
 func (s *DB) GetActiveConversation(ctx context.Context, chatID int64) (*Conversation, error) {
 	var c Conversation
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id, chat_id, title, model, created_at, updated_at FROM conversations WHERE chat_id = ? ORDER BY updated_at DESC LIMIT 1",
+		"SELECT id, chat_id, title, model, created_at, updated_at FROM conversations WHERE chat_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
 		chatID,
 	).Scan(&c.ID, &c.ChatID, &c.Title, &c.Model, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
