@@ -1,0 +1,57 @@
+# Основная конфигурация agent-shatrov
+
+telegram:
+  token: ""              # @BotFather token
+  allowed_users:         # whitelist chat_id (только ты)
+    - 0
+
+llm:
+  provider: "glm"
+  models:
+    default: "glm-4-plus"
+    fast: "glm-4-flash"
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  api_key: ""
+
+database:
+  path: "./data/agent.db"
+
+shell:
+  enabled: false          # включить когда будет готово
+  # Максимальное время выполнения (секунды)
+  timeout: 30
+  # Разрешённые команды (whitelist)
+  allowed_commands:
+    - ls
+    - cat
+    - head
+    - tail
+    - grep
+    - find
+    - wc
+    - date
+    - whoami
+    - df
+    - free
+    - uptime
+    - ps
+    - echo
+    - pwd
+  # Запрещённые паттерны (даже если команда в whitelist)
+  blocked_patterns:
+    - "rm -rf /"
+    - "mkfs"
+    - "dd if="
+    - "> /dev/"
+    - "chmod 777"
+    - ":(){ :|:& };:"
+    - "shutdown"
+    - "reboot"
+    - "init 0"
+    - "init 6"
+  # Рабочая директория (sandbox)
+  working_dir: "./sandbox"
+
+logging:
+  level: "info"           # debug, info, warn, error
+  file: "./data/agent.log"
