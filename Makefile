@@ -9,7 +9,7 @@ build:
 run: build
 	mkdir -p data
 	-pkill -x agent
-	nohup ./$(BINARY) > data/stdout.log 2>&1 &
+	export https_proxy="http://127.0.0.1:2080"; nohup env HTTPS_PROXY="http://127.0.0.1:2080" https_proxy="http://127.0.0.1:2080" ./$(BINARY) > data/stdout.log 2>&1 &
 	sleep 1
 	tail -3 data/agent.log
 
