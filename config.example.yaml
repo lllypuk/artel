@@ -69,19 +69,16 @@ web:
   # Максимальный размер скачиваемой страницы (КБ)
   max_fetch_size_kb: 100
 
-web_screenshot:
-  enabled: true         # включить для скриншотов веб-страниц
-  # Директория для временных скриншотов
+browser:
+  enabled: true           # включить для автоматизации браузера
+  # Директория для сохранения скриншотов
   screenshot_dir: "./data/screenshots"
-  # Путь к агент browser (опционально, по умолчанию "agent-browser")
+  # Путь к agent-browser (опционально, по умолчанию "agent-browser")
   agent_browser_path: "agent-browser"
-  # Таймаут выполнения (секунды)
+  # Таймаут выполнения операций (секунды)
   timeout_seconds: 30
-  # Размер области просмотра по умолчанию
-  default_width: 1280
-  default_height: 720
-  # Задержка перед скриншотом по умолчанию (секунды)
-  default_delay: 2.0
+  # Прокси для браузера (опционально), e.g. "http://127.0.0.1:2080"
+  proxy: ""
 
 pi_coder:
   enabled: false          # включить для доработки агента через pi

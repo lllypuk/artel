@@ -109,6 +109,13 @@ web:
   timeout: 15
   max_fetch_size_kb: 100
 
+browser:
+  enabled: true
+  screenshot_dir: "./data/screenshots"
+  agent_browser_path: "agent-browser"
+  timeout_seconds: 30
+  proxy: ""                     # прокси для браузера (опционально)
+
 pi_coder:
   enabled: true
   project_dir: "/path/to/agent-shatrov"
@@ -225,6 +232,7 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 - [x] Поиск в интернете (Brave / Serper / DuckDuckGo) + чтение страниц
 - [x] Самообновление через `pi_coder` — агент изменяет и пересобирает собственный код
 - [x] Агрегация новостей (RSS/Atom/JSON Feed) — подписки, чтение, поиск, избранное
+- [x] Универсальная автоматизация браузера (agent-browser) — навигация, клики, формы, скриншоты, JS, snapshot
 - [x] Переключение модели через Telegram (`/model fast`)
 
 ## Инструмент news
