@@ -57,7 +57,7 @@ func main() {
 	llmClient := llm.NewClient(cfg.LLM.BaseURL, cfg.LLM.APIKey)
 
 	// Setup tools
-	toolRegistry := tools.NewRegistry()
+	toolRegistry := tools.NewRegistry(logger)
 	toolRegistry.Register(tools.NewNotesTool(db))
 	registerOptionalTools(cfg, toolRegistry, logger)
 
@@ -70,6 +70,9 @@ func main() {
 		logger.Error("create telegram bot", "error", err)
 		os.Exit(1)
 	}
+
+	// Set up notification handler for long-running operations
+	bot.SetNotificationHandler()
 
 	// Graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())

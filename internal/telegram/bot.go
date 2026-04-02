@@ -9,6 +9,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/lllypuk/agent-shatrov/internal/agent"
+	"github.com/lllypuk/agent-shatrov/internal/tools"
 )
 
 // Bot is the Telegram bot interface.
@@ -39,6 +40,17 @@ func New(token string, allowedUsers []int64, ag *agent.Agent, logger *slog.Logge
 		allowedUsers: allowed,
 		logger:       logger,
 	}, nil
+}
+
+// SetNotificationHandler sets up the agent to send notifications through this bot.
+// This should be called after Bot creation.
+func (b *Bot) SetNotificationHandler() {
+	b.agent.SetNotifier(func(chatID int64, toolName string) {
+		msg := tools.NotificationMessages()[toolName]
+		if msg != "" {
+			b.sendText(chatID, msg)
+		}
+	})
 }
 
 // Run starts the long-polling loop.

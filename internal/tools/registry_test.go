@@ -3,6 +3,8 @@ package tools_test
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
+	"os"
 	"testing"
 
 	"github.com/lllypuk/agent-shatrov/internal/tools"
@@ -27,14 +29,16 @@ func (m *mockTool) Execute(_ context.Context, _ json.RawMessage) (string, error)
 // ── Registry ──────────────────────────────────────────────────────────────────
 
 func TestNewRegistry(t *testing.T) {
-	r := tools.NewRegistry()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := tools.NewRegistry(logger)
 	if r == nil {
 		t.Fatal("expected non-nil registry")
 	}
 }
 
 func TestRegisterAndGet(t *testing.T) {
-	r := tools.NewRegistry()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := tools.NewRegistry(logger)
 	r.Register(&mockTool{name: "tool1"})
 
 	got, ok := r.Get("tool1")
@@ -47,7 +51,8 @@ func TestRegisterAndGet(t *testing.T) {
 }
 
 func TestGetUnknown(t *testing.T) {
-	r := tools.NewRegistry()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := tools.NewRegistry(logger)
 	_, ok := r.Get("nonexistent")
 	if ok {
 		t.Fatal("expected not to find nonexistent tool")
@@ -55,7 +60,8 @@ func TestGetUnknown(t *testing.T) {
 }
 
 func TestExecuteKnownTool(t *testing.T) {
-	r := tools.NewRegistry()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := tools.NewRegistry(logger)
 	r.Register(&mockTool{name: "greeter", result: "hello!"})
 
 	res, err := r.Execute(context.Background(), "greeter", json.RawMessage(`{}`))
@@ -68,7 +74,8 @@ func TestExecuteKnownTool(t *testing.T) {
 }
 
 func TestExecuteUnknownTool(t *testing.T) {
-	r := tools.NewRegistry()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := tools.NewRegistry(logger)
 	_, err := r.Execute(context.Background(), "missing", json.RawMessage(`{}`))
 	if err == nil {
 		t.Fatal("expected error for unknown tool")
@@ -76,14 +83,16 @@ func TestExecuteUnknownTool(t *testing.T) {
 }
 
 func TestAllEmpty(t *testing.T) {
-	r := tools.NewRegistry()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := tools.NewRegistry(logger)
 	if all := r.All(); len(all) != 0 {
 		t.Errorf("expected 0 tools, got %d", len(all))
 	}
 }
 
 func TestAllWithTools(t *testing.T) {
-	r := tools.NewRegistry()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := tools.NewRegistry(logger)
 	r.Register(&mockTool{name: "alpha"})
 	r.Register(&mockTool{name: "beta"})
 
@@ -110,7 +119,8 @@ func TestAllWithTools(t *testing.T) {
 }
 
 func TestRegisterOverwrite(t *testing.T) {
-	r := tools.NewRegistry()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := tools.NewRegistry(logger)
 	r.Register(&mockTool{name: "dup", result: "first"})
 	r.Register(&mockTool{name: "dup", result: "second"})
 

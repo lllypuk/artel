@@ -49,6 +49,7 @@ type Agent struct {
 	tools     *tools.Registry
 	db        *storage.DB
 	logger    *slog.Logger
+	notify    tools.Notifier
 }
 
 // New creates a new Agent.
@@ -62,6 +63,22 @@ func New(llmClient *llm.Client, model string, toolRegistry *tools.Registry, db *
 	}
 }
 
+// SetNotifier sets the notification callback for long-running operations.
+func (a *Agent) SetNotifier(notify tools.Notifier) {
+	a.notify = notify
+	a.tools.SetNotifier(notify)
+}
+
+// Notify sends a notification to the user about a tool operation.
+// This is used by external components (like Telegram bot) to send notifications.
+func (a *Agent) Notify(chatID int64, toolName string) error {
+	if a.notify != nil {
+		a.notify(chatID, toolName)
+		return nil
+	}
+	return fmt.Errorf("no notifier configured")
+}
+
 // Response from the agent.
 type Response struct {
 	Text  string
@@ -71,6 +88,9 @@ type Response struct {
 // HandleMessage processes a user message and returns the agent's response.
 // It implements the ReAct loop: LLM → tool calls → LLM → ... → final text.
 func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage string) (*Response, error) {
+	// Add chatID to context for notifications
+	ctx = context.WithValue(ctx, tools.ChatIDKey, chatID)
+
 	// Get or create conversation
 	conv, err := a.db.GetActiveConversation(ctx, chatID)
 	if err != nil {
@@ -163,7 +183,7 @@ func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage str
 		for _, tc := range choice.Message.ToolCalls {
 			a.logger.Info("tool call", "tool", tc.Function.Name, "args", tc.Function.Arguments)
 
-			result, err := a.tools.Execute(ctx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+			result, err := a.tools.ExecuteWithNotify(ctx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
 			if err != nil {
 				result = fmt.Sprintf("Error: %s", err.Error())
 				a.logger.Error("tool execution error", "tool", tc.Function.Name, "error", err)
