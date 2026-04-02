@@ -7,11 +7,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/lllypuk/agent-shatrov/internal/agent"
 	"github.com/lllypuk/agent-shatrov/internal/config"
 	"github.com/lllypuk/agent-shatrov/internal/llm"
+	"github.com/lllypuk/agent-shatrov/internal/news"
 	"github.com/lllypuk/agent-shatrov/internal/storage"
 	"github.com/lllypuk/agent-shatrov/internal/telegram"
 	"github.com/lllypuk/agent-shatrov/internal/tools"
@@ -59,7 +62,20 @@ func main() {
 	// Setup tools
 	toolRegistry := tools.NewRegistry(logger)
 	toolRegistry.Register(tools.NewNotesTool(db))
-	registerOptionalTools(cfg, toolRegistry, logger)
+	registerOptionalTools(cfg, toolRegistry, logger, db)
+
+	// Graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start news fetcher if enabled
+	var newsManager *news.NewsManager
+	if cfg.News.Enabled {
+		newsManager = setupNews(ctx, cfg, db, toolRegistry, logger)
+		if newsManager != nil {
+			go fetchNewsLoop(ctx, newsManager, logger)
+		}
+	}
 
 	// Create agent
 	ag := agent.New(llmClient, cfg.LLM.Models.Default, toolRegistry, db, logger)
@@ -73,10 +89,6 @@ func main() {
 
 	// Set up notification handler for long-running operations
 	bot.SetNotificationHandler()
-
-	// Graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -129,7 +141,7 @@ func setupLogger(cfg *config.Config) (*slog.Logger, func() error, error) {
 }
 
 // registerOptionalTools регистрирует инструменты, включённые в конфиге.
-func registerOptionalTools(cfg *config.Config, registry *tools.Registry, logger *slog.Logger) {
+func registerOptionalTools(cfg *config.Config, registry *tools.Registry, logger *slog.Logger, db *storage.DB) {
 	if cfg.Web.Enabled {
 		registerWebTools(cfg, registry, logger)
 	}
@@ -146,6 +158,10 @@ func registerOptionalTools(cfg *config.Config, registry *tools.Registry, logger 
 			TimeoutSeconds:  cfg.Shell.Timeout,
 		}))
 		logger.Info("Shell tool enabled", "allowed_commands", len(cfg.Shell.AllowedCommands))
+	}
+
+	if cfg.News.Enabled {
+		setupNewsTool(cfg, db, registry, logger)
 	}
 }
 
@@ -190,4 +206,107 @@ func registerPiCoderTool(cfg *config.Config, registry *tools.Registry, logger *s
 		TimeoutSeconds: cfg.PiCoder.TimeoutSeconds,
 	}))
 	logger.Info("PiCoder tool enabled", "project_dir", projectDir, "model", model)
+}
+
+func setupNewsTool(cfg *config.Config, db *storage.DB, registry *tools.Registry, logger *slog.Logger) {
+	newsRepo := storage.NewNewsRepository(db)
+	parser := news.NewGofeedParser()
+
+	timeout := time.Duration(cfg.News.FetchTimeoutSeconds) * time.Second
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+	fetcher := news.NewHTTPFetcher(timeout)
+
+	newsManager := news.NewNewsManager(newsRepo, parser, fetcher, logger)
+	registry.Register(tools.NewNewsTool(newsManager))
+
+	logger.Info("News tool enabled")
+}
+
+func setupNews(ctx context.Context, cfg *config.Config, db *storage.DB, registry *tools.Registry, logger *slog.Logger) *news.NewsManager {
+	newsRepo := storage.NewNewsRepository(db)
+
+	// Initialize default feeds
+	if err := initDefaultFeeds(ctx, cfg, newsRepo, logger); err != nil {
+		logger.Error("init default feeds", "error", err)
+	}
+
+	parser := news.NewGofeedParser()
+
+	timeout := time.Duration(cfg.News.FetchTimeoutSeconds) * time.Second
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+	fetcher := news.NewHTTPFetcher(timeout)
+
+	newsManager := news.NewNewsManager(newsRepo, parser, fetcher, logger)
+
+	return newsManager
+}
+
+func initDefaultFeeds(ctx context.Context, cfg *config.Config, newsRepo storage.NewsRepository, logger *slog.Logger) error {
+	for _, feedCfg := range cfg.News.Feeds {
+		// Check if feed already exists
+		existing, err := newsRepo.GetFeedByURL(ctx, feedCfg.URL)
+		if err != nil {
+			logger.Warn("check feed exists", "url", feedCfg.URL, "error", err)
+			continue
+		}
+		if existing != nil {
+			continue
+		}
+
+		// Create feed
+		var feedType news.FeedType
+		switch {
+		case strings.Contains(feedCfg.URL, ".atom"):
+			feedType = news.FeedTypeAtom
+		case strings.Contains(feedCfg.URL, ".json"):
+			feedType = news.FeedTypeJSON
+		default:
+			feedType = news.FeedTypeRSS
+		}
+
+		feed := &news.Feed{
+			URL:           feedCfg.URL,
+			Title:         feedCfg.Title,
+			Description:   feedCfg.Title,
+			Type:          feedType,
+			Category:      feedCfg.Category,
+			Language:      feedCfg.Language,
+			Enabled:       feedCfg.Enabled,
+			FetchInterval: time.Hour,
+		}
+
+		_, err = newsRepo.CreateFeed(ctx, feed)
+		if err != nil {
+			logger.Warn("create feed", "url", feedCfg.URL, "error", err)
+		} else {
+			logger.Info("feed created", "title", feedCfg.Title, "url", feedCfg.URL)
+		}
+	}
+	return nil
+}
+
+func fetchNewsLoop(ctx context.Context, manager *news.NewsManager, logger *slog.Logger) {
+	ticker := time.NewTicker(30 * time.Minute)
+	defer ticker.Stop()
+
+	// Initial fetch
+	if err := manager.FetchAllFeeds(ctx); err != nil {
+		logger.Error("initial fetch all feeds", "error", err)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Info("news fetch loop stopped")
+			return
+		case <-ticker.C:
+			if err := manager.FetchAllFeeds(ctx); err != nil {
+				logger.Error("fetch all feeds", "error", err)
+			}
+		}
+	}
 }

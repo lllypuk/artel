@@ -76,6 +76,52 @@ pi_coder:
   # Таймаут выполнения pi (секунды), по умолчанию 300 (5 минут)
   timeout: 300
 
+news:
+  enabled: false          # включить для агрегации новостей
+  # Интервал автоматического обновления фидов (минуты)
+  fetch_interval_minutes: 30
+  # Максимальный возраст новостей для хранения (дни)
+  max_item_age_days: 30
+  # Максимальное количество новостей на фид
+  max_items_per_feed: 1000
+  # HTTP таймаут для получения фидов (секунды)
+  fetch_timeout_seconds: 30
+  # Предустановленные источники новостей
+  feeds:
+    # Tech news
+    - url: "https://techcrunch.com/feed/"
+      title: "TechCrunch"
+      category: "tech"
+      language: "en"
+      enabled: false
+    - url: "https://www.theverge.com/rss/index.xml"
+      title: "The Verge"
+      category: "tech"
+      language: "en"
+      enabled: false
+    - url: "https://feeds.arstechnica.com/arstechnica/index"
+      title: "Ars Technica"
+      category: "tech"
+      language: "en"
+      enabled: false
+    # Open Source / Dev
+    - url: "https://lwn.net/headlines/newrss"
+      title: "LWN.net"
+      category: "opensource"
+      language: "en"
+      enabled: false
+    - url: "https://opensource.com/feeds"
+      title: "Opensource.com"
+      category: "opensource"
+      language: "en"
+      enabled: false
+    # Go
+    - url: "https://go.dev/blog/feed.atom"
+      title: "Go Blog"
+      category: "golang"
+      language: "en"
+      enabled: false
+
 logging:
   level: "info"           # debug, info, warn, error
   file: "./data/agent.log"

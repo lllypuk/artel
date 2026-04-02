@@ -38,7 +38,8 @@ func (s *DB) Close() error {
 }
 
 func (s *DB) migrate(ctx context.Context) error {
-	migrations := []string{
+	// Core migrations (required)
+	coreMigrations := []string{
 		`CREATE TABLE IF NOT EXISTS conversations (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			chat_id INTEGER NOT NULL,
@@ -68,11 +69,111 @@ func (s *DB) migrate(ctx context.Context) error {
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_notes_chat ON notes(chat_id)`,
+		// News feeds table
+		`CREATE TABLE IF NOT EXISTS news_feeds (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			url TEXT NOT NULL UNIQUE,
+			title TEXT NOT NULL,
+			description TEXT DEFAULT '',
+			type TEXT NOT NULL CHECK(type IN ('rss', 'atom', 'json')),
+			category TEXT DEFAULT '',
+			language TEXT DEFAULT 'en',
+			enabled INTEGER DEFAULT 1,
+			fetch_interval_seconds INTEGER DEFAULT 3600,
+			last_fetched DATETIME,
+			last_error TEXT DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		// Indexes for feeds
+		`CREATE INDEX IF NOT EXISTS idx_news_feeds_url ON news_feeds(url)`,
+		`CREATE INDEX IF NOT EXISTS idx_news_feeds_enabled ON news_feeds(enabled)`,
+		// News items table
+		`CREATE TABLE IF NOT EXISTS news_items (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			feed_id INTEGER NOT NULL REFERENCES news_feeds(id) ON DELETE CASCADE,
+			guid TEXT NOT NULL,
+			title TEXT NOT NULL,
+			link TEXT NOT NULL,
+			description TEXT DEFAULT '',
+			content TEXT DEFAULT '',
+			author TEXT DEFAULT '',
+			category TEXT DEFAULT '',
+			image_url TEXT DEFAULT '',
+			published_at DATETIME NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(feed_id, guid)
+		)`,
+		// Indexes for items
+		`CREATE INDEX IF NOT EXISTS idx_news_items_feed ON news_items(feed_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_news_items_published ON news_items(published_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_news_items_guid ON news_items(feed_id, guid)`,
+		// Subscriptions table
+		`CREATE TABLE IF NOT EXISTS news_subscriptions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			chat_id INTEGER NOT NULL,
+			feed_id INTEGER NOT NULL REFERENCES news_feeds(id) ON DELETE CASCADE,
+			enabled INTEGER DEFAULT 1,
+			notify INTEGER DEFAULT 0,
+			filter_keywords TEXT DEFAULT '',
+			filter_category TEXT DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(chat_id, feed_id)
+		)`,
+		// Indexes for subscriptions
+		`CREATE INDEX IF NOT EXISTS idx_news_subscriptions_chat ON news_subscriptions(chat_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_news_subscriptions_feed ON news_subscriptions(feed_id)`,
+		// Read status table
+		`CREATE TABLE IF NOT EXISTS news_read_status (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			chat_id INTEGER NOT NULL,
+			item_id INTEGER NOT NULL REFERENCES news_items(id) ON DELETE CASCADE,
+			read_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			saved INTEGER DEFAULT 0,
+			UNIQUE(chat_id, item_id)
+		)`,
+		// Indexes for read status
+		`CREATE INDEX IF NOT EXISTS idx_news_read_status_chat ON news_read_status(chat_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_news_read_status_item ON news_read_status(item_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_news_read_status_saved ON news_read_status(saved) WHERE saved = 1`,
 	}
 
-	for _, m := range migrations {
+	// FTS5 migrations (optional - may fail if FTS5 not compiled in)
+	fts5Migrations := []string{
+		`CREATE VIRTUAL TABLE IF NOT EXISTS news_items_fts USING fts5(
+			title, content, description,
+			content_rowid=rowid,
+			tokenize='porter unicode61'
+		) -- #nosec G201 - FTS5 table creation, safe structure`,
+		// Triggers for FTS (if FTS5 is available)
+		`CREATE TRIGGER IF NOT EXISTS news_items_ai AFTER INSERT ON news_items BEGIN
+			INSERT INTO news_items_fts(rowid, title, content, description)
+			VALUES (new.id, new.title, new.content, new.description);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS news_items_ad AFTER DELETE ON news_items BEGIN
+			INSERT INTO news_items_fts(news_items_fts, rowid, title, content, description)
+			VALUES ('delete', old.id, old.title, old.content, old.description);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS news_items_au AFTER UPDATE ON news_items BEGIN
+			INSERT INTO news_items_fts(news_items_fts, rowid, title, content, description)
+			VALUES ('delete', old.id, old.title, old.content, old.description);
+			INSERT INTO news_items_fts(rowid, title, content, description)
+			VALUES (new.id, new.title, new.content, new.description);
+		END`,
+	}
+
+	// Execute core migrations (required)
+	for _, m := range coreMigrations {
 		if _, err := s.db.ExecContext(ctx, m); err != nil {
 			return fmt.Errorf("exec migration: %w", err)
+		}
+	}
+
+	// Execute FTS5 migrations (optional - may fail if FTS5 not compiled in)
+	for _, m := range fts5Migrations {
+		if _, err := s.db.ExecContext(ctx, m); err != nil {
+			_ = err // FTS5 may not be available, ignore error
 		}
 	}
 	return nil

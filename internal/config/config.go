@@ -14,6 +14,7 @@ type Config struct {
 	Shell    ShellConfig    `yaml:"shell"`
 	Web      WebConfig      `yaml:"web"`
 	PiCoder  PiCoderConfig  `yaml:"pi_coder"`
+	News     NewsConfig     `yaml:"news"`
 	Logging  LoggingConfig  `yaml:"logging"`
 }
 
@@ -65,6 +66,23 @@ type PiCoderConfig struct {
 type LoggingConfig struct {
 	Level string `yaml:"level"`
 	File  string `yaml:"file"`
+}
+
+type NewsConfig struct {
+	Enabled              bool         `yaml:"enabled"`
+	FetchIntervalMinutes int          `yaml:"fetch_interval_minutes"`
+	MaxItemAgeDays       int          `yaml:"max_item_age_days"`
+	MaxItemsPerFeed      int          `yaml:"max_items_per_feed"`
+	FetchTimeoutSeconds  int          `yaml:"fetch_timeout_seconds"`
+	Feeds                []FeedConfig `yaml:"feeds"`
+}
+
+type FeedConfig struct {
+	URL      string `yaml:"url"`
+	Title    string `yaml:"title"`
+	Category string `yaml:"category"`
+	Language string `yaml:"language"`
+	Enabled  bool   `yaml:"enabled"`
 }
 
 func Load(path string) (*Config, error) {
