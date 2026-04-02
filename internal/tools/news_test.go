@@ -106,9 +106,15 @@ func TestNewsTool_Parameters(t *testing.T) {
 	if !ok {
 		t.Fatal("expected properties to be map[string]any")
 	}
-	for _, required := range []string{"action", "chat_id", "query", "feed_id", "url", "item_id", "limit"} {
+	for _, required := range []string{"action", "chat_id", "query", "limit"} {
 		if _, ok := props[required]; !ok {
 			t.Errorf("expected property %q in parameters", required)
+		}
+	}
+	// Check that subscription-related properties are removed
+	for _, removed := range []string{"feed_id", "url", "item_id", "category"} {
+		if _, ok := props[removed]; ok {
+			t.Errorf("property %q should not exist in parameters", removed)
 		}
 	}
 }
@@ -148,7 +154,7 @@ func TestNewsTool_UnknownAction(t *testing.T) {
 
 // ── list ──────────────────────────────────────────────────────────────────────
 
-func TestNewsTool_List_EmptyNoSubscriptions(t *testing.T) {
+func TestNewsTool_List_EmptyNoFeeds(t *testing.T) {
 	tool, _ := newTestNewsTool(t, &staticFetcher{})
 	result, err := newsExec(t, tool, map[string]any{"action": "list", "chat_id": 100})
 	if err != nil {
@@ -163,9 +169,6 @@ func TestNewsTool_List_WithItems(t *testing.T) {
 	tool, repo := newTestNewsTool(t, &staticFetcher{})
 
 	feedID := createNewsTestFeed(t, repo, "https://list.example.com/", "My Feed")
-	repo.CreateSubscription(context.Background(), &news.Subscription{ //nolint:errcheck
-		ChatID: 200, FeedID: feedID, Enabled: true,
-	})
 	repo.CreateItem(context.Background(), &news.Item{ //nolint:errcheck
 		FeedID:      feedID,
 		GUID:        "list-g1",
@@ -183,14 +186,43 @@ func TestNewsTool_List_WithItems(t *testing.T) {
 	}
 }
 
+func TestNewsTool_List_DisabledFeed_Excluded(t *testing.T) {
+	tool, repo := newTestNewsTool(t, &staticFetcher{})
+
+	// Create a disabled feed directly (enabled: false)
+	feedID, err := repo.CreateFeed(context.Background(), &news.Feed{
+		URL:           "https://disabled.example.com/",
+		Title:         "Disabled Feed",
+		Type:          news.FeedTypeRSS,
+		Enabled:       false,
+		FetchInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("create feed: %v", err)
+	}
+
+	repo.CreateItem(context.Background(), &news.Item{ //nolint:errcheck
+		FeedID:      feedID,
+		GUID:        "disabled-g1",
+		Title:       "Should Not Appear",
+		Link:        "https://example.com/disabled",
+		PublishedAt: time.Now(),
+	})
+
+	result, err := newsExec(t, tool, map[string]any{"action": "list", "chat_id": 201})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(result, "Should Not Appear") {
+		t.Errorf("did not expect article from disabled feed in result, got %q", result)
+	}
+}
+
 // ── list with ChatID from context ─────────────────────────────────────────────
 
 func TestNewsTool_List_ChatIDFromContext(t *testing.T) {
 	tool, repo := newTestNewsTool(t, &staticFetcher{})
 	feedID := createNewsTestFeed(t, repo, "https://ctx.example.com/", "Context Feed")
-	repo.CreateSubscription(context.Background(), &news.Subscription{ //nolint:errcheck
-		ChatID: 300, FeedID: feedID, Enabled: true,
-	})
 	repo.CreateItem(context.Background(), &news.Item{ //nolint:errcheck
 		FeedID: feedID, GUID: "ctx-g1", Title: "Context Article",
 		Link: "https://x.com/1", PublishedAt: time.Now(),
@@ -211,9 +243,6 @@ func TestNewsTool_List_ChatIDFromContext(t *testing.T) {
 func TestNewsTool_Search(t *testing.T) {
 	tool, repo := newTestNewsTool(t, &staticFetcher{})
 	feedID := createNewsTestFeed(t, repo, "https://search.example.com/", "Search Feed")
-	repo.CreateSubscription(context.Background(), &news.Subscription{ //nolint:errcheck
-		ChatID: 400, FeedID: feedID, Enabled: true,
-	})
 	repo.CreateItem(context.Background(), &news.Item{ //nolint:errcheck
 		FeedID: feedID, GUID: "srch-g1", Title: "Golang Tips",
 		Link: "https://x.com/srch1", Description: "tips for golang devs", PublishedAt: time.Now(),
@@ -268,208 +297,6 @@ func TestNewsTool_Saved_Empty(t *testing.T) {
 	}
 }
 
-// ── subscribe / unsubscribe ───────────────────────────────────────────────────
-
-func TestNewsTool_Subscribe(t *testing.T) {
-	tool, repo := newTestNewsTool(t, &staticFetcher{})
-	feedID := createNewsTestFeed(t, repo, "https://sub.example.com/", "Sub Feed")
-
-	result, err := newsExec(t, tool, map[string]any{
-		"action": "subscribe", "feed_id": feedID, "chat_id": 800,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "✅") {
-		t.Errorf("expected success icon in result, got %q", result)
-	}
-}
-
-func TestNewsTool_Subscribe_FeedNotFound(t *testing.T) {
-	tool, _ := newTestNewsTool(t, &staticFetcher{})
-	_, err := newsExec(t, tool, map[string]any{
-		"action": "subscribe", "feed_id": 9999, "chat_id": 900,
-	})
-	if err == nil {
-		t.Fatal("expected error when feed not found")
-	}
-}
-
-func TestNewsTool_Unsubscribe(t *testing.T) {
-	tool, repo := newTestNewsTool(t, &staticFetcher{})
-	feedID := createNewsTestFeed(t, repo, "https://unsub.example.com/", "Unsub Feed")
-	repo.CreateSubscription(context.Background(), &news.Subscription{ //nolint:errcheck
-		ChatID: 1000, FeedID: feedID, Enabled: true,
-	})
-
-	result, err := newsExec(t, tool, map[string]any{
-		"action": "unsubscribe", "feed_id": feedID, "chat_id": 1000,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "✅") {
-		t.Errorf("expected success icon in result, got %q", result)
-	}
-}
-
-// ── discover ──────────────────────────────────────────────────────────────────
-
-func TestNewsTool_Discover_NoFeeds(t *testing.T) {
-	tool, _ := newTestNewsTool(t, &staticFetcher{})
-	result, err := newsExec(t, tool, map[string]any{"action": "discover", "chat_id": 1100})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "Фиды не найдены") {
-		t.Errorf("expected 'Фиды не найдены', got %q", result)
-	}
-}
-
-func TestNewsTool_Discover_ListsFeeds(t *testing.T) {
-	tool, repo := newTestNewsTool(t, &staticFetcher{})
-	createNewsTestFeed(t, repo, "https://disc1.example.com/", "Disco Feed")
-
-	result, err := newsExec(t, tool, map[string]any{"action": "discover", "chat_id": 1200})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "Disco Feed") {
-		t.Errorf("expected feed title in result, got %q", result)
-	}
-}
-
-func TestNewsTool_Discover_CategoryFilter(t *testing.T) {
-	tool, repo := newTestNewsTool(t, &staticFetcher{})
-
-	// Create two feeds with different categories.
-	_, err := repo.CreateFeed(context.Background(), &news.Feed{
-		URL: "https://tech.example.com/", Title: "Tech Feed",
-		Type: news.FeedTypeRSS, Enabled: true, Category: "tech", FetchInterval: time.Hour,
-	})
-	if err != nil {
-		t.Fatalf("create feed: %v", err)
-	}
-	_, err = repo.CreateFeed(context.Background(), &news.Feed{
-		URL: "https://news.example.com/", Title: "News Feed",
-		Type: news.FeedTypeRSS, Enabled: true, Category: "news", FetchInterval: time.Hour,
-	})
-	if err != nil {
-		t.Fatalf("create feed: %v", err)
-	}
-
-	result, err := newsExec(t, tool, map[string]any{
-		"action": "discover", "category": "tech", "chat_id": 1300,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "Tech Feed") {
-		t.Errorf("expected Tech Feed in result, got %q", result)
-	}
-	if strings.Contains(result, "News Feed") {
-		t.Errorf("expected News Feed to be filtered out, got %q", result)
-	}
-}
-
-// ── addfeed ───────────────────────────────────────────────────────────────────
-
-func TestNewsTool_AddFeed_MissingURL(t *testing.T) {
-	tool, _ := newTestNewsTool(t, &staticFetcher{data: []byte(validRSSFeed)})
-	_, err := newsExec(t, tool, map[string]any{"action": "addfeed", "chat_id": 1400})
-	if err == nil {
-		t.Fatal("expected error when URL is missing")
-	}
-}
-
-func TestNewsTool_AddFeed_Success(t *testing.T) {
-	tool, _ := newTestNewsTool(t, &staticFetcher{data: []byte(validRSSFeed)})
-	result, err := newsExec(t, tool, map[string]any{
-		"action":  "addfeed",
-		"url":     "https://new-feed.example.com/rss",
-		"chat_id": 1500,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "✅") {
-		t.Errorf("expected success in result, got %q", result)
-	}
-	if !strings.Contains(result, "new-feed.example.com") {
-		t.Errorf("expected URL in result, got %q", result)
-	}
-}
-
-// ── markread / save / unsave ──────────────────────────────────────────────────
-
-func TestNewsTool_MarkRead(t *testing.T) {
-	tool, repo := newTestNewsTool(t, &staticFetcher{})
-	feedID := createNewsTestFeed(t, repo, "https://mr.example.com/", "F")
-	itemID, err := repo.CreateItem(context.Background(), &news.Item{
-		FeedID: feedID, GUID: "mr-g1", Title: "Article",
-		Link: "https://x.com/mr1", PublishedAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatalf("create item: %v", err)
-	}
-
-	result, execErr := newsExec(t, tool, map[string]any{
-		"action": "markread", "item_id": itemID, "chat_id": 1600,
-	})
-	if execErr != nil {
-		t.Fatalf("unexpected error: %v", execErr)
-	}
-	if !strings.Contains(result, "✅") {
-		t.Errorf("expected success in result, got %q", result)
-	}
-}
-
-func TestNewsTool_Save(t *testing.T) {
-	tool, repo := newTestNewsTool(t, &staticFetcher{})
-	feedID := createNewsTestFeed(t, repo, "https://sv.example.com/", "F")
-	itemID, err := repo.CreateItem(context.Background(), &news.Item{
-		FeedID: feedID, GUID: "sv-g1", Title: "Article",
-		Link: "https://x.com/sv1", PublishedAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatalf("create item: %v", err)
-	}
-
-	result, execErr := newsExec(t, tool, map[string]any{
-		"action": "save", "item_id": itemID, "chat_id": 1700,
-	})
-	if execErr != nil {
-		t.Fatalf("unexpected error: %v", execErr)
-	}
-	if !strings.Contains(result, "⭐") {
-		t.Errorf("expected star icon in result, got %q", result)
-	}
-}
-
-func TestNewsTool_Unsave(t *testing.T) {
-	tool, repo := newTestNewsTool(t, &staticFetcher{})
-	feedID := createNewsTestFeed(t, repo, "https://usv.example.com/", "F")
-	itemID, err := repo.CreateItem(context.Background(), &news.Item{
-		FeedID: feedID, GUID: "usv-g1", Title: "Article",
-		Link: "https://x.com/usv1", PublishedAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatalf("create item: %v", err)
-	}
-	// First save it.
-	repo.CreateReadStatus(context.Background(), 1800, itemID, true) //nolint:errcheck
-
-	result, execErr := newsExec(t, tool, map[string]any{
-		"action": "unsave", "item_id": itemID, "chat_id": 1800,
-	})
-	if execErr != nil {
-		t.Fatalf("unexpected error: %v", execErr)
-	}
-	if !strings.Contains(result, "✅") {
-		t.Errorf("expected success in result, got %q", result)
-	}
-}
-
 // ── limit clamping ────────────────────────────────────────────────────────────
 
 func TestNewsTool_Limit_Default(t *testing.T) {
@@ -495,9 +322,6 @@ func TestNewsTool_Limit_Clamped(t *testing.T) {
 func TestNewsTool_FormatAge_Recent(t *testing.T) {
 	tool, repo := newTestNewsTool(t, &staticFetcher{})
 	feedID := createNewsTestFeed(t, repo, "https://age.example.com/", "Age Feed")
-	repo.CreateSubscription(context.Background(), &news.Subscription{ //nolint:errcheck
-		ChatID: 2100, FeedID: feedID, Enabled: true,
-	})
 	// Item published ~30 seconds ago → "только что".
 	repo.CreateItem(context.Background(), &news.Item{ //nolint:errcheck
 		FeedID: feedID, GUID: "age-g1", Title: "Fresh Article",
@@ -516,9 +340,6 @@ func TestNewsTool_FormatAge_Recent(t *testing.T) {
 func TestNewsTool_FormatAge_Hours(t *testing.T) {
 	tool, repo := newTestNewsTool(t, &staticFetcher{})
 	feedID := createNewsTestFeed(t, repo, "https://age2.example.com/", "Age Feed 2")
-	repo.CreateSubscription(context.Background(), &news.Subscription{ //nolint:errcheck
-		ChatID: 2200, FeedID: feedID, Enabled: true,
-	})
 	// Item published 3 hours ago.
 	repo.CreateItem(context.Background(), &news.Item{ //nolint:errcheck
 		FeedID: feedID, GUID: "age2-g1", Title: "3h Article",
@@ -537,9 +358,6 @@ func TestNewsTool_FormatAge_Hours(t *testing.T) {
 func TestNewsTool_FormatAge_Days(t *testing.T) {
 	tool, repo := newTestNewsTool(t, &staticFetcher{})
 	feedID := createNewsTestFeed(t, repo, "https://age3.example.com/", "Age Feed 3")
-	repo.CreateSubscription(context.Background(), &news.Subscription{ //nolint:errcheck
-		ChatID: 2300, FeedID: feedID, Enabled: true,
-	})
 	// Item published 3 days ago.
 	repo.CreateItem(context.Background(), &news.Item{ //nolint:errcheck
 		FeedID: feedID, GUID: "age3-g1", Title: "3d Article",
@@ -558,9 +376,6 @@ func TestNewsTool_FormatAge_Days(t *testing.T) {
 func TestNewsTool_EscapeMarkdown_InTitle(t *testing.T) {
 	tool, repo := newTestNewsTool(t, &staticFetcher{})
 	feedID := createNewsTestFeed(t, repo, "https://esc.example.com/", "Esc Feed")
-	repo.CreateSubscription(context.Background(), &news.Subscription{ //nolint:errcheck
-		ChatID: 2400, FeedID: feedID, Enabled: true,
-	})
 	// Title has asterisks and underscores that should be escaped.
 	repo.CreateItem(context.Background(), &news.Item{ //nolint:errcheck
 		FeedID: feedID, GUID: "esc-g1", Title: "Article *bold* _italic_",
@@ -579,9 +394,6 @@ func TestNewsTool_EscapeMarkdown_InTitle(t *testing.T) {
 func TestNewsTool_CategoryIcon_Tech(t *testing.T) {
 	tool, repo := newTestNewsTool(t, &staticFetcher{})
 	feedID := createNewsTestFeed(t, repo, "https://icon.example.com/", "Icon Feed")
-	repo.CreateSubscription(context.Background(), &news.Subscription{ //nolint:errcheck
-		ChatID: 2500, FeedID: feedID, Enabled: true,
-	})
 	repo.CreateItem(context.Background(), &news.Item{ //nolint:errcheck
 		FeedID: feedID, GUID: "icon-g1", Title: "Tech Article",
 		Category: "tech", Link: "https://x.com/icon1", PublishedAt: time.Now(),
@@ -599,9 +411,6 @@ func TestNewsTool_CategoryIcon_Tech(t *testing.T) {
 func TestNewsTool_UnreadBadge(t *testing.T) {
 	tool, repo := newTestNewsTool(t, &staticFetcher{})
 	feedID := createNewsTestFeed(t, repo, "https://badge.example.com/", "Badge Feed")
-	repo.CreateSubscription(context.Background(), &news.Subscription{ //nolint:errcheck
-		ChatID: 2600, FeedID: feedID, Enabled: true,
-	})
 	repo.CreateItem(context.Background(), &news.Item{ //nolint:errcheck
 		FeedID: feedID, GUID: "badge-g1", Title: "Unread Article",
 		Link: "https://x.com/badge1", PublishedAt: time.Now(),
@@ -611,7 +420,7 @@ func TestNewsTool_UnreadBadge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Unread items should have the 🆕 badge.
+	// Unread items should have to 🆕 badge.
 	if !strings.Contains(result, "🆕") {
 		t.Errorf("expected 🆕 badge for unread item, got %q", result)
 	}

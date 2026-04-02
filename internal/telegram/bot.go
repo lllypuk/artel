@@ -21,6 +21,7 @@ type Bot struct {
 	agent        *agent.Agent
 	newsTool     *tools.NewsTool
 	allowedUsers map[int64]bool
+	newsOffsets  map[int64]int // chatID -> last offset for news pagination
 	logger       *slog.Logger
 }
 
@@ -63,6 +64,7 @@ func New(token, proxyURL string, allowedUsers []int64, ag *agent.Agent, newsTool
 		agent:        ag,
 		newsTool:     newsTool,
 		allowedUsers: allowed,
+		newsOffsets:  make(map[int64]int),
 		logger:       logger,
 	}, nil
 }
@@ -157,15 +159,15 @@ const helpText = "\U0001F916 <b>Agent Shatrov</b>\n\n" +
 	"/help — эта справка\n\n" +
 	"<b>Новости:</b>\n" +
 	"/news [запрос] — последние новости (или поиск по запросу)\n" +
+	"/news_more [N] — следующие N новостей (по умолчанию 10)\n" +
 	"/unread — непрочитанные новости\n" +
-	"/saved — сохранённые новости\n" +
-	"/feeds — список подписок\n\n" +
+	"/saved — сохранённые новости\n\n" +
 	"<b>Что умеет агент (через чат):</b>\n" +
 	"\U0001F4DD Заметки — создать, найти, прочитать, редактировать, удалить\n" +
 	"\U0001F50D Поиск в интернете (Brave / Serper / DuckDuckGo)\n" +
 	"\U0001F310 Чтение веб-страниц\n" +
 	"\U0001F6E0 Изменение собственного кода через pi_coder\n" +
-	"\U0001F4C3 Новости — подписки на фиды, чтение, поиск"
+	"\U0001F4C3 Новости — чтение, поиск, избранное"
 
 func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 	parts := strings.Fields(text)
@@ -176,7 +178,8 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 		b.sendText(chatID, "👋 Привет! Я твой персональный AI-агент.\n\n"+
 			"Просто напиши что нужно — найду, запомню, выполню.\n\n"+
 			"/help — полная справка\n"+
-			"/new — начать новый диалог")
+			"/new — начать новый диалог\n"+
+			"/news — последние новости")
 	case "/new":
 		if err := b.agent.NewConversation(ctx, chatID); err != nil {
 			b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
@@ -189,8 +192,10 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 		b.sendHTML(chatID, helpText)
 
 	// --- News commands ---
-	case "/news", "/unread", "/saved", "/feeds":
+	case "/news", "/unread", "/saved":
 		b.handleNewsCommand(ctx, chatID, cmd, parts)
+	case "/news_more":
+		b.handleNewsMoreCommand(ctx, chatID, parts)
 
 	default:
 		b.sendText(chatID, "Неизвестная команда. /help для справки.")
@@ -238,6 +243,9 @@ func (b *Bot) handleNewsCommand(ctx context.Context, chatID int64, cmd string, p
 		return
 	}
 
+	// Reset offset when starting a new news command
+	b.newsOffsets[chatID] = 0
+
 	toolCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -256,14 +264,50 @@ func (b *Bot) handleNewsCommand(ctx context.Context, chatID int64, cmd string, p
 		result, err = b.newsTool.UnreadNews(toolCtx, chatID, 10, 0)
 	case "/saved":
 		result, err = b.newsTool.SavedNews(toolCtx, chatID, 10, 0)
-	case "/feeds":
-		result, err = b.newsTool.DiscoverFeeds(toolCtx, "")
 	}
 
 	if err != nil {
 		b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
 		return
 	}
+	b.sendLongText(chatID, result)
+}
+
+func (b *Bot) handleNewsMoreCommand(ctx context.Context, chatID int64, parts []string) {
+	if b.newsTool == nil {
+		b.sendText(chatID, "❌ Новости отключены в конфигурации.")
+		return
+	}
+
+	// Get limit from argument or default to 10
+	limit := 10
+	if len(parts) > 1 {
+		if l, err := fmt.Sscanf(parts[1], "%d", &limit); l == 1 && err == nil {
+			if limit < 1 {
+				limit = 10
+			}
+			if limit > 50 {
+				limit = 50
+			}
+		}
+	}
+
+	// Get current offset (default to 0)
+	offset := b.newsOffsets[chatID]
+
+	toolCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	result, err := b.newsTool.ListNews(toolCtx, chatID, limit, offset)
+
+	if err != nil {
+		b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
+		return
+	}
+
+	// Update offset for next page
+	b.newsOffsets[chatID] = offset + limit
+
 	b.sendLongText(chatID, result)
 }
 

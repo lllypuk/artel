@@ -156,25 +156,23 @@ func (m *NewsManager) FetchAllFeeds(ctx context.Context) error {
 	return lastErr
 }
 
-// GetNews returns news with filtering.
+// GetNews returns news with filtering from all enabled feeds.
 func (m *NewsManager) GetNews(ctx context.Context, chatID int64, filter NewsFilter) ([]ItemWithScore, error) {
-	// Get user's subscriptions
-	subs, err := m.repo.GetSubscriptions(ctx, chatID)
+	// Get all enabled feeds
+	feeds, err := m.repo.GetEnabledFeeds(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("get subscriptions: %w", err)
+		return nil, fmt.Errorf("get enabled feeds: %w", err)
 	}
 
-	feedIDs := make([]int64, 0, len(subs))
-	for _, sub := range subs {
-		if sub.Enabled {
-			feedIDs = append(feedIDs, sub.FeedID)
-		}
+	feedIDs := make([]int64, 0, len(feeds))
+	for _, feed := range feeds {
+		feedIDs = append(feedIDs, feed.ID)
 	}
 
 	// Set chatID for DB-level filtering of unread/saved
 	filter.ChatID = chatID
 
-	// Get news from subscribed feeds (DB handles unread/saved filtering)
+	// Get news from all enabled feeds (DB handles unread/saved filtering)
 	items, err := m.repo.GetItemsByFeeds(ctx, feedIDs, filter)
 	if err != nil {
 		return nil, fmt.Errorf("get items: %w", err)

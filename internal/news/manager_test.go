@@ -476,12 +476,11 @@ func TestGetNews_UnreadItem_HasLowScore(t *testing.T) {
 	}
 }
 
-func TestGetNews_DisabledSubscription_Excluded(t *testing.T) {
+func TestGetNews_DisabledFeed_Excluded(t *testing.T) {
 	repo := newMemRepo()
-	feedID, _ := repo.CreateFeed(context.Background(), &news.Feed{URL: "https://x.com", Enabled: true})
-	// Disabled subscription → items should not appear.
-	repo.CreateSubscription(context.Background(), &news.Subscription{ChatID: 500, FeedID: feedID, Enabled: false}) //nolint:errcheck
-	repo.CreateItem(context.Background(), &news.Item{FeedID: feedID, GUID: "g1", PublishedAt: time.Now()})         //nolint:errcheck
+	feedID, _ := repo.CreateFeed(context.Background(), &news.Feed{URL: "https://x.com", Enabled: false})
+	// Disabled feed → items should not appear.
+	repo.CreateItem(context.Background(), &news.Item{FeedID: feedID, GUID: "g1", PublishedAt: time.Now()}) //nolint:errcheck
 
 	m := newManager(repo, &mockFetcher{}, &mockParser{})
 	items, err := m.GetNews(context.Background(), 500, news.NewsFilter{Limit: 10})
@@ -489,7 +488,7 @@ func TestGetNews_DisabledSubscription_Excluded(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(items) != 0 {
-		t.Errorf("expected 0 items for disabled subscription, got %d", len(items))
+		t.Errorf("expected 0 items for disabled feed, got %d", len(items))
 	}
 }
 

@@ -217,9 +217,9 @@ func registerPiCoderTool(cfg *config.Config, registry *tools.Registry, logger *s
 func setupNews(ctx context.Context, cfg *config.Config, db *storage.DB, registry *tools.Registry, logger *slog.Logger) (*tools.NewsTool, *news.NewsManager) {
 	newsRepo := storage.NewNewsRepository(db)
 
-	// Initialize default feeds
-	if err := initDefaultFeeds(ctx, cfg, newsRepo, logger); err != nil {
-		logger.Error("init default feeds", "error", err)
+	// Initialize feeds from configuration
+	if err := initFeeds(ctx, cfg, newsRepo, logger); err != nil {
+		logger.Error("init feeds", "error", err)
 	}
 
 	parser := news.NewGofeedParser()
@@ -238,49 +238,160 @@ func setupNews(ctx context.Context, cfg *config.Config, db *storage.DB, registry
 	return nt, newsManager
 }
 
-func initDefaultFeeds(ctx context.Context, cfg *config.Config, newsRepo storage.NewsRepository, logger *slog.Logger) error {
-	for _, feedCfg := range cfg.News.Feeds {
-		// Check if feed already exists
-		existing, err := newsRepo.GetFeedByURL(ctx, feedCfg.URL)
-		if err != nil {
-			logger.Warn("check feed exists", "url", feedCfg.URL, "error", err)
-			continue
-		}
-		if existing != nil {
-			continue
-		}
+func initFeeds(ctx context.Context, cfg *config.Config, newsRepo storage.NewsRepository, logger *slog.Logger) error {
+	// Get all feeds from database
+	dbFeeds, err := newsRepo.ListFeeds(ctx, 1000, 0)
+	if err != nil {
+		return fmt.Errorf("list feeds from database: %w", err)
+	}
 
-		// Create feed
-		var feedType news.FeedType
-		switch {
-		case strings.Contains(feedCfg.URL, ".atom"):
-			feedType = news.FeedTypeAtom
-		case strings.Contains(feedCfg.URL, ".json"):
-			feedType = news.FeedTypeJSON
-		default:
-			feedType = news.FeedTypeRSS
-		}
+	// Create a map of URL -> Feed for quick lookup
+	dbFeedsMap := make(map[string]*news.Feed)
+	for i := range dbFeeds {
+		dbFeedsMap[dbFeeds[i].URL] = &dbFeeds[i]
+	}
 
-		feed := &news.Feed{
-			URL:           feedCfg.URL,
-			Title:         feedCfg.Title,
-			Description:   feedCfg.Title,
-			Type:          feedType,
-			Category:      feedCfg.Category,
-			Language:      feedCfg.Language,
-			Enabled:       feedCfg.Enabled,
-			ProxyURL:      feedCfg.Proxy,
-			FetchInterval: time.Hour,
-		}
+	// Map of feeds in config by URL
+	configFeedsMap := make(map[string]*config.FeedConfig)
+	for i := range cfg.News.Feeds {
+		configFeedsMap[cfg.News.Feeds[i].URL] = &cfg.News.Feeds[i]
+	}
 
-		_, err = newsRepo.CreateFeed(ctx, feed)
-		if err != nil {
-			logger.Warn("create feed", "url", feedCfg.URL, "error", err)
+	// Track changes for logging
+	changes := &feedChanges{}
+
+	// Process feeds from configuration
+	for i := range cfg.News.Feeds {
+		feedCfg := &cfg.News.Feeds[i]
+		existing, existsInDB := dbFeedsMap[feedCfg.URL]
+
+		// Determine feed type
+		feedType := determineFeedType(feedCfg.URL)
+
+		if !existsInDB {
+			if added := addFeed(ctx, newsRepo, *feedCfg, feedType); added {
+				changes.add(feedCfg.Title, feedCfg.URL)
+			}
 		} else {
-			logger.Info("feed created", "title", feedCfg.Title, "url", feedCfg.URL)
+			if updated := updateFeedIfNeeded(ctx, newsRepo, existing, *feedCfg); updated {
+				changes.update(feedCfg.Title, feedCfg.URL)
+			}
 		}
 	}
+
+	// Delete feeds that are not in configuration
+	for _, dbFeed := range dbFeeds {
+		if _, existsInConfig := configFeedsMap[dbFeed.URL]; !existsInConfig {
+			if deleted := deleteFeed(ctx, newsRepo, dbFeed); deleted {
+				changes.del(dbFeed.Title, dbFeed.URL)
+			}
+		}
+	}
+
+	// Log changes
+	changes.log(logger, len(dbFeeds))
+
 	return nil
+}
+
+type feedChanges struct {
+	added   []string
+	updated []string
+	deleted []string
+}
+
+func (c *feedChanges) add(title, url string) {
+	c.added = append(c.added, fmt.Sprintf("%s (%s)", title, url))
+}
+
+func (c *feedChanges) update(title, url string) {
+	c.updated = append(c.updated, fmt.Sprintf("%s (%s)", title, url))
+}
+
+func (c *feedChanges) del(title, url string) {
+	c.deleted = append(c.deleted, fmt.Sprintf("%s (%s)", title, url))
+}
+
+func (c *feedChanges) log(logger *slog.Logger, totalFeeds int) {
+	if len(c.added) > 0 {
+		logger.Info("feeds added from configuration", "count", len(c.added))
+		for _, f := range c.added {
+			logger.Info("  - added", "feed", f)
+		}
+	}
+
+	if len(c.updated) > 0 {
+		logger.Info("feeds updated from configuration", "count", len(c.updated))
+		for _, f := range c.updated {
+			logger.Info("  - updated", "feed", f)
+		}
+	}
+
+	if len(c.deleted) > 0 {
+		logger.Info("feeds deleted (not in configuration)", "count", len(c.deleted))
+		for _, f := range c.deleted {
+			logger.Info("  - deleted", "feed", f)
+		}
+	}
+
+	if len(c.added) == 0 && len(c.updated) == 0 && len(c.deleted) == 0 {
+		logger.Info("feeds configuration is up to date", "total", totalFeeds)
+	}
+}
+
+func determineFeedType(url string) news.FeedType {
+	switch {
+	case strings.Contains(url, ".atom"):
+		return news.FeedTypeAtom
+	case strings.Contains(url, ".json"):
+		return news.FeedTypeJSON
+	default:
+		return news.FeedTypeRSS
+	}
+}
+
+func addFeed(ctx context.Context, repo storage.NewsRepository, feedCfg config.FeedConfig, feedType news.FeedType) bool {
+	feed := &news.Feed{
+		URL:           feedCfg.URL,
+		Title:         feedCfg.Title,
+		Description:   feedCfg.Title,
+		Type:          feedType,
+		Category:      feedCfg.Category,
+		Language:      feedCfg.Language,
+		Enabled:       feedCfg.Enabled,
+		ProxyURL:      feedCfg.Proxy,
+		FetchInterval: time.Hour,
+	}
+
+	_, err := repo.CreateFeed(ctx, feed)
+	return err == nil
+}
+
+func updateFeedIfNeeded(ctx context.Context, repo storage.NewsRepository, existing *news.Feed, feedCfg config.FeedConfig) bool {
+	needUpdate := existing.Title != feedCfg.Title ||
+		existing.Category != feedCfg.Category ||
+		existing.Language != feedCfg.Language ||
+		existing.Enabled != feedCfg.Enabled ||
+		existing.ProxyURL != feedCfg.Proxy
+
+	if !needUpdate {
+		return false
+	}
+
+	existing.Title = feedCfg.Title
+	existing.Description = feedCfg.Title
+	existing.Category = feedCfg.Category
+	existing.Language = feedCfg.Language
+	existing.Enabled = feedCfg.Enabled
+	existing.ProxyURL = feedCfg.Proxy
+
+	err := repo.UpdateFeed(ctx, existing)
+	return err == nil
+}
+
+func deleteFeed(ctx context.Context, repo storage.NewsRepository, feed news.Feed) bool {
+	err := repo.DeleteFeed(ctx, feed.ID)
+	return err == nil
 }
 
 func fetchNewsLoop(ctx context.Context, manager *news.NewsManager, logger *slog.Logger) {
