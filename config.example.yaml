@@ -96,39 +96,39 @@ news:
     # Tech news
     - url: "https://techcrunch.com/feed/"
       title: "TechCrunch"
-      category: "tech"
+      category: "technology"
       language: "en"
       enabled: false
       proxy: ""           # прокси для этого фида (опционально)
     - url: "https://www.theverge.com/rss/index.xml"
       title: "The Verge"
-      category: "tech"
+      category: "technology"
       language: "en"
       enabled: false
       proxy: ""
     - url: "https://feeds.arstechnica.com/arstechnica/index"
       title: "Ars Technica"
-      category: "tech"
+      category: "technology"
       language: "en"
       enabled: false
       proxy: ""
     # Open Source / Dev
     - url: "https://lwn.net/headlines/newrss"
       title: "LWN.net"
-      category: "opensource"
+      category: "programming"
       language: "en"
       enabled: false
       proxy: ""
     - url: "https://opensource.com/feeds"
       title: "Opensource.com"
-      category: "opensource"
+      category: "programming"
       language: "en"
       enabled: false
       proxy: ""
     # Go
     - url: "https://go.dev/blog/feed.atom"
       title: "Go Blog"
-      category: "golang"
+      category: "programming"
       language: "en"
       enabled: false
       proxy: ""
