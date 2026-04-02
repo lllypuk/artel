@@ -153,6 +153,7 @@ const helpText = "\U0001F916 *Agent Shatrov*\n\n" +
 	"Просто напиши что нужно — агент сам выберет инструмент.\n\n" +
 	"*Диалог:*\n" +
 	"/new — начать новый диалог (сброс контекста)\n" +
+	"/model — показать / сменить модель LLM\n" +
 	"/help — эта справка\n\n" +
 	"*Новости:*\n" +
 	"/news [запрос] — последние новости (или поиск по запросу)\n" +
@@ -182,6 +183,8 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 			return
 		}
 		b.sendText(chatID, "🆕 Новый диалог начат.")
+	case "/model":
+		b.handleModelCommand(chatID, parts)
 	case "/help":
 		b.sendText(chatID, helpText)
 
@@ -192,6 +195,41 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 	default:
 		b.sendText(chatID, "Неизвестная команда. /help для справки.")
 	}
+}
+
+func (b *Bot) handleModelCommand(chatID int64, parts []string) {
+	current := b.agent.GetModel()
+	models := b.agent.Models()
+
+	if len(parts) == 1 {
+		// Show current model and available aliases
+		var lines strings.Builder
+		fmt.Fprintf(&lines, "🤖 Текущая модель: `%s`", current)
+		if len(models) > 0 {
+			lines.WriteString("\n\nДоступные алиасы:")
+			for alias, name := range models {
+				marker := ""
+				if name == current {
+					marker = " ✔️"
+				}
+				fmt.Fprintf(&lines, "\n• `%s` → %s%s", alias, name, marker)
+			}
+			lines.WriteString("\n\nИспользование: `/model fast` или `/model default`")
+		}
+		b.sendText(chatID, lines.String())
+		return
+	}
+
+	alias := parts[1]
+	modelName, ok := models[alias]
+	if !ok {
+		// Maybe the user passed a raw model name — allow it directly
+		modelName = alias
+	}
+	b.agent.SetModel(modelName)
+	b.sendText(chatID, fmt.Sprintf("✅ Модель переключена: `%s`", modelName))
+
+	b.logger.Info("model switched", "chat_id", chatID, "model", modelName)
 }
 
 func (b *Bot) handleNewsCommand(ctx context.Context, chatID int64, cmd string, parts []string) {

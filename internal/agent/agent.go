@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
+	"sync"
 
 	"github.com/lllypuk/agent-shatrov/internal/llm"
 	"github.com/lllypuk/agent-shatrov/internal/storage"
@@ -47,6 +49,8 @@ const systemPrompt = `Ты — персональный AI-ассистент С
 type Agent struct {
 	llmClient     *llm.Client
 	model         string
+	mu            sync.RWMutex
+	models        map[string]string // alias → model name, e.g. "fast" → "glm-4.7-flash"
 	maxIterations int
 	tools         *tools.Registry
 	db            *storage.DB
@@ -67,6 +71,37 @@ func New(llmClient *llm.Client, model string, maxIterations int, toolRegistry *t
 		db:            db,
 		logger:        logger,
 	}
+}
+
+// GetModel returns the model currently used by the agent.
+func (a *Agent) GetModel() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.model
+}
+
+// SetModel sets the active model.
+func (a *Agent) SetModel(model string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.model = model
+}
+
+// SetModels configures the map of named model aliases (e.g. "fast" → "glm-4.7-flash").
+// Should be called once after New().
+func (a *Agent) SetModels(models map[string]string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.models = models
+}
+
+// Models returns a copy of the named model aliases map.
+func (a *Agent) Models() map[string]string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	result := make(map[string]string, len(a.models))
+	maps.Copy(result, a.models)
+	return result
 }
 
 // SetNotifier sets the notification callback for long-running operations.
@@ -134,8 +169,12 @@ func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage str
 	for i := range a.maxIterations {
 		a.logger.Debug("LLM request", "iteration", i, "messages", len(messages))
 
+		a.mu.RLock()
+		currentModel := a.model
+		a.mu.RUnlock()
+
 		req := llm.ChatRequest{
-			Model:       a.model,
+			Model:       currentModel,
 			Messages:    messages,
 			MaxTokens:   4096,
 			Temperature: 0.7,

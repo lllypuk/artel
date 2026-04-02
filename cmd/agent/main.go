@@ -81,6 +81,15 @@ func main() {
 	// Create agent
 	ag := agent.New(llmClient, cfg.LLM.Models.Default, cfg.LLM.MaxIterations, toolRegistry, db, logger)
 
+	// Register named model aliases for /model command
+	modelAliases := map[string]string{
+		"default": cfg.LLM.Models.Default,
+	}
+	if cfg.LLM.Models.Fast != "" {
+		modelAliases["fast"] = cfg.LLM.Models.Fast
+	}
+	ag.SetModels(modelAliases)
+
 	// Create and run Telegram bot
 	bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.Proxy, cfg.Telegram.AllowedUsers, ag, newsTool, logger)
 	if err != nil {
