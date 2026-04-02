@@ -1,7 +1,7 @@
 # План разработки: Агрегация новостей
 
-**Версия:** 1.0  
-**Дата:** 2026-04-01  
+**Версия:** 1.0
+**Дата:** 2026-04-01
 **Статус:** Проект планирования
 
 ## Оглавление
@@ -38,7 +38,7 @@
 │                    News Aggregation Tool                        │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
 │  │   Feeds      │  │   Parser     │  │  Fetcher     │          │
-│  │   Manager    │  │   (RSS/Atom) │  │  (HTTP)      │          │
+│  │   Manager    │  │  (gofeed)    │  │  (HTTP)      │          │
 │  └──────────────┘  └──────────────┘  └──────────────┘          │
 └────────────────────────┬────────────────────────────────────────┘
                          │
@@ -46,7 +46,7 @@
          ▼               ▼               ▼
 ┌──────────────────┐ ┌──────────┐ ┌──────────────────┐
 │    SQLite DB     │ │  Cache   │ │  Scheduler      │
-│  (feeds, items,  │ │ (Redis   │ │  (cron fetch)    │
+│  (feeds, items,  │ │ (in-mem) │ │  (cron fetch)    │
 │   read_status)   │ │ optional)│ │                  │
 └──────────────────┘ └──────────┘ └──────────────────┘
 ```
@@ -59,7 +59,7 @@ internal/
 │   ├── manager.go          # NewsManager: главный координатор
 │   ├── feed.go             # Feed: структура RSS/Atom фида
 │   ├── item.go             # Item: структура новости
-│   ├── parser.go           # Parser: RSS/Atom парсер
+│   ├── parser.go           # Parser на базе gofeed
 │   ├── fetcher.go          # Fetcher: HTTP клиент для получения фидов
 │   ├── cache.go            # Cache: кэширование фидов (опционально)
 │   ├── scheduler.go        # Scheduler: планировщик обновлений
@@ -357,295 +357,91 @@ func calculateScore(item *Item) float64 {
     return freshness
 }
 ```
-
-#### Parser (парсер RSS/Atom/JSON Feed)
+#### Parser (парсер на основе github.com/mmcdole/gofeed)
 
 ```go
 // internal/news/parser.go
 package news
 
 import (
-    "bytes"
-    "encoding/xml"
-    "encoding/json"
-    "errors"
     "fmt"
-    "io"
-    "strings"
+    "time"
+
+    "github.com/mmcdole/gofeed"
 )
 
 type Parser interface {
     Parse(data []byte, feedType FeedType) ([]Item, error)
 }
 
-type RSSParser struct{}
-
-type AtomParser struct{}
-
-type JSONFeedParser struct{}
-
-type CompositeParser struct {
-    rss  *RSSParser
-    atom *AtomParser
-    json *JSONFeedParser
+type GofeedParser struct {
+    parser *gofeed.Parser
 }
 
-func NewCompositeParser() *CompositeParser {
-    return &CompositeParser{
-        rss:  &RSSParser{},
-        atom: &AtomParser{},
-        json: &JSONFeedParser{},
+func NewGofeedParser() *GofeedParser {
+    return &GofeedParser{
+        parser: gofeed.NewParser(),
     }
 }
 
-func (p *CompositeParser) Parse(data []byte, feedType FeedType) ([]Item, error) {
-    switch feedType {
-    case FeedTypeRSS:
-        return p.rss.Parse(data, feedType)
-    case FeedTypeAtom:
-        return p.atom.Parse(data, feedType)
-    case FeedTypeJSON:
-        return p.json.Parse(data, feedType)
-    default:
-        // Auto-detect
-        if bytes.Contains(data, []byte("<rss")) {
-            return p.rss.Parse(data, FeedTypeRSS)
+func (p *GofeedParser) Parse(data []byte, _ FeedType) ([]Item, error) {
+    feed, err := p.parser.ParseString(string(data))
+    if err != nil {
+        return nil, fmt.Errorf("parse feed: %w", err)
+    }
+
+    items := make([]Item, 0, len(feed.Items))
+    for _, fi := range feed.Items {
+        pubDate := time.Time{}
+        if fi.PublishedParsed != nil {
+            pubDate = *fi.PublishedParsed
+        } else if fi.UpdatedParsed != nil {
+            pubDate = *fi.UpdatedParsed
         }
-        if bytes.Contains(data, []byte("<feed")) {
-            return p.atom.Parse(data, FeedTypeAtom)
+
+        var category string
+        if len(fi.Categories) > 0 {
+            category = fi.Categories[0]
         }
-        return nil, errors.New("unknown feed type")
-    }
-}
 
-// RSS structures
-type rssFeed struct {
-    XMLName xml.Name `xml:"rss"`
-    Channel struct {
-        Title       string  `xml:"title"`
-        Description string  `xml:"description"`
-        Link        string  `xml:"link"`
-        Language    string  `xml:"language"`
-        Items       []rssItem `xml:"item"`
-    } `xml:"channel"`
-}
-
-type rssItem struct {
-    Title       string `xml:"title"`
-    Link        string `xml:"link"`
-    Description string `xml:"description"`
-    Content     string `xml:"encoded"` // content:encoded
-    PubDate     string `xml:"pubDate"`
-    Guid        string `xml:"guid"`
-    Author      string `xml:"author"`
-    Category    string `xml:"category"`
-}
-
-func (p *RSSParser) Parse(data []byte, _ FeedType) ([]Item, error) {
-    var feed rssFeed
-    if err := xml.Unmarshal(data, &feed); err != nil {
-        return nil, fmt.Errorf("parse RSS: %w", err)
-    }
-
-    items := make([]Item, 0, len(feed.Channel.Items))
-    for _, ri := range feed.Channel.Items {
-        pubDate, _ := parseTime(ri.PubDate)
-        
-        content := ri.Content
+        content := fi.Content
         if content == "" {
-            content = ri.Description
+            content = fi.Description
         }
 
-        guid := ri.Guid
+        guid := fi.GUID
         if guid == "" {
-            guid = ri.Link
+            guid = fi.Link
         }
 
         items = append(items, Item{
             GUID:        guid,
-            Title:       stripHTML(ri.Title),
-            Link:        ri.Link,
-            Description: stripHTML(ri.Description),
-            Content:     stripHTML(content),
-            Author:      ri.Author,
-            Category:    ri.Category,
-            PublishedAt: pubDate,
-        })
-    }
-
-    return items, nil
-}
-
-// Atom structures
-type atomFeed struct {
-    XMLName xml.Name `xml:"http://www.w3.org/2005/Atom feed"`
-    Title   string   `xml:"title"`
-    Link    []struct {
-        Href string `xml:"href,attr"`
-        Rel  string `xml:"rel,attr"`
-    } `xml:"link"`
-    Subtitle string    `xml:"subtitle"`
-    Entries  []atomEntry `xml:"entry"`
-}
-
-type atomEntry struct {
-    Title     string `xml:"title"`
-    Link      []struct {
-        Href string `xml:"href,attr"`
-        Rel  string `xml:"rel,attr"`
-    } `xml:"link"`
-    Summary   string `xml:"summary"`
-    Content   string `xml:"content"`
-    Published string `xml:"published"`
-    Updated   string `xml:"updated"`
-    ID        string `xml:"id"`
-    Author    struct {
-        Name string `xml:"name"`
-    } `xml:"author"`
-    Category struct {
-        Term string `xml:"term,attr"`
-    } `xml:"category"`
-}
-
-func (p *AtomParser) Parse(data []byte, _ FeedType) ([]Item, error) {
-    var feed atomFeed
-    if err := xml.Unmarshal(data, &feed); err != nil {
-        return nil, fmt.Errorf("parse Atom: %w", err)
-    }
-
-    items := make([]Item, 0, len(feed.Entries))
-    for _, entry := range feed.Entries {
-        pubDate, _ := parseTime(entry.Published)
-        if pubDate.IsZero() {
-            pubDate, _ = parseTime(entry.Updated)
-        }
-
-        var link string
-        for _, l := range entry.Link {
-            if l.Rel == "" || l.Rel == "alternate" {
-                link = l.Href
-                break
-            }
-        }
-
-        content := entry.Content
-        if content == "" {
-            content = entry.Summary
-        }
-
-        items = append(items, Item{
-            GUID:        entry.ID,
-            Title:       stripHTML(entry.Title),
-            Link:        link,
-            Description: stripHTML(entry.Summary),
-            Content:     stripHTML(content),
-            Author:      entry.Author.Name,
-            Category:    entry.Category.Term,
-            PublishedAt: pubDate,
-        })
-    }
-
-    return items, nil
-}
-
-// JSON Feed structures (https://jsonfeed.org/version/1)
-type jsonFeed struct {
-    Version     string      `json:"version"`
-    Title       string      `json:"title"`
-    Description string      `json:"description"`
-    HomeURL     string      `json:"home_page_url"`
-    Items       []jsonItem  `json:"items"`
-}
-
-type jsonItem struct {
-    ID           string `json:"id"`
-    URL          string `json:"url"`
-    Title        string `json:"title"`
-    Summary      string `json:"summary"`
-    ContentHTML  string `json:"content_html"`
-    ContentText  string `json:"content_text"`
-    DatePublished string `json:"date_published"`
-    Author       struct {
-        Name string `json:"name"`
-    } `json:"author"`
-    Tags []string `json:"tags"`
-    Image string `json:"image"`
-}
-
-func (p *JSONFeedParser) Parse(data []byte, _ FeedType) ([]Item, error) {
-    var feed jsonFeed
-    if err := json.Unmarshal(data, &feed); err != nil {
-        return nil, fmt.Errorf("parse JSON Feed: %w", err)
-    }
-
-    items := make([]Item, 0, len(feed.Items))
-    for _, ji := range feed.Items {
-        pubDate, _ := parseTime(ji.DatePublished)
-
-        content := ji.ContentHTML
-        if content == "" {
-            content = ji.ContentText
-        }
-        if content == "" {
-            content = ji.Summary
-        }
-
-        var category string
-        if len(ji.Tags) > 0 {
-            category = strings.Join(ji.Tags, ",")
-        }
-
-        items = append(items, Item{
-            GUID:        ji.ID,
-            Title:       ji.Title,
-            Link:        ji.URL,
-            Description: ji.Summary,
-            Content:     stripHTML(content),
-            Author:      ji.Author.Name,
+            Title:       fi.Title,
+            Link:        fi.Link,
+            Description: fi.Description,
+            Content:     content,
+            Author:      getAuthor(fi),
             Category:    category,
             PublishedAt: pubDate,
-            ImageURL:    ji.Image,
+            ImageURL:    getImage(fi),
         })
     }
 
     return items, nil
 }
 
-// Helper functions
-func parseTime(s string) (time.Time, error) {
-    // RFC1123, RFC3339, and common formats
-    formats := []string{
-        time.RFC1123,
-        time.RFC1123Z,
-        time.RFC3339,
-        "2006-01-02T15:04:05-07:00",
-        "2006-01-02T15:04:05Z",
-        "Mon, 02 Jan 2006 15:04:05 MST",
+func getAuthor(item *gofeed.Item) string {
+    if item.Author != nil {
+        return item.Author.Name
     }
-    
-    for _, f := range formats {
-        if t, err := time.Parse(f, s); err == nil {
-            return t, nil
-        }
-    }
-    return time.Time{}, fmt.Errorf("unknown time format: %s", s)
+    return ""
 }
 
-func stripHTML(s string) string {
-    // Simple HTML tag removal
-    var buf bytes.Buffer
-    var inTag bool
-    for _, r := range s {
-        switch {
-        case r == '<':
-            inTag = true
-        case r == '>':
-            inTag = false
-        case !inTag:
-            buf.WriteRune(r)
-        }
+func getImage(item *gofeed.Item) string {
+    if item.Image != nil {
+        return item.Image.URL
     }
-    return strings.TrimSpace(buf.String())
+    return ""
 }
 ```
 
@@ -1071,7 +867,7 @@ func (r *NewsRepositoryImpl) ItemExistsByGUID(ctx context.Context, feedID int64,
 func (r *NewsRepositoryImpl) GetItemsByFeeds(ctx context.Context, feedIDs []int64, filter NewsFilter) ([]Item, error) {
     query := `SELECT id, feed_id, guid, title, link, description, content, author, category, image_url, published_at, created_at
               FROM news_items WHERE feed_id IN (` + placeholders(len(feedIDs)) + `)`
-    
+
     args := make([]any, 0, len(feedIDs)+1)
     for _, id := range feedIDs {
         args = append(args, id)
@@ -1189,7 +985,7 @@ type NewsTool struct {
 
 func NewNewsTool(db *storage.DB, cfg *config.NewsConfig) *NewsTool {
     newsRepo := storage.NewNewsRepository(db)
-    parser := news.NewCompositeParser()
+    parser := news.NewGofeedParser()
     fetcher := news.NewHTTPFetcher(30 * time.Second)
     logger := slog.Default()
 
@@ -1358,7 +1154,7 @@ func formatNewsItems(items []news.ItemWithScore, title string) string {
 
     var buf strings.Builder
     fmt.Fprintf(&buf, "%s (%d items)\n\n", title, len(items))
-    
+
     for i, iw := range items {
         fmt.Fprintf(&buf, "%d. %s\n", i+1, iw.Item.Title)
         if !iw.Read {
@@ -1371,7 +1167,7 @@ func formatNewsItems(items []news.ItemWithScore, title string) string {
         }
         buf.WriteByte('\n')
     }
-    
+
     return buf.String()
 }
 ```
@@ -1405,19 +1201,19 @@ DELETE /api/v1/subscriptions/:id     # отписаться
 ```yaml
 news:
   enabled: true
-  
+
   # Интервал автоматического обновления фидов
   fetch_interval_minutes: 30
-  
+
   # Максимальный возраст новостей для хранения
   max_item_age_days: 30
-  
+
   # Максимальное количество новостей на фид
   max_items_per_feed: 1000
-  
+
   # HTTP таймаут для получения фидов
   fetch_timeout_seconds: 30
-  
+
   # Предустановленные источники новостей
   feeds:
     # Tech news
@@ -1426,58 +1222,58 @@ news:
       category: "tech"
       language: "en"
       enabled: true
-    
+
     - url: "https://www.theverge.com/rss/index.xml"
       title: "The Verge"
       category: "tech"
       language: "en"
       enabled: true
-    
+
     - url: "https://feeds.arstechnica.com/arstechnica/index"
       title: "Ars Technica"
       category: "tech"
       language: "en"
       enabled: true
-    
+
     # Open Source / Dev
     - url: "https://lwn.net/headlines/newrss"
       title: "LWN.net"
       category: "opensource"
       language: "en"
       enabled: true
-    
+
     - url: "https://opensource.com/feeds"
       title: "Opensource.com"
       category: "opensource"
       language: "en"
       enabled: true
-    
+
     # Go
     - url: "https://go.dev/blog/feed.atom"
       title: "Go Blog"
       category: "golang"
       language: "en"
       enabled: true
-    
+
     - url: "https://blog.golang.org/feed.atom"
       title: "Go Blog (Old)"
       category: "golang"
       language: "en"
       enabled: true
-    
+
     # Russian news (опционально)
     - url: "https://habr.com/ru/rss/articles/?fl=ru"
       title: "Habr: Ru Articles"
       category: "tech"
       language: "ru"
       enabled: false
-    
+
     - url: "https://3dnews.ru/news/rss/"
       title: "3DNews"
       category: "tech"
       language: "ru"
       enabled: false
-  
+
   # Категории для discover
   categories:
     tech:
@@ -1489,7 +1285,7 @@ news:
     golang:
       name: "Go Programming"
       feeds: ["go-blog"]
-    
+
   # Настройки очистки
   cleanup:
     enabled: true
@@ -1672,7 +1468,7 @@ import "log/slog"
 
 func (m *NewsManager) FetchFeed(ctx context.Context, feedID int64) error {
     m.logger.Info("fetching feed", "feed_id", feedID)
-    
+
     feed, err := m.repo.GetFeed(ctx, feedID)
     if err != nil {
         m.logger.Error("get feed", "feed_id", feedID, "error", err)
@@ -1680,27 +1476,27 @@ func (m *NewsManager) FetchFeed(ctx context.Context, feedID int64) error {
     }
 
     m.logger.Debug("fetching from URL", "url", feed.URL)
-    
+
     data, err := m.fetcher.Fetch(ctx, feed.URL)
     if err != nil {
         feed.LastError = err.Error()
         m.repo.UpdateFeed(ctx, feed)
-        
-        m.logger.Error("fetch failed", 
-            "feed_id", feedID, 
-            "url", feed.URL, 
+
+        m.logger.Error("fetch failed",
+            "feed_id", feedID,
+            "url", feed.URL,
             "error", err,
         )
         return NewFetchError(err, feed.URL)
     }
 
     m.logger.Debug("parsing feed", "size", len(data), "type", feed.Type)
-    
+
     items, err := m.parser.Parse(data, feed.Type)
     if err != nil {
         feed.LastError = err.Error()
         m.repo.UpdateFeed(ctx, feed)
-        
+
         m.logger.Error("parse failed",
             "feed_id", feedID,
             "type", feed.Type,
@@ -1733,8 +1529,8 @@ func (m *NewsManager) FetchFeed(ctx context.Context, feedID int64) error {
         return err
     }
 
-    m.logger.Info("feed fetched successfully", 
-        "feed_id", feedID, 
+    m.logger.Info("feed fetched successfully",
+        "feed_id", feedID,
         "new_items", saved,
         "total_items", len(items),
     )
@@ -1784,7 +1580,7 @@ import (
     "testing"
 )
 
-func TestRSSParser(t *testing.T) {
+func TestGofeedParser(t *testing.T) {
     rssData := `<?xml version="1.0" encoding="UTF-8"?>
     <rss version="2.0">
         <channel>
@@ -1800,7 +1596,7 @@ func TestRSSParser(t *testing.T) {
         </channel>
     </rss>`
 
-    parser := &RSSParser{}
+    parser := NewGofeedParser()
     items, err := parser.Parse([]byte(rssData), FeedTypeRSS)
     
     if err != nil {
@@ -1820,7 +1616,7 @@ func TestRSSParser(t *testing.T) {
     }
 }
 
-func TestAtomParser(t *testing.T) {
+func TestGofeedParser_Atom(t *testing.T) {
     atomData := `<?xml version="1.0" encoding="UTF-8"?>
     <feed xmlns="http://www.w3.org/2005/Atom">
         <title>Test Feed</title>
@@ -1833,7 +1629,7 @@ func TestAtomParser(t *testing.T) {
         </entry>
     </feed>`
 
-    parser := &AtomParser{}
+    parser := NewGofeedParser()
     items, err := parser.Parse([]byte(atomData), FeedTypeAtom)
     
     if err != nil {
@@ -1845,7 +1641,7 @@ func TestAtomParser(t *testing.T) {
     }
 }
 
-func TestJSONFeedParser(t *testing.T) {
+func TestGofeedParser_JSONFeed(t *testing.T) {
     jsonData := `{
         "version": "https://jsonfeed.org/version/1",
         "title": "Test Feed",
@@ -1860,7 +1656,7 @@ func TestJSONFeedParser(t *testing.T) {
         ]
     }`
 
-    parser := &JSONFeedParser{}
+    parser := NewGofeedParser()
     items, err := parser.Parse([]byte(jsonData), FeedTypeJSON)
     
     if err != nil {
@@ -1907,7 +1703,7 @@ func (m *MockRepository) UpdateFeed(ctx context.Context, feed *Feed) error {
 
 func TestNewsManager_FetchFeed(t *testing.T) {
     ctx := context.Background()
-    
+
     mockRepo := &MockRepository{
         feeds: map[int64]*Feed{
             1: {
@@ -1917,14 +1713,14 @@ func TestNewsManager_FetchFeed(t *testing.T) {
             },
         },
     }
-    
+
     mockFetcher := &MockFetcher{
         data: []byte(`<?xml version="1.0"?><rss><channel><item><title>Test</title></item></channel></rss>`),
     }
-    
-    parser := NewCompositeParser()
+
+    parser := NewGofeedParser()
     manager := NewNewsManager(mockRepo, parser, mockFetcher, slog.Default())
-    
+
     err := manager.FetchFeed(ctx, 1)
     if err != nil {
         t.Fatalf("FetchFeed() error = %v", err)
@@ -1959,10 +1755,10 @@ func TestNewsRepository(t *testing.T) {
         t.Fatalf("Open() error = %v", err)
     }
     defer db.Close()
-    
+
     ctx := context.Background()
     repo := NewNewsRepository(db)
-    
+
     // Create feed
     feed := &Feed{
         URL:         "https://example.com/rss",
@@ -1973,12 +1769,12 @@ func TestNewsRepository(t *testing.T) {
         Language:    "en",
         Enabled:     true,
     }
-    
+
     feedID, err := repo.CreateFeed(ctx, feed)
     if err != nil {
         t.Fatalf("CreateFeed() error = %v", err)
     }
-    
+
     // Get feed
     fetched, err := repo.GetFeed(ctx, feedID)
     if err != nil {
@@ -1987,7 +1783,7 @@ func TestNewsRepository(t *testing.T) {
     if fetched.Title != "Test Feed" {
         t.Errorf("Expected title 'Test Feed', got '%s'", fetched.Title)
     }
-    
+
     // Create item
     item := &Item{
         FeedID:      feedID,
@@ -1996,12 +1792,12 @@ func TestNewsRepository(t *testing.T) {
         Link:        "https://example.com/item",
         PublishedAt: time.Now(),
     }
-    
+
     itemID, err := repo.CreateItem(ctx, item)
     if err != nil {
         t.Fatalf("CreateItem() error = %v", err)
     }
-    
+
     // Check exists
     exists, err := repo.ItemExistsByGUID(ctx, feedID, "test-guid")
     if err != nil {
@@ -2010,7 +1806,7 @@ func TestNewsRepository(t *testing.T) {
     if !exists {
         t.Error("Expected item to exist")
     }
-    
+
     // Duplicate should not create
     _, err = repo.CreateItem(ctx, item)
     if err != nil {
@@ -2029,7 +1825,7 @@ import (
     "context"
     "encoding/json"
     "testing"
-    
+
     "github.com/lllypuk/agent-shatrov/internal/config"
 )
 
@@ -2056,17 +1852,17 @@ func TestNewsTool_ParseArgs(t *testing.T) {
             wantErr: true,
         },
     }
-    
+
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
             var got newsArgs
             err := json.Unmarshal([]byte(tt.args), &got)
-            
+
             if (err != nil) != tt.wantErr {
                 t.Errorf("ParseArgs() error = %v, wantErr %v", err, tt.wantErr)
                 return
             }
-            
+
             if !tt.wantErr && got != tt.want {
                 t.Errorf("ParseArgs() = %+v, want %+v", got, tt.want)
             }
@@ -2081,11 +1877,11 @@ func TestNewsTool_ParseArgs(t *testing.T) {
 
 ### Этап 1: MVP (Mинимально жизнеспособный продукт)
 
-**Срок:** 1-2 недели  
+**Срок:** 1-2 недели
 **Приоритет:** P0 (критический)
 
 - [x] Базовые структуры данных (Feed, Item, Subscription)
-- [x] RSS/Atom парсер (CompositeParser)
+- [x] RSS/Atom/JSON Feed парсер (github.com/mmcdole/gofeed)
 - [x] HTTP Fetcher
 - [x] Миграции БД (таблицы feeds, items, subscriptions, read_status)
 - [x] NewsRepository (CRUD операции)
@@ -2105,7 +1901,7 @@ func TestNewsTool_ParseArgs(t *testing.T) {
 
 ### Этап 2: Улучшенный UX
 
-**Срок:** 1 неделя  
+**Срок:** 1 неделя
 **Приоритет:** P1 (высокий)
 
 - [ ] Команда `/unread` (только непрочитанные)
@@ -2121,11 +1917,9 @@ func TestNewsTool_ParseArgs(t *testing.T) {
 
 ### Этап 3: JSON Feed и кэширование
 
-**Срок:** 3-5 дней  
+**Срок:** 3-5 дней
 **Приоритет:** P2 (средний)
 
-- [ ] Поддержка JSON Feed (https://jsonfeed.org)
-- [ ] Опциональный Redis кэш для фидов
 - [ ] Извлечение изображений из новостей
 - [ ] Предпросмотр контента (og:tag, meta description)
 - [ ] Команда `/addfeed` (добавление произвольного RSS)
@@ -2134,7 +1928,7 @@ func TestNewsTool_ParseArgs(t *testing.T) {
 
 ### Этап 4: Планировщик и уведомления
 
-**Срок:** 1 неделя  
+**Срок:** 1 неделя
 **Приоритет:** P2 (средний)
 
 - [ ] Scheduler (горутины с time.Ticker)
@@ -2147,7 +1941,7 @@ func TestNewsTool_ParseArgs(t *testing.T) {
 
 ### Этап 5: Продвинутые фильтры и рекомендации
 
-**Срок:** 1-2 недели  
+**Срок:** 1-2 недели
 **Приоритет:** P3 (низкий)
 
 - [ ] Фильтрация по ключевым словам
@@ -2159,14 +1953,12 @@ func TestNewsTool_ParseArgs(t *testing.T) {
 
 ---
 
-### Этап 6: Мониторинг и аналитика
+### Этап 6: Улучшения пользовательского опыта
 
 **Срок:** 3-5 дней  
 **Приоритет:** P3 (низкий)
 
-- [ ] Метрики (Prometheus/StatsD)
 - [ ] Логи в отдельный файл (`data/news.log`)
-- [ ] Dashboard (Grafana или простой HTML)
 - [ ] Статистика использования (популярные фиды)
 - [ ] Оповещения о проблемных фидах
 
@@ -2174,7 +1966,7 @@ func TestNewsTool_ParseArgs(t *testing.T) {
 
 ### Этап 7: Оптимизация и масштабирование
 
-**Срок:** 1 неделя  
+**Срок:** 1 неделя
 **Приоритет:** P4 (будущее)
 
 - [ ] Горячее кэширование (sync.Map)
@@ -2194,7 +1986,7 @@ func TestNewsTool_ParseArgs(t *testing.T) {
     ↓                  ↓
 Этап 4 (Scheduler) ──┘
     ↓
-Этап 5 (Фильтры) ───→ Этап 6 (Мониторинг)
+Этап 5 (Фильтры) ───→ Этап 6 (Улучшения UX)
     ↓
 Этап 7 (Оптимизация)
 ```
@@ -2204,8 +1996,7 @@ func TestNewsTool_ParseArgs(t *testing.T) {
 1. **Этап 2** зависит от **Этапа 1** (базовая функциональность)
 2. **Этап 4** зависит от **Этапа 1** (NewsManager должен работать)
 3. **Этап 5** зависит от **Этапа 2** (структура новостей определена)
-4. **Этап 6** зависит от **Этапа 4** (есть что мониторить)
-5. **Этап 7** зависит от всех предыдущих (есть что оптимизировать)
+4. **Этап 7** зависит от всех предыдущих (есть что оптимизировать)
 
 **Параллельная разработка:**
 - Этап 2 и Этап 3 могут разрабатываться параллельно
@@ -2221,15 +2012,10 @@ require (
     github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
     github.com/mattn/go-sqlite3 v1.14.18
     gopkg.in/yaml.v3 v3.0.1
-    
-    // Новые зависимости для новостей
-    github.com/mmcdole/gofeed v1.2.1  // RSS/Atom парсер (опционально, можно свой)
-    github.com/redis/go-redis/v9 v9.4.0  // Redis кэш (опционально)
-    github.com/prometheus/client_golang v1.17.0  // Метрики (опционально)
-)
-```
 
-**Примечание:** `mmcdole/gofeed` можно не использовать, если реализовать собственный парсер (как описано в разделе 1.3).
+    // Новые зависимости для новостей
+    github.com/mmcdole/gofeed v1.2.1  // RSS/Atom/JSON Feed парсер
+)
 
 ---
 
@@ -2280,18 +2066,18 @@ Bot: ✓ Subscribed to "The Verge"
 ```yaml
 news:
   enabled: true
-  
+
   # Глобальные настройки
   fetch_interval_minutes: 30
   max_item_age_days: 30
-  
+
   # Фиды, доступные всем
   feeds:
     - url: "https://go.dev/blog/feed.atom"
       title: "Go Blog"
       category: "golang"
       enabled: true
-  
+
   # Персональные настройки (опционально)
   user_settings:
     123456789:  # chat_id
@@ -2305,7 +2091,7 @@ news:
 ## Чек-лист для завершения этапа 1 (MVP)
 
 - [ ] Созданы все структуры данных в `internal/news/`
-- [ ] Реализован `CompositeParser` с поддержкой RSS/Atom
+- [ ] Реализован `GofeedParser` на базе github.com/mmcdole/gofeed
 - [ ] Реализован `HTTPFetcher` с timeout
 - [ ] Миграции добавлены в `sqlite.go`
 - [ ] Реализован `NewsRepository` со всеми методами
@@ -2313,7 +2099,7 @@ news:
 - [ ] `NewsTool` интегрирован с Tool интерфейсом
 - [ ] Добавлены команды в Telegram бот (`/news`, `/feeds`, `/subscribe`, `/unsubscribe`)
 - [ ] Конфигурация `news:` добавлена в `config.yaml`
-- [ ] Написаны unit-тесты для Parser
+- [ ] Написаны unit-тесты для GofeedParser
 - [ ] Написаны unit-тесты для Repository
 - [ ] Написаны тесты для NewsTool
 - [ ] Пройдены `make lint` (без ошибок)
@@ -2323,5 +2109,5 @@ news:
 
 ---
 
-**Документ обновлён:** 2026-04-01  
+**Документ обновлён:** 2026-04-01
 **Версия:** 1.0
