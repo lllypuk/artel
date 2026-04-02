@@ -13,6 +13,7 @@ type Feed struct {
 	Language      string        `json:"language" db:"language"`
 	Enabled       bool          `json:"enabled" db:"enabled"`
 	ProxyURL      string        `json:"proxy_url,omitempty" db:"proxy_url"`
+	Tags          string        `json:"tags,omitempty" db:"tags"`
 	FetchInterval time.Duration `json:"fetch_interval" db:"fetch_interval"`
 	LastFetched   *time.Time    `json:"last_fetched,omitempty" db:"last_fetched"`
 	LastError     string        `json:"last_error,omitempty" db:"last_error"`

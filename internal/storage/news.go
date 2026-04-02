@@ -64,10 +64,10 @@ func NewNewsRepository(db *DB) NewsRepository {
 
 func (r *NewsRepositoryImpl) CreateFeed(ctx context.Context, feed *news.Feed) (int64, error) {
 	res, err := r.db.db.ExecContext(ctx,
-		`INSERT INTO news_feeds (url, title, description, type, category, language, enabled, proxy_url, fetch_interval_seconds)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO news_feeds (url, title, description, type, category, language, enabled, proxy_url, tags, fetch_interval_seconds)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		feed.URL, feed.Title, feed.Description, feed.Type, feed.Category, feed.Language,
-		boolToInt(feed.Enabled), feed.ProxyURL, feed.FetchIntervalSeconds(),
+		boolToInt(feed.Enabled), feed.ProxyURL, feed.Tags, feed.FetchIntervalSeconds(),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("create feed: %w", err)
@@ -81,14 +81,14 @@ func (r *NewsRepositoryImpl) GetFeed(ctx context.Context, id int64) (*news.Feed,
 	var fetchInterval int64
 
 	err := r.db.db.QueryRowContext(ctx,
-		`SELECT id, url, title, description, type, category, language, enabled, proxy_url,
+		`SELECT id, url, title, description, type, category, language, enabled, proxy_url, tags,
 				fetch_interval_seconds, last_fetched, last_error, created_at, updated_at
 		 FROM news_feeds WHERE id = ?`,
 		id,
 	).Scan(
 		&feed.ID, &feed.URL, &feed.Title, &feed.Description, &feed.Type,
 		&feed.Category, &feed.Language, &feed.Enabled, &feed.ProxyURL,
-		&fetchInterval, &lastFetched, &feed.LastError, &feed.CreatedAt, &feed.UpdatedAt,
+		&feed.Tags, &fetchInterval, &lastFetched, &feed.LastError, &feed.CreatedAt, &feed.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -109,14 +109,14 @@ func (r *NewsRepositoryImpl) GetFeedByURL(ctx context.Context, url string) (*new
 	var fetchInterval int64
 
 	err := r.db.db.QueryRowContext(ctx,
-		`SELECT id, url, title, description, type, category, language, enabled, proxy_url,
+		`SELECT id, url, title, description, type, category, language, enabled, proxy_url, tags,
 				fetch_interval_seconds, last_fetched, last_error, created_at, updated_at
 		 FROM news_feeds WHERE url = ?`,
 		url,
 	).Scan(
 		&feed.ID, &feed.URL, &feed.Title, &feed.Description, &feed.Type,
 		&feed.Category, &feed.Language, &feed.Enabled, &feed.ProxyURL,
-		&fetchInterval, &lastFetched, &feed.LastError, &feed.CreatedAt, &feed.UpdatedAt,
+		&feed.Tags, &fetchInterval, &lastFetched, &feed.LastError, &feed.CreatedAt, &feed.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -133,7 +133,7 @@ func (r *NewsRepositoryImpl) GetFeedByURL(ctx context.Context, url string) (*new
 
 func (r *NewsRepositoryImpl) GetEnabledFeeds(ctx context.Context) ([]news.Feed, error) {
 	rows, err := r.db.db.QueryContext(ctx,
-		`SELECT id, url, title, description, type, category, language, enabled, proxy_url,
+		`SELECT id, url, title, description, type, category, language, enabled, proxy_url, tags,
 				fetch_interval_seconds, last_fetched, last_error, created_at, updated_at
 		 FROM news_feeds WHERE enabled = 1`,
 	)
@@ -155,7 +155,7 @@ func (r *NewsRepositoryImpl) GetEnabledFeeds(ctx context.Context) ([]news.Feed, 
 		if err := rows.Scan(
 			&feed.ID, &feed.URL, &feed.Title, &feed.Description, &feed.Type,
 			&feed.Category, &feed.Language, &feed.Enabled, &feed.ProxyURL,
-			&fetchInterval, &lastFetched, &feed.LastError, &feed.CreatedAt, &feed.UpdatedAt,
+			&feed.Tags, &fetchInterval, &lastFetched, &feed.LastError, &feed.CreatedAt, &feed.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -172,11 +172,11 @@ func (r *NewsRepositoryImpl) UpdateFeed(ctx context.Context, feed *news.Feed) er
 	_, err := r.db.db.ExecContext(ctx,
 		`UPDATE news_feeds
 		 SET url = ?, title = ?, description = ?, type = ?, category = ?,
-		     language = ?, enabled = ?, proxy_url = ?, fetch_interval_seconds = ?,
+		     language = ?, enabled = ?, proxy_url = ?, tags = ?, fetch_interval_seconds = ?,
 		     last_fetched = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP
 		 WHERE id = ?`,
 		feed.URL, feed.Title, feed.Description, feed.Type, feed.Category,
-		feed.Language, boolToInt(feed.Enabled), feed.ProxyURL, feed.FetchIntervalSeconds(),
+		feed.Language, boolToInt(feed.Enabled), feed.ProxyURL, feed.Tags, feed.FetchIntervalSeconds(),
 		feed.LastFetched, feed.LastError, feed.ID,
 	)
 	return err
@@ -189,7 +189,7 @@ func (r *NewsRepositoryImpl) DeleteFeed(ctx context.Context, id int64) error {
 
 func (r *NewsRepositoryImpl) ListFeeds(ctx context.Context, limit, offset int) ([]news.Feed, error) {
 	rows, err := r.db.db.QueryContext(ctx,
-		`SELECT id, url, title, description, type, category, language, enabled, proxy_url,
+		`SELECT id, url, title, description, type, category, language, enabled, proxy_url, tags,
 				fetch_interval_seconds, last_fetched, last_error, created_at, updated_at
 		 FROM news_feeds ORDER BY title LIMIT ? OFFSET ?`,
 		limit, offset,
@@ -212,7 +212,7 @@ func (r *NewsRepositoryImpl) ListFeeds(ctx context.Context, limit, offset int) (
 		if err := rows.Scan(
 			&feed.ID, &feed.URL, &feed.Title, &feed.Description, &feed.Type,
 			&feed.Category, &feed.Language, &feed.Enabled, &feed.ProxyURL,
-			&fetchInterval, &lastFetched, &feed.LastError, &feed.CreatedAt, &feed.UpdatedAt,
+			&feed.Tags, &fetchInterval, &lastFetched, &feed.LastError, &feed.CreatedAt, &feed.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

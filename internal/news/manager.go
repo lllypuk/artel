@@ -271,6 +271,19 @@ func (m *NewsManager) ListFeeds(ctx context.Context, limit, offset int) ([]Feed,
 	return m.repo.ListFeeds(ctx, limit, offset)
 }
 
+// UpdateFeedTags updates the tags of a feed.
+func (m *NewsManager) UpdateFeedTags(ctx context.Context, feedID int64, tags string) error {
+	feed, err := m.repo.GetFeed(ctx, feedID)
+	if err != nil {
+		return fmt.Errorf("get feed: %w", err)
+	}
+	if feed == nil {
+		return NewFeedNotFoundError(feedID)
+	}
+	feed.Tags = tags
+	return m.repo.UpdateFeed(ctx, feed)
+}
+
 // AddFeed adds a new feed.
 func (m *NewsManager) AddFeed(ctx context.Context, url, feedTypeStr string) (*Feed, error) {
 	// Check if already exists

@@ -93,6 +93,7 @@ func (s *DB) migrate(ctx context.Context) error {
 			language TEXT DEFAULT 'en',
 			enabled INTEGER DEFAULT 1,
 			proxy_url TEXT DEFAULT '',
+			tags TEXT DEFAULT '',
 			fetch_interval_seconds INTEGER DEFAULT 3600,
 			last_fetched DATETIME,
 			last_error TEXT DEFAULT '',
@@ -163,6 +164,7 @@ func (s *DB) migrate(ctx context.Context) error {
 	// Additive column migrations — tolerate "duplicate column" errors from older DBs.
 	additiveMigrations := []string{
 		`ALTER TABLE news_feeds ADD COLUMN proxy_url TEXT DEFAULT ''`,
+		`ALTER TABLE news_feeds ADD COLUMN tags TEXT DEFAULT ''`,
 	}
 	for _, m := range additiveMigrations {
 		_, _ = s.db.ExecContext(ctx, m) // ignore error if column already exists
