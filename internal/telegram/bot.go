@@ -150,6 +150,26 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 	}
 }
 
+const helpText = "\U0001F916 *Agent Shatrov*\n\n" +
+	"Просто напиши что нужно — агент сам выберет инструмент.\n\n" +
+	"*Диалог:*\n" +
+	"/new — начать новый диалог (сброс контекста)\n" +
+	"/help — эта справка\n\n" +
+	"*Новости:*\n" +
+	"/news [запрос] — последние новости (или поиск по запросу)\n" +
+	"/unread — непрочитанные новости\n" +
+	"/saved — сохранённые новости\n" +
+	"/feeds — список подписок\n" +
+	"/discover [категория] — найти фиды для подписки\n" +
+	"/subscribe <ID> — подписаться на фид\n" +
+	"/unsubscribe <ID> — отписаться от фида\n\n" +
+	"*Что умеет агент (через чат):*\n" +
+	"\U0001F4DD Заметки — создать, найти, прочитать, редактировать, удалить\n" +
+	"\U0001F50D Поиск в интернете (Brave / Serper / DuckDuckGo)\n" +
+	"\U0001F310 Чтение веб-страниц\n" +
+	"\U0001F6E0 Изменение собственного кода через pi_coder\n" +
+	"\U0001F4C3 Новости — подписки на фиды, чтение, поиск"
+
 func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 	parts := strings.Fields(text)
 	cmd := parts[0]
@@ -157,9 +177,9 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 	switch cmd {
 	case "/start":
 		b.sendText(chatID, "👋 Привет! Я твой персональный AI-агент.\n\n"+
-			"/help — справка\n"+
-			"/news — последние новости\n"+
-			"/new — новый диалог")
+			"Просто напиши что нужно — найду, запомню, выполню.\n\n"+
+			"/help — полная справка\n"+
+			"/new — начать новый диалог")
 	case "/new":
 		if err := b.agent.NewConversation(ctx, chatID); err != nil {
 			b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
@@ -167,19 +187,7 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 		}
 		b.sendText(chatID, "🆕 Новый диалог начат.")
 	case "/help":
-		b.sendText(chatID, "🤖 *Agent Shatrov*\n\n"+
-			"Просто пиши мне сообщения — я отвечу.\n\n"+
-			"*Основные команды:*\n"+
-			"/new — начать новый диалог\n"+
-			"/help — эта справка\n\n"+
-			"*Новости:*\n"+
-			"/news [запрос] — новости (или поиск)\n"+
-			"/unread — непрочитанные\n"+
-			"/saved — сохранённые\n"+
-			"/feeds — список фидов\n"+
-			"/discover [категория] — найти фиды\n"+
-			"/subscribe <ID> — подписаться\n"+
-			"/unsubscribe <ID> — отписаться\n")
+		b.sendText(chatID, helpText)
 
 	// --- News commands ---
 	case "/news", "/unread", "/saved", "/feeds", "/discover", "/subscribe", "/unsubscribe":
@@ -196,6 +204,9 @@ func (b *Bot) handleNewsCommand(ctx context.Context, chatID int64, cmd string, p
 		return
 	}
 
+	toolCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	var result string
 	var err error
 
@@ -203,20 +214,20 @@ func (b *Bot) handleNewsCommand(ctx context.Context, chatID int64, cmd string, p
 	case "/news":
 		if len(parts) > 1 {
 			query := strings.Join(parts[1:], " ")
-			result, err = b.newsTool.SearchNews(b.ctxWithTimeout(), chatID, query, 10, 0)
+			result, err = b.newsTool.SearchNews(toolCtx, chatID, query, 10, 0)
 		} else {
-			result, err = b.newsTool.ListNews(b.ctxWithTimeout(), chatID, 10, 0)
+			result, err = b.newsTool.ListNews(toolCtx, chatID, 10, 0)
 		}
 	case "/unread":
-		result, err = b.newsTool.UnreadNews(b.ctxWithTimeout(), chatID, 10, 0)
+		result, err = b.newsTool.UnreadNews(toolCtx, chatID, 10, 0)
 	case "/saved":
-		result, err = b.newsTool.SavedNews(b.ctxWithTimeout(), chatID, 10, 0)
+		result, err = b.newsTool.SavedNews(toolCtx, chatID, 10, 0)
 	case "/feeds", "/discover":
 		category := ""
 		if len(parts) > 1 {
 			category = parts[1]
 		}
-		result, err = b.newsTool.DiscoverFeeds(b.ctxWithTimeout(), category)
+		result, err = b.newsTool.DiscoverFeeds(toolCtx, category)
 	case "/subscribe":
 		if len(parts) < 2 {
 			b.sendText(chatID, "Использование: /subscribe <feed_id>")
@@ -227,7 +238,7 @@ func (b *Bot) handleNewsCommand(ctx context.Context, chatID int64, cmd string, p
 			b.sendText(chatID, "❌ Неверный ID фида.")
 			return
 		}
-		result, err = b.newsTool.Subscribe(b.ctxWithTimeout(), chatID, feedID)
+		result, err = b.newsTool.Subscribe(toolCtx, chatID, feedID)
 	case "/unsubscribe":
 		if len(parts) < 2 {
 			b.sendText(chatID, "Использование: /unsubscribe <feed_id>")
@@ -238,7 +249,7 @@ func (b *Bot) handleNewsCommand(ctx context.Context, chatID int64, cmd string, p
 			b.sendText(chatID, "❌ Неверный ID фида.")
 			return
 		}
-		result, err = b.newsTool.Unsubscribe(b.ctxWithTimeout(), chatID, feedID)
+		result, err = b.newsTool.Unsubscribe(toolCtx, chatID, feedID)
 	}
 
 	if err != nil {
@@ -246,12 +257,6 @@ func (b *Bot) handleNewsCommand(ctx context.Context, chatID int64, cmd string, p
 		return
 	}
 	b.sendLongText(chatID, result)
-}
-
-// ctxWithTimeout returns a background context with a 30s timeout for direct tool calls.
-func (b *Bot) ctxWithTimeout() context.Context {
-	ctx, _ := context.WithTimeout(context.Background(), 30*time.Second) //nolint:govet
-	return ctx
 }
 
 func (b *Bot) sendText(chatID int64, text string) {

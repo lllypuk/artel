@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -11,8 +12,9 @@ import (
 
 // DB wraps the SQLite database.
 type DB struct {
-	db     *sql.DB
-	hasFTS bool // true if FTS5 virtual table was created successfully
+	db          *sql.DB
+	hasFTS      bool // true if FTS5 virtual table for news was created successfully
+	hasNotesFTS bool // true if FTS5 virtual table for notes was created successfully
 }
 
 // Open creates or opens the SQLite database and runs migrations.
@@ -38,9 +40,14 @@ func (s *DB) Close() error {
 	return s.db.Close()
 }
 
-// HasFTS returns true if FTS5 full-text search is available.
+// HasFTS returns true if FTS5 full-text search for news is available.
 func (s *DB) HasFTS() bool {
 	return s.hasFTS
+}
+
+// HasNotesFTS returns true if FTS5 full-text search for notes is available.
+func (s *DB) HasNotesFTS() bool {
+	return s.hasNotesFTS
 }
 
 func (s *DB) migrate(ctx context.Context) error {
@@ -159,6 +166,46 @@ func (s *DB) migrate(ctx context.Context) error {
 	}
 	for _, m := range additiveMigrations {
 		_, _ = s.db.ExecContext(ctx, m) // ignore error if column already exists
+	}
+
+	// Notes FTS5 (optional)
+	notesFTS5Table := `CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+		title, content, tags,
+		tokenize='porter unicode61'
+	)`
+	notesFTS5Triggers := []string{
+		`CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+			INSERT INTO notes_fts(rowid, title, content, tags)
+			VALUES (new.id, new.title, new.content, new.tags);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+			INSERT INTO notes_fts(notes_fts, rowid, title, content, tags)
+			VALUES ('delete', old.id, old.title, old.content, old.tags);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+			INSERT INTO notes_fts(notes_fts, rowid, title, content, tags)
+			VALUES ('delete', old.id, old.title, old.content, old.tags);
+			INSERT INTO notes_fts(rowid, title, content, tags)
+			VALUES (new.id, new.title, new.content, new.tags);
+		END`,
+	}
+	if _, err := s.db.ExecContext(ctx, notesFTS5Table); err == nil {
+		for _, trigger := range notesFTS5Triggers {
+			_, _ = s.db.ExecContext(ctx, trigger)
+		}
+		// Populate FTS index for notes that existed before FTS was added.
+		var ftsCount, notesCount int
+		_ = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM notes_fts").Scan(&ftsCount)
+		_ = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM notes").Scan(&notesCount)
+		if ftsCount == 0 && notesCount > 0 {
+			_, _ = s.db.ExecContext(ctx,
+				"INSERT INTO notes_fts(rowid, title, content, tags) SELECT id, title, content, tags FROM notes")
+		}
+		s.hasNotesFTS = true
+	} else {
+		for _, name := range []string{"notes_ai", "notes_ad", "notes_au"} {
+			_, _ = s.db.ExecContext(ctx, "DROP TRIGGER IF EXISTS "+name)
+		}
 	}
 
 	// Execute FTS5 migrations (optional - may fail if FTS5 not compiled in)
@@ -310,7 +357,17 @@ func (s *DB) CreateNote(ctx context.Context, chatID int64, title, content, tags 
 }
 
 // SearchNotes searches notes by content or tags.
+// Uses FTS5 full-text search when available and query is non-empty;
+// falls back to LIKE for empty queries or when FTS5 is not compiled in.
 func (s *DB) SearchNotes(ctx context.Context, chatID int64, query string) ([]Note, error) {
+	if query != "" && s.hasNotesFTS {
+		return s.searchNotesFTS(ctx, chatID, query)
+	}
+	return s.searchNotesLike(ctx, chatID, query)
+}
+
+// searchNotesLike performs a basic LIKE search (fallback).
+func (s *DB) searchNotesLike(ctx context.Context, chatID int64, query string) ([]Note, error) {
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT id, chat_id, title, content, tags, created_at, updated_at FROM notes WHERE chat_id = ? AND (title LIKE ? OR content LIKE ? OR tags LIKE ?) ORDER BY updated_at DESC",
 		chatID, "%"+query+"%", "%"+query+"%", "%"+query+"%",
@@ -329,4 +386,99 @@ func (s *DB) SearchNotes(ctx context.Context, chatID int64, query string) ([]Not
 		notes = append(notes, n)
 	}
 	return notes, rows.Err()
+}
+
+// searchNotesFTS performs FTS5 full-text search ordered by relevance.
+func (s *DB) searchNotesFTS(ctx context.Context, chatID int64, query string) ([]Note, error) {
+	ftsQuery := buildFTSQuery(query)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT n.id, n.chat_id, n.title, n.content, n.tags, n.created_at, n.updated_at
+		 FROM notes_fts
+		 JOIN notes n ON n.id = notes_fts.rowid
+		 WHERE n.chat_id = ? AND notes_fts MATCH ?
+		 ORDER BY notes_fts.rank
+		 LIMIT 50`,
+		chatID, ftsQuery,
+	)
+	if err != nil {
+		// FTS query can fail on malformed input — fall back to LIKE
+		return s.searchNotesLike(ctx, chatID, query)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	var notes []Note
+	for rows.Next() {
+		var n Note
+		if err := rows.Scan(&n.ID, &n.ChatID, &n.Title, &n.Content, &n.Tags, &n.CreatedAt, &n.UpdatedAt); err != nil {
+			return nil, err
+		}
+		notes = append(notes, n)
+	}
+	return notes, rows.Err()
+}
+
+// buildFTSQuery converts a plain-text search string into a safe FTS5 query.
+// Each word is double-quoted to prevent injection of FTS5 operators.
+func buildFTSQuery(q string) string {
+	words := strings.Fields(q)
+	if len(words) == 0 {
+		return ""
+	}
+	quoted := make([]string, 0, len(words))
+	for _, w := range words {
+		w = strings.ReplaceAll(w, `"`, `""`)
+		quoted = append(quoted, `"`+w+`"`)
+	}
+	return strings.Join(quoted, " ")
+}
+
+// UpdateNote updates title, content and tags of an existing note.
+func (s *DB) UpdateNote(ctx context.Context, id, chatID int64, title, content, tags string) error {
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE notes SET title=?, content=?, tags=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND chat_id=?",
+		title, content, tags, id, chatID,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("note %d not found or access denied", id)
+	}
+	return nil
+}
+
+// DeleteNote deletes a note by id (only if it belongs to chatID).
+func (s *DB) DeleteNote(ctx context.Context, id, chatID int64) error {
+	res, err := s.db.ExecContext(ctx,
+		"DELETE FROM notes WHERE id=? AND chat_id=?",
+		id, chatID,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("note %d not found or access denied", id)
+	}
+	return nil
+}
+
+// GetNote returns a single note by id.
+func (s *DB) GetNote(ctx context.Context, id, chatID int64) (*Note, error) {
+	var n Note
+	err := s.db.QueryRowContext(ctx,
+		"SELECT id, chat_id, title, content, tags, created_at, updated_at FROM notes WHERE id=? AND chat_id=?",
+		id, chatID,
+	).Scan(&n.ID, &n.ChatID, &n.Title, &n.Content, &n.Tags, &n.CreatedAt, &n.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("note %d not found", id)
+	}
+	return &n, err
 }
