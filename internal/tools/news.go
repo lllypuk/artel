@@ -54,7 +54,7 @@ func (n *NewsTool) Parameters() map[string]any {
 			},
 			"chat_id": map[string]any{
 				"type":        "integer",
-				"description": "User chat ID",
+				"description": "User chat ID (optional, taken from context automatically)",
 			},
 			"query": map[string]any{
 				"type":        "string",
@@ -85,7 +85,7 @@ func (n *NewsTool) Parameters() map[string]any {
 				"description": "Category filter (for discover/list)",
 			},
 		},
-		"required": []string{"action", "chat_id"},
+		"required": []string{"action"},
 	}
 }
 
@@ -94,6 +94,13 @@ func (n *NewsTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	var a newsArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "", fmt.Errorf("parse args: %w", err)
+	}
+
+	// Use chatID from context if not provided in args
+	if a.ChatID == 0 {
+		if chatID, ok := ctx.Value(ChatIDKey).(int64); ok {
+			a.ChatID = chatID
+		}
 	}
 
 	if a.Limit == 0 {

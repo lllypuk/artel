@@ -83,6 +83,13 @@ func (n *NotesTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 		return "", fmt.Errorf("parse args: %w", err)
 	}
 
+	// Use chatID from context if not provided in args
+	if a.ChatID == 0 {
+		if chatID, ok := ctx.Value(ChatIDKey).(int64); ok {
+			a.ChatID = chatID
+		}
+	}
+
 	switch a.Action {
 	case "create":
 		return n.executeCreate(ctx, a)

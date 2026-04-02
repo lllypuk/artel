@@ -149,18 +149,18 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 	}
 }
 
-const helpText = "\U0001F916 *Agent Shatrov*\n\n" +
+const helpText = "\U0001F916 <b>Agent Shatrov</b>\n\n" +
 	"Просто напиши что нужно — агент сам выберет инструмент.\n\n" +
-	"*Диалог:*\n" +
+	"<b>Диалог:</b>\n" +
 	"/new — начать новый диалог (сброс контекста)\n" +
 	"/model — показать / сменить модель LLM\n" +
 	"/help — эта справка\n\n" +
-	"*Новости:*\n" +
+	"<b>Новости:</b>\n" +
 	"/news [запрос] — последние новости (или поиск по запросу)\n" +
 	"/unread — непрочитанные новости\n" +
 	"/saved — сохранённые новости\n" +
 	"/feeds — список подписок\n\n" +
-	"*Что умеет агент (через чат):*\n" +
+	"<b>Что умеет агент (через чат):</b>\n" +
 	"\U0001F4DD Заметки — создать, найти, прочитать, редактировать, удалить\n" +
 	"\U0001F50D Поиск в интернете (Brave / Serper / DuckDuckGo)\n" +
 	"\U0001F310 Чтение веб-страниц\n" +
@@ -186,7 +186,7 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 	case "/model":
 		b.handleModelCommand(chatID, parts)
 	case "/help":
-		b.sendText(chatID, helpText)
+		b.sendHTML(chatID, helpText)
 
 	// --- News commands ---
 	case "/news", "/unread", "/saved", "/feeds":
@@ -204,7 +204,7 @@ func (b *Bot) handleModelCommand(chatID int64, parts []string) {
 	if len(parts) == 1 {
 		// Show current model and available aliases
 		var lines strings.Builder
-		fmt.Fprintf(&lines, "🤖 Текущая модель: `%s`", current)
+		fmt.Fprintf(&lines, "🤖 Текущая модель: <code>%s</code>", escapeHTML(current))
 		if len(models) > 0 {
 			lines.WriteString("\n\nДоступные алиасы:")
 			for alias, name := range models {
@@ -212,11 +212,11 @@ func (b *Bot) handleModelCommand(chatID int64, parts []string) {
 				if name == current {
 					marker = " ✔️"
 				}
-				fmt.Fprintf(&lines, "\n• `%s` → %s%s", alias, name, marker)
+				fmt.Fprintf(&lines, "\n• <code>%s</code> → %s%s", escapeHTML(alias), escapeHTML(name), marker)
 			}
-			lines.WriteString("\n\nИспользование: `/model fast` или `/model default`")
+			lines.WriteString("\n\nИспользование: <code>/model fast</code> или <code>/model default</code>")
 		}
-		b.sendText(chatID, lines.String())
+		b.sendHTML(chatID, lines.String())
 		return
 	}
 
@@ -227,7 +227,7 @@ func (b *Bot) handleModelCommand(chatID int64, parts []string) {
 		modelName = alias
 	}
 	b.agent.SetModel(modelName)
-	b.sendText(chatID, fmt.Sprintf("✅ Модель переключена: `%s`", modelName))
+	b.sendHTML(chatID, fmt.Sprintf("✅ Модель переключена: <code>%s</code>", escapeHTML(modelName)))
 
 	b.logger.Info("model switched", "chat_id", chatID, "model", modelName)
 }
@@ -268,10 +268,15 @@ func (b *Bot) handleNewsCommand(ctx context.Context, chatID int64, cmd string, p
 }
 
 func (b *Bot) sendText(chatID int64, text string) {
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ParseMode = "Markdown"
+	b.sendHTML(chatID, markdownToHTML(text))
+}
+
+func (b *Bot) sendHTML(chatID int64, html string) {
+	msg := tgbotapi.NewMessage(chatID, html)
+	msg.ParseMode = "HTML"
 	if _, err := b.api.Send(msg); err != nil {
-		// Retry without markdown if parsing fails
+		// Retry as plain text if HTML parsing fails
+		msg.Text = html
 		msg.ParseMode = ""
 		_, _ = b.api.Send(msg)
 	}
