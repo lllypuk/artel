@@ -166,10 +166,10 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 - [x] Безопасный shell (whitelist, blocked patterns, sandbox, таймаут)
 - [x] Поиск в интернете (Brave / Serper / DuckDuckGo) + чтение страниц
 - [x] Самообновление через `pi_coder` — агент изменяет и пересобирает собственный код
+- [x] Агрегация новостей (RSS/Atom/JSON Feed) — подписки, чтение, поиск, избранное
 
 ## Планируемые функции
 
-- [ ] News aggregation (RSS)
 - [ ] Полнотекстовый поиск заметок (SQLite FTS5)
 - [ ] Редактирование и удаление заметок
 - [ ] Переключение модели через Telegram (`/model fast`)

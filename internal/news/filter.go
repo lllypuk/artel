@@ -4,6 +4,7 @@ import "time"
 
 // NewsFilter specifies filters for querying news items.
 type NewsFilter struct {
+	ChatID      int64 // Required for UnreadOnly/SavedOnly filtering
 	Limit       int
 	Offset      int
 	Category    string

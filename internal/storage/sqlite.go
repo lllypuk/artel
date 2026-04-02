@@ -11,7 +11,8 @@ import (
 
 // DB wraps the SQLite database.
 type DB struct {
-	db *sql.DB
+	db     *sql.DB
+	hasFTS bool // true if FTS5 virtual table was created successfully
 }
 
 // Open creates or opens the SQLite database and runs migrations.
@@ -35,6 +36,11 @@ func Open(path string) (*DB, error) {
 // Close closes the database.
 func (s *DB) Close() error {
 	return s.db.Close()
+}
+
+// HasFTS returns true if FTS5 full-text search is available.
+func (s *DB) HasFTS() bool {
+	return s.hasFTS
 }
 
 func (s *DB) migrate(ctx context.Context) error {
@@ -139,14 +145,21 @@ func (s *DB) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_news_read_status_saved ON news_read_status(saved) WHERE saved = 1`,
 	}
 
-	// FTS5 migrations (optional - may fail if FTS5 not compiled in)
-	fts5Migrations := []string{
-		`CREATE VIRTUAL TABLE IF NOT EXISTS news_items_fts USING fts5(
-			title, content, description,
-			content_rowid=rowid,
-			tokenize='porter unicode61'
-		) -- #nosec G201 - FTS5 table creation, safe structure`,
-		// Triggers for FTS (if FTS5 is available)
+	// Execute core migrations (required)
+	for _, m := range coreMigrations {
+		if _, err := s.db.ExecContext(ctx, m); err != nil {
+			return fmt.Errorf("exec migration: %w", err)
+		}
+	}
+
+	// Execute FTS5 migrations (optional - may fail if FTS5 not compiled in)
+	fts5Table := `CREATE VIRTUAL TABLE IF NOT EXISTS news_items_fts USING fts5(
+		title, content, description,
+		content_rowid=rowid,
+		tokenize='porter unicode61'
+	)`
+
+	fts5Triggers := []string{
 		`CREATE TRIGGER IF NOT EXISTS news_items_ai AFTER INSERT ON news_items BEGIN
 			INSERT INTO news_items_fts(rowid, title, content, description)
 			VALUES (new.id, new.title, new.content, new.description);
@@ -163,17 +176,18 @@ func (s *DB) migrate(ctx context.Context) error {
 		END`,
 	}
 
-	// Execute core migrations (required)
-	for _, m := range coreMigrations {
-		if _, err := s.db.ExecContext(ctx, m); err != nil {
-			return fmt.Errorf("exec migration: %w", err)
+	// Try to create FTS5 virtual table first.
+	// Only create triggers if the table was created successfully.
+	if _, err := s.db.ExecContext(ctx, fts5Table); err == nil {
+		for _, trigger := range fts5Triggers {
+			_, _ = s.db.ExecContext(ctx, trigger)
 		}
-	}
-
-	// Execute FTS5 migrations (optional - may fail if FTS5 not compiled in)
-	for _, m := range fts5Migrations {
-		if _, err := s.db.ExecContext(ctx, m); err != nil {
-			_ = err // FTS5 may not be available, ignore error
+		s.hasFTS = true
+	} else {
+		// FTS5 not available — drop any stale triggers that might reference
+		// a non-existent news_items_fts table (left from a previous run).
+		for _, name := range []string{"news_items_ai", "news_items_ad", "news_items_au"} {
+			_, _ = s.db.ExecContext(ctx, "DROP TRIGGER IF EXISTS "+name)
 		}
 	}
 	return nil

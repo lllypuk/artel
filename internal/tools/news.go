@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/lllypuk/agent-shatrov/internal/news"
 )
@@ -27,6 +28,7 @@ type newsArgs struct {
 	URL      string `json:"url"`
 	ItemID   int64  `json:"item_id"`
 	Limit    int    `json:"limit"`
+	Offset   int    `json:"offset"`
 	Category string `json:"category"`
 }
 
@@ -37,7 +39,7 @@ func (n *NewsTool) Name() string {
 
 // Description returns the tool description.
 func (n *NewsTool) Description() string {
-	return "Manage news subscriptions and read articles. Actions: list (show news), search (search by query), unread (unread news), saved (saved articles), subscribe (to feed), unsubscribe (from feed), discover (find feeds), addfeed (add custom RSS), markread (mark as read), save (save to favorites), unsave (remove from favorites)."
+	return "Manage news subscriptions and read articles. Actions: list (show news), search (search by query), unread (unread news), saved (saved articles), subscribe (to feed), unsubscribe (from feed), discover (find feeds by category), addfeed (add custom RSS), markread (mark as read), save (save to favorites), unsave (remove from favorites)."
 }
 
 // Parameters returns the JSON Schema for parameters.
@@ -72,11 +74,15 @@ func (n *NewsTool) Parameters() map[string]any {
 			},
 			"limit": map[string]any{
 				"type":        "integer",
-				"description": "Number of results (default: 10)",
+				"description": "Number of results (default: 10, max: 50)",
+			},
+			"offset": map[string]any{
+				"type":        "integer",
+				"description": "Pagination offset (default: 0)",
 			},
 			"category": map[string]any{
 				"type":        "string",
-				"description": "Category filter (for discover)",
+				"description": "Category filter (for discover/list)",
 			},
 		},
 		"required": []string{"action", "chat_id"},
@@ -93,144 +99,149 @@ func (n *NewsTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	if a.Limit == 0 {
 		a.Limit = 10
 	}
+	if a.Limit > 50 {
+		a.Limit = 50
+	}
 
 	switch a.Action {
 	case "list":
-		return n.listNews(ctx, a.ChatID, a.Limit)
-
+		return n.ListNews(ctx, a.ChatID, a.Limit, a.Offset)
 	case "search":
-		return n.searchNews(ctx, a.ChatID, a.Query, a.Limit)
-
+		return n.SearchNews(ctx, a.ChatID, a.Query, a.Limit, a.Offset)
 	case "unread":
-		return n.unreadNews(ctx, a.ChatID, a.Limit)
-
+		return n.UnreadNews(ctx, a.ChatID, a.Limit, a.Offset)
 	case "saved":
-		return n.savedNews(ctx, a.ChatID, a.Limit)
-
+		return n.SavedNews(ctx, a.ChatID, a.Limit, a.Offset)
 	case "subscribe":
-		return n.subscribe(ctx, a.ChatID, a.FeedID)
-
+		return n.Subscribe(ctx, a.ChatID, a.FeedID)
 	case "unsubscribe":
-		return n.unsubscribe(ctx, a.ChatID, a.FeedID)
-
+		return n.Unsubscribe(ctx, a.ChatID, a.FeedID)
 	case "discover":
-		return n.discoverFeeds(ctx, a.Category)
-
+		return n.DiscoverFeeds(ctx, a.Category)
 	case "addfeed":
-		return n.addFeed(ctx, a.ChatID, a.URL)
-
+		return n.AddFeed(ctx, a.ChatID, a.URL)
 	case "markread":
-		return n.markRead(ctx, a.ChatID, a.ItemID)
-
+		return n.MarkRead(ctx, a.ChatID, a.ItemID)
 	case "save":
-		return n.saveItem(ctx, a.ChatID, a.ItemID)
-
+		return n.SaveItem(ctx, a.ChatID, a.ItemID)
 	case "unsave":
-		return n.unsaveItem(ctx, a.ChatID, a.ItemID)
-
+		return n.UnsaveItem(ctx, a.ChatID, a.ItemID)
 	default:
 		return "", fmt.Errorf("unknown action: %s", a.Action)
 	}
 }
 
-func (n *NewsTool) listNews(ctx context.Context, chatID int64, limit int) (string, error) {
-	filter := news.NewsFilter{Limit: limit}
+// ListNews returns the latest news for a user.
+func (n *NewsTool) ListNews(ctx context.Context, chatID int64, limit, offset int) (string, error) {
+	filter := news.NewsFilter{Limit: limit, Offset: offset}
 	items, err := n.manager.GetNews(ctx, chatID, filter)
 	if err != nil {
 		return "", fmt.Errorf("get news: %w", err)
 	}
-	return formatNewsItems(items, "Latest news"), nil
+	return formatNewsItems(items, "📰 Последние новости", limit, offset), nil
 }
 
-func (n *NewsTool) searchNews(ctx context.Context, chatID int64, query string, limit int) (string, error) {
-	filter := news.NewsFilter{Limit: limit, SearchQuery: query}
+// SearchNews searches news by query.
+func (n *NewsTool) SearchNews(ctx context.Context, chatID int64, query string, limit, offset int) (string, error) {
+	filter := news.NewsFilter{Limit: limit, Offset: offset, SearchQuery: query}
 	items, err := n.manager.GetNews(ctx, chatID, filter)
 	if err != nil {
 		return "", fmt.Errorf("search news: %w", err)
 	}
-	return formatNewsItems(items, fmt.Sprintf("Search: %s", query)), nil
+	return formatNewsItems(items, fmt.Sprintf("🔍 Поиск: %s", query), limit, offset), nil
 }
 
-func (n *NewsTool) unreadNews(ctx context.Context, chatID int64, limit int) (string, error) {
-	filter := news.NewsFilter{Limit: limit}
+// UnreadNews returns unread news for a user.
+func (n *NewsTool) UnreadNews(ctx context.Context, chatID int64, limit, offset int) (string, error) {
+	filter := news.NewsFilter{Limit: limit, Offset: offset, UnreadOnly: true}
 	items, err := n.manager.GetNews(ctx, chatID, filter)
 	if err != nil {
 		return "", fmt.Errorf("get unread: %w", err)
 	}
-
-	// Filter only unread
-	var unread []news.ItemWithScore
-	for _, item := range items {
-		if !item.Read {
-			unread = append(unread, item)
-		}
-	}
-
-	return formatNewsItems(unread, "Unread news"), nil
+	return formatNewsItems(items, "🆕 Непрочитанные новости", limit, offset), nil
 }
 
-func (n *NewsTool) savedNews(ctx context.Context, chatID int64, limit int) (string, error) {
-	filter := news.NewsFilter{Limit: limit}
+// SavedNews returns saved articles for a user.
+func (n *NewsTool) SavedNews(ctx context.Context, chatID int64, limit, offset int) (string, error) {
+	filter := news.NewsFilter{Limit: limit, Offset: offset, SavedOnly: true}
 	items, err := n.manager.GetNews(ctx, chatID, filter)
 	if err != nil {
 		return "", fmt.Errorf("get saved: %w", err)
 	}
-
-	// Filter only saved
-	var saved []news.ItemWithScore
-	for _, item := range items {
-		if item.Saved {
-			saved = append(saved, item)
-		}
-	}
-
-	return formatNewsItems(saved, "Saved articles"), nil
+	return formatNewsItems(items, "⭐ Сохранённые статьи", limit, offset), nil
 }
 
-func (n *NewsTool) subscribe(ctx context.Context, chatID, feedID int64) (string, error) {
+// Subscribe subscribes a user to a feed.
+func (n *NewsTool) Subscribe(ctx context.Context, chatID, feedID int64) (string, error) {
 	if err := n.manager.Subscribe(ctx, chatID, feedID); err != nil {
 		return "", fmt.Errorf("subscribe: %w", err)
 	}
-	return fmt.Sprintf("✓ Subscribed to feed %d", feedID), nil
+	return fmt.Sprintf("✅ Подписка оформлена на фид #%d", feedID), nil
 }
 
-func (n *NewsTool) unsubscribe(ctx context.Context, chatID, feedID int64) (string, error) {
+// Unsubscribe unsubscribes a user from a feed.
+func (n *NewsTool) Unsubscribe(ctx context.Context, chatID, feedID int64) (string, error) {
 	if err := n.manager.Unsubscribe(ctx, chatID, feedID); err != nil {
 		return "", fmt.Errorf("unsubscribe: %w", err)
 	}
-	return fmt.Sprintf("✓ Unsubscribed from feed %d", feedID), nil
+	return fmt.Sprintf("✅ Отписка от фида #%d оформлена", feedID), nil
 }
 
-func (n *NewsTool) discoverFeeds(ctx context.Context, category string) (string, error) {
+// DiscoverFeeds lists available feeds, optionally filtered by category.
+func (n *NewsTool) DiscoverFeeds(ctx context.Context, category string) (string, error) {
 	feeds, err := n.manager.ListFeeds(ctx, 100, 0)
 	if err != nil {
 		return "", fmt.Errorf("list feeds: %w", err)
 	}
 
 	var buf strings.Builder
-	fmt.Fprintf(&buf, "📰 Available feeds (%d)\n\n", len(feeds))
 
-	for i, feed := range feeds {
-		if category != "" && feed.Category != category {
-			continue
-		}
-		fmt.Fprintf(&buf, "%d. %s\n", i+1, feed.Title)
-		fmt.Fprintf(&buf, "   URL: %s\n", feed.URL)
-		if feed.Category != "" {
-			fmt.Fprintf(&buf, "   📁 %s", feed.Category)
-		}
-		if feed.Enabled {
-			buf.WriteString(" ✅")
-		} else {
-			buf.WriteString(" ❌")
-		}
-		buf.WriteByte('\n')
+	title := "📡 Доступные фиды"
+	if category != "" {
+		title = fmt.Sprintf("📡 Фиды категории «%s»", category)
 	}
 
+	// Filter by category
+	filtered := feeds
+	if category != "" {
+		filtered = filtered[:0]
+		for _, f := range feeds {
+			if strings.EqualFold(f.Category, category) {
+				filtered = append(filtered, f)
+			}
+		}
+	}
+
+	fmt.Fprintf(&buf, "%s (%d)\n\n", title, len(filtered))
+
+	if len(filtered) == 0 {
+		buf.WriteString("Фиды не найдены.")
+		return buf.String(), nil
+	}
+
+	for i, feed := range filtered {
+		icon := categoryIcon(feed.Category)
+		status := "✅"
+		if !feed.Enabled {
+			status = "❌"
+		}
+		fmt.Fprintf(&buf, "%d. %s %s %s\n", i+1, status, icon, feed.Title)
+		fmt.Fprintf(&buf, "   ID: %d | %s", feed.ID, feed.URL)
+		if feed.Category != "" {
+			fmt.Fprintf(&buf, " | %s", feed.Category)
+		}
+		buf.WriteString("\n")
+		if i < len(filtered)-1 {
+			buf.WriteString("\n")
+		}
+	}
+
+	buf.WriteString("\nДля подписки: /subscribe <ID>")
 	return buf.String(), nil
 }
 
-func (n *NewsTool) addFeed(ctx context.Context, chatID int64, url string) (string, error) {
+// AddFeed adds a custom RSS feed and auto-subscribes the user.
+func (n *NewsTool) AddFeed(ctx context.Context, chatID int64, url string) (string, error) {
 	if url == "" {
 		return "", fmt.Errorf("URL is required")
 	}
@@ -245,50 +256,140 @@ func (n *NewsTool) addFeed(ctx context.Context, chatID int64, url string) (strin
 		return "", fmt.Errorf("subscribe: %w", err)
 	}
 
-	return fmt.Sprintf("✓ Feed added and subscribed: %s (ID: %d)", feed.Title, feed.ID), nil
+	return fmt.Sprintf("✅ Фид добавлен и подписка оформлена\n📰 %s (ID: %d)\n🔗 %s", feed.Title, feed.ID, feed.URL), nil
 }
 
-func (n *NewsTool) markRead(ctx context.Context, chatID, itemID int64) (string, error) {
+// MarkRead marks a news item as read.
+func (n *NewsTool) MarkRead(ctx context.Context, chatID, itemID int64) (string, error) {
 	if err := n.manager.MarkAsRead(ctx, chatID, itemID); err != nil {
 		return "", fmt.Errorf("mark as read: %w", err)
 	}
-	return fmt.Sprintf("✓ Marked as read: item %d", itemID), nil
+	return fmt.Sprintf("✅ Новость #%d отмечена как прочитанная", itemID), nil
 }
 
-func (n *NewsTool) saveItem(ctx context.Context, chatID, itemID int64) (string, error) {
+// SaveItem saves a news item to favorites.
+func (n *NewsTool) SaveItem(ctx context.Context, chatID, itemID int64) (string, error) {
 	if err := n.manager.SaveItem(ctx, chatID, itemID); err != nil {
 		return "", fmt.Errorf("save item: %w", err)
 	}
-	return fmt.Sprintf("✓ Saved: item %d", itemID), nil
+	return fmt.Sprintf("⭐ Новость #%d сохранена в избранное", itemID), nil
 }
 
-func (n *NewsTool) unsaveItem(ctx context.Context, chatID, itemID int64) (string, error) {
+// UnsaveItem removes a news item from favorites.
+func (n *NewsTool) UnsaveItem(ctx context.Context, chatID, itemID int64) (string, error) {
 	if err := n.manager.UnsaveItem(ctx, chatID, itemID); err != nil {
 		return "", fmt.Errorf("unsave item: %w", err)
 	}
-	return fmt.Sprintf("✓ Removed from favorites: item %d", itemID), nil
+	return fmt.Sprintf("✅ Новость #%d удалена из избранного", itemID), nil
 }
 
-func formatNewsItems(items []news.ItemWithScore, title string) string {
+// formatNewsItems formats a list of news items for display.
+func formatNewsItems(items []news.ItemWithScore, title string, limit, offset int) string {
+	var buf strings.Builder
+
 	if len(items) == 0 {
-		return fmt.Sprintf("%s\nNo items found.", title)
+		fmt.Fprintf(&buf, "%s\n\nНовостей нет.", title)
+		if offset > 0 {
+			fmt.Fprintf(&buf, " (страница %d)", offset/limit+1)
+		}
+		return buf.String()
 	}
 
-	var buf strings.Builder
-	fmt.Fprintf(&buf, "%s (%d items)\n\n", title, len(items))
+	fmt.Fprintf(&buf, "%s (%d)\n", title, len(items))
+	if offset > 0 {
+		fmt.Fprintf(&buf, "Страница %d\n", offset/limit+1)
+	}
+	buf.WriteString(strings.Repeat("─", 30) + "\n")
 
-	for i, iw := range items {
-		fmt.Fprintf(&buf, "%d. %s\n", i+1, iw.Item.Title)
+	for _, iw := range items {
+		// Status badges
+		var badges []string
 		if !iw.Read {
-			buf.WriteString("   🆕 ")
+			badges = append(badges, "🆕")
 		}
-		fmt.Fprintf(&buf, "   %s\n", iw.Item.Link)
-		fmt.Fprintf(&buf, "   %s", iw.Item.PublishedAt.Format("2006-01-02 15:04"))
+		if iw.Saved {
+			badges = append(badges, "⭐")
+		}
+		if iw.Item.Category != "" {
+			badges = append(badges, categoryIcon(iw.Item.Category))
+		}
+
+		badgeStr := ""
+		if len(badges) > 0 {
+			badgeStr = strings.Join(badges, "") + " "
+		}
+
+		fmt.Fprintf(&buf, "%s*%s*\n", badgeStr, escapeMarkdown(iw.Item.Title))
+		fmt.Fprintf(&buf, "🔗 %s\n", iw.Item.Link)
+
+		// Age display
+		age := time.Since(iw.Item.PublishedAt)
+		ageStr := formatAge(age)
+		fmt.Fprintf(&buf, "🕐 %s", ageStr)
+
 		if iw.Item.Category != "" {
 			fmt.Fprintf(&buf, " | 📁 %s", iw.Item.Category)
 		}
-		buf.WriteString("\n\n")
+		fmt.Fprintf(&buf, " | #%d\n", iw.Item.ID)
+
+		buf.WriteString(strings.Repeat("─", 30) + "\n")
+	}
+
+	// Pagination hint
+	if len(items) == limit {
+		nextOffset := offset + limit
+		fmt.Fprintf(&buf, "\n➡️ Следующая страница: /news_more %d", nextOffset)
 	}
 
 	return buf.String()
+}
+
+// formatAge returns a human-readable age string.
+func formatAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "только что"
+	case d < time.Hour:
+		m := int(d.Minutes())
+		return fmt.Sprintf("%d мин назад", m)
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		return fmt.Sprintf("%d ч назад", h)
+	case d < 7*24*time.Hour:
+		days := int(d.Hours() / 24)
+		return fmt.Sprintf("%d дн назад", days)
+	default:
+		return ""
+	}
+}
+
+// categoryIcon returns an emoji for a category.
+func categoryIcon(category string) string {
+	switch strings.ToLower(category) {
+	case "tech", "technology":
+		return "💻"
+	case "golang", "go":
+		return "🐹"
+	case "opensource", "open source":
+		return "🔓"
+	case "ai", "ml":
+		return "🤖"
+	case "science":
+		return "🔬"
+	case "news":
+		return "📰"
+	default:
+		return "📌"
+	}
+}
+
+// escapeMarkdown escapes special Markdown characters.
+func escapeMarkdown(s string) string {
+	replacer := strings.NewReplacer(
+		"*", "\\*",
+		"_", "\\_",
+		"`", "\\`",
+		"[", "\\[",
+	)
+	return replacer.Replace(s)
 }

@@ -40,6 +40,7 @@ type NewsRepository interface {
 	CreateReadStatus(ctx context.Context, chatID, itemID int64, saved bool) error
 	GetReadStatus(ctx context.Context, chatID, itemID int64) (*news.ReadStatus, error)
 	GetReadItemIDs(ctx context.Context, chatID int64) ([]int64, error)
+	GetReadStatusMap(ctx context.Context, chatID int64) (map[int64]*news.ReadStatus, error)
 	MarkAsSaved(ctx context.Context, chatID, itemID int64) error
 	MarkAsUnsaved(ctx context.Context, chatID, itemID int64) error
 	DeleteReadStatus(ctx context.Context, chatID, itemID int64) error
@@ -50,12 +51,13 @@ type NewsRepository interface {
 
 // NewsRepositoryImpl implements NewsRepository.
 type NewsRepositoryImpl struct {
-	db *DB
+	db     *DB
+	hasFTS bool
 }
 
 // NewNewsRepository creates a new NewsRepository.
 func NewNewsRepository(db *DB) NewsRepository {
-	return &NewsRepositoryImpl{db: db}
+	return &NewsRepositoryImpl{db: db, hasFTS: db.HasFTS()}
 }
 
 // Feed operations
@@ -300,8 +302,27 @@ func (r *NewsRepositoryImpl) GetItemsByFeeds(ctx context.Context, feedIDs []int6
 	}
 
 	if filter.SearchQuery != "" {
-		query += ` AND id IN (SELECT rowid FROM news_items_fts WHERE news_items_fts MATCH ?)`
-		args = append(args, filter.SearchQuery)
+		if r.hasFTS {
+			query += ` AND id IN (SELECT rowid FROM news_items_fts WHERE news_items_fts MATCH ?)`
+			args = append(args, filter.SearchQuery)
+		} else {
+			// Fallback: plain LIKE search when FTS5 is not available
+			query += ` AND (title LIKE ? OR description LIKE ? OR content LIKE ?)`
+			like := "%" + filter.SearchQuery + "%"
+			args = append(args, like, like, like)
+		}
+	}
+
+	// DB-level unread/saved filtering (requires ChatID)
+	if filter.ChatID != 0 {
+		if filter.UnreadOnly {
+			query += ` AND id NOT IN (SELECT item_id FROM news_read_status WHERE chat_id = ?)`
+			args = append(args, filter.ChatID)
+		}
+		if filter.SavedOnly {
+			query += ` AND id IN (SELECT item_id FROM news_read_status WHERE chat_id = ? AND saved = 1)`
+			args = append(args, filter.ChatID)
+		}
 	}
 
 	query += ` ORDER BY published_at DESC`
@@ -485,6 +506,31 @@ func (r *NewsRepositoryImpl) GetReadItemIDs(ctx context.Context, chatID int64) (
 		itemIDs = append(itemIDs, id)
 	}
 	return itemIDs, rows.Err()
+}
+
+func (r *NewsRepositoryImpl) GetReadStatusMap(ctx context.Context, chatID int64) (map[int64]*news.ReadStatus, error) {
+	rows, err := r.db.db.QueryContext(ctx,
+		`SELECT id, chat_id, item_id, read_at, saved FROM news_read_status WHERE chat_id = ?`,
+		chatID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			_ = err // ignore error
+		}
+	}()
+
+	result := make(map[int64]*news.ReadStatus)
+	for rows.Next() {
+		var status news.ReadStatus
+		if err := rows.Scan(&status.ID, &status.ChatID, &status.ItemID, &status.ReadAt, &status.Saved); err != nil {
+			return nil, err
+		}
+		result[status.ItemID] = &status
+	}
+	return result, rows.Err()
 }
 
 func (r *NewsRepositoryImpl) MarkAsSaved(ctx context.Context, chatID, itemID int64) error {

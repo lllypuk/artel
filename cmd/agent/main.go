@@ -69,11 +69,12 @@ func main() {
 	defer cancel()
 
 	// Start news fetcher if enabled
-	var newsManager *news.NewsManager
+	var newsTool *tools.NewsTool
 	if cfg.News.Enabled {
-		newsManager = setupNews(ctx, cfg, db, toolRegistry, logger)
-		if newsManager != nil {
-			go fetchNewsLoop(ctx, newsManager, logger)
+		nt, nm := setupNews(ctx, cfg, db, toolRegistry, logger)
+		if nt != nil {
+			newsTool = nt
+			go fetchNewsLoop(ctx, nm, logger)
 		}
 	}
 
@@ -81,7 +82,7 @@ func main() {
 	ag := agent.New(llmClient, cfg.LLM.Models.Default, toolRegistry, db, logger)
 
 	// Create and run Telegram bot
-	bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.AllowedUsers, ag, logger)
+	bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.AllowedUsers, ag, newsTool, logger)
 	if err != nil {
 		logger.Error("create telegram bot", "error", err)
 		os.Exit(1)
@@ -159,10 +160,6 @@ func registerOptionalTools(cfg *config.Config, registry *tools.Registry, logger 
 		}))
 		logger.Info("Shell tool enabled", "allowed_commands", len(cfg.Shell.AllowedCommands))
 	}
-
-	if cfg.News.Enabled {
-		setupNewsTool(cfg, db, registry, logger)
-	}
 }
 
 func registerWebTools(cfg *config.Config, registry *tools.Registry, logger *slog.Logger) {
@@ -208,23 +205,7 @@ func registerPiCoderTool(cfg *config.Config, registry *tools.Registry, logger *s
 	logger.Info("PiCoder tool enabled", "project_dir", projectDir, "model", model)
 }
 
-func setupNewsTool(cfg *config.Config, db *storage.DB, registry *tools.Registry, logger *slog.Logger) {
-	newsRepo := storage.NewNewsRepository(db)
-	parser := news.NewGofeedParser()
-
-	timeout := time.Duration(cfg.News.FetchTimeoutSeconds) * time.Second
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
-	fetcher := news.NewHTTPFetcher(timeout)
-
-	newsManager := news.NewNewsManager(newsRepo, parser, fetcher, logger)
-	registry.Register(tools.NewNewsTool(newsManager))
-
-	logger.Info("News tool enabled")
-}
-
-func setupNews(ctx context.Context, cfg *config.Config, db *storage.DB, registry *tools.Registry, logger *slog.Logger) *news.NewsManager {
+func setupNews(ctx context.Context, cfg *config.Config, db *storage.DB, registry *tools.Registry, logger *slog.Logger) (*tools.NewsTool, *news.NewsManager) {
 	newsRepo := storage.NewNewsRepository(db)
 
 	// Initialize default feeds
@@ -241,8 +222,11 @@ func setupNews(ctx context.Context, cfg *config.Config, db *storage.DB, registry
 	fetcher := news.NewHTTPFetcher(timeout)
 
 	newsManager := news.NewNewsManager(newsRepo, parser, fetcher, logger)
+	nt := tools.NewNewsTool(newsManager)
+	registry.Register(nt)
 
-	return newsManager
+	logger.Info("News tool registered")
+	return nt, newsManager
 }
 
 func initDefaultFeeds(ctx context.Context, cfg *config.Config, newsRepo storage.NewsRepository, logger *slog.Logger) error {

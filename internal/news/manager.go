@@ -36,6 +36,7 @@ type Repository interface {
 	CreateReadStatus(ctx context.Context, chatID, itemID int64, saved bool) error
 	GetReadStatus(ctx context.Context, chatID, itemID int64) (*ReadStatus, error)
 	GetReadItemIDs(ctx context.Context, chatID int64) ([]int64, error)
+	GetReadStatusMap(ctx context.Context, chatID int64) (map[int64]*ReadStatus, error)
 	MarkAsSaved(ctx context.Context, chatID, itemID int64) error
 	MarkAsUnsaved(ctx context.Context, chatID, itemID int64) error
 }
@@ -164,35 +165,34 @@ func (m *NewsManager) GetNews(ctx context.Context, chatID int64, filter NewsFilt
 		}
 	}
 
-	// Get news from subscribed feeds
+	// Set chatID for DB-level filtering of unread/saved
+	filter.ChatID = chatID
+
+	// Get news from subscribed feeds (DB handles unread/saved filtering)
 	items, err := m.repo.GetItemsByFeeds(ctx, feedIDs, filter)
 	if err != nil {
 		return nil, fmt.Errorf("get items: %w", err)
 	}
 
-	// Mark read items
-	readItemIDs, err := m.repo.GetReadItemIDs(ctx, chatID)
+	// Load all read/saved statuses in one query (no N+1)
+	statusMap, err := m.repo.GetReadStatusMap(ctx, chatID)
 	if err != nil {
-		return nil, fmt.Errorf("get read item IDs: %w", err)
-	}
-	readSet := make(map[int64]bool)
-	for _, id := range readItemIDs {
-		readSet[id] = true
+		return nil, fmt.Errorf("get read status map: %w", err)
 	}
 
 	// Prepare result
 	result := make([]ItemWithScore, 0, len(items))
 	for _, item := range items {
-		// Check if saved (need additional query)
+		read := false
 		saved := false
-		status, err := m.repo.GetReadStatus(ctx, chatID, item.ID)
-		if err == nil && status != nil && status.Saved {
-			saved = true
+		if status, ok := statusMap[item.ID]; ok {
+			read = true
+			saved = status.Saved
 		}
 
 		result = append(result, ItemWithScore{
 			Item:  item,
-			Read:  readSet[item.ID],
+			Read:  read,
 			Saved: saved,
 			Score: calculateScore(&item),
 		})

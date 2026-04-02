@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
@@ -16,12 +18,13 @@ import (
 type Bot struct {
 	api          *tgbotapi.BotAPI
 	agent        *agent.Agent
+	newsTool     *tools.NewsTool
 	allowedUsers map[int64]bool
 	logger       *slog.Logger
 }
 
 // New creates a new Telegram bot.
-func New(token string, allowedUsers []int64, ag *agent.Agent, logger *slog.Logger) (*Bot, error) {
+func New(token string, allowedUsers []int64, ag *agent.Agent, newsTool *tools.NewsTool, logger *slog.Logger) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		return nil, fmt.Errorf("create bot: %w", err)
@@ -37,6 +40,7 @@ func New(token string, allowedUsers []int64, ag *agent.Agent, logger *slog.Logge
 	return &Bot{
 		api:          api,
 		agent:        ag,
+		newsTool:     newsTool,
 		allowedUsers: allowed,
 		logger:       logger,
 	}, nil
@@ -131,7 +135,10 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 
 	switch cmd {
 	case "/start":
-		b.sendText(chatID, "👋 Привет! Я твой персональный AI-агент.\n\nКоманды:\n/new — новый диалог\n/help — помощь")
+		b.sendText(chatID, "👋 Привет! Я твой персональный AI-агент.\n\n"+
+			"/help — справка\n"+
+			"/news — последние новости\n"+
+			"/new — новый диалог")
 	case "/new":
 		if err := b.agent.NewConversation(ctx, chatID); err != nil {
 			b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
@@ -141,12 +148,89 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 	case "/help":
 		b.sendText(chatID, "🤖 *Agent Shatrov*\n\n"+
 			"Просто пиши мне сообщения — я отвечу.\n\n"+
-			"Команды:\n"+
+			"*Основные команды:*\n"+
 			"/new — начать новый диалог\n"+
-			"/help — эта справка\n")
+			"/help — эта справка\n\n"+
+			"*Новости:*\n"+
+			"/news [запрос] — новости (или поиск)\n"+
+			"/unread — непрочитанные\n"+
+			"/saved — сохранённые\n"+
+			"/feeds — список фидов\n"+
+			"/discover [категория] — найти фиды\n"+
+			"/subscribe <ID> — подписаться\n"+
+			"/unsubscribe <ID> — отписаться\n")
+
+	// --- News commands ---
+	case "/news", "/unread", "/saved", "/feeds", "/discover", "/subscribe", "/unsubscribe":
+		b.handleNewsCommand(ctx, chatID, cmd, parts)
+
 	default:
 		b.sendText(chatID, "Неизвестная команда. /help для справки.")
 	}
+}
+
+func (b *Bot) handleNewsCommand(ctx context.Context, chatID int64, cmd string, parts []string) {
+	if b.newsTool == nil {
+		b.sendText(chatID, "❌ Новости отключены в конфигурации.")
+		return
+	}
+
+	var result string
+	var err error
+
+	switch cmd {
+	case "/news":
+		if len(parts) > 1 {
+			query := strings.Join(parts[1:], " ")
+			result, err = b.newsTool.SearchNews(b.ctxWithTimeout(), chatID, query, 10, 0)
+		} else {
+			result, err = b.newsTool.ListNews(b.ctxWithTimeout(), chatID, 10, 0)
+		}
+	case "/unread":
+		result, err = b.newsTool.UnreadNews(b.ctxWithTimeout(), chatID, 10, 0)
+	case "/saved":
+		result, err = b.newsTool.SavedNews(b.ctxWithTimeout(), chatID, 10, 0)
+	case "/feeds", "/discover":
+		category := ""
+		if len(parts) > 1 {
+			category = parts[1]
+		}
+		result, err = b.newsTool.DiscoverFeeds(b.ctxWithTimeout(), category)
+	case "/subscribe":
+		if len(parts) < 2 {
+			b.sendText(chatID, "Использование: /subscribe <feed_id>")
+			return
+		}
+		feedID, parseErr := strconv.ParseInt(parts[1], 10, 64)
+		if parseErr != nil {
+			b.sendText(chatID, "❌ Неверный ID фида.")
+			return
+		}
+		result, err = b.newsTool.Subscribe(b.ctxWithTimeout(), chatID, feedID)
+	case "/unsubscribe":
+		if len(parts) < 2 {
+			b.sendText(chatID, "Использование: /unsubscribe <feed_id>")
+			return
+		}
+		feedID, parseErr := strconv.ParseInt(parts[1], 10, 64)
+		if parseErr != nil {
+			b.sendText(chatID, "❌ Неверный ID фида.")
+			return
+		}
+		result, err = b.newsTool.Unsubscribe(b.ctxWithTimeout(), chatID, feedID)
+	}
+
+	if err != nil {
+		b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
+		return
+	}
+	b.sendLongText(chatID, result)
+}
+
+// ctxWithTimeout returns a background context with a 30s timeout for direct tool calls.
+func (b *Bot) ctxWithTimeout() context.Context {
+	ctx, _ := context.WithTimeout(context.Background(), 30*time.Second) //nolint:govet
+	return ctx
 }
 
 func (b *Bot) sendText(chatID int64, text string) {
