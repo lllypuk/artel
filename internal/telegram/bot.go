@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -159,10 +158,7 @@ const helpText = "\U0001F916 *Agent Shatrov*\n\n" +
 	"/news [запрос] — последние новости (или поиск по запросу)\n" +
 	"/unread — непрочитанные новости\n" +
 	"/saved — сохранённые новости\n" +
-	"/feeds — список подписок\n" +
-	"/discover [категория] — найти фиды для подписки\n" +
-	"/subscribe <ID> — подписаться на фид\n" +
-	"/unsubscribe <ID> — отписаться от фида\n\n" +
+	"/feeds — список подписок\n\n" +
 	"*Что умеет агент (через чат):*\n" +
 	"\U0001F4DD Заметки — создать, найти, прочитать, редактировать, удалить\n" +
 	"\U0001F50D Поиск в интернете (Brave / Serper / DuckDuckGo)\n" +
@@ -190,7 +186,7 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 		b.sendText(chatID, helpText)
 
 	// --- News commands ---
-	case "/news", "/unread", "/saved", "/feeds", "/discover", "/subscribe", "/unsubscribe":
+	case "/news", "/unread", "/saved", "/feeds":
 		b.handleNewsCommand(ctx, chatID, cmd, parts)
 
 	default:
@@ -222,34 +218,8 @@ func (b *Bot) handleNewsCommand(ctx context.Context, chatID int64, cmd string, p
 		result, err = b.newsTool.UnreadNews(toolCtx, chatID, 10, 0)
 	case "/saved":
 		result, err = b.newsTool.SavedNews(toolCtx, chatID, 10, 0)
-	case "/feeds", "/discover":
-		category := ""
-		if len(parts) > 1 {
-			category = parts[1]
-		}
-		result, err = b.newsTool.DiscoverFeeds(toolCtx, category)
-	case "/subscribe":
-		if len(parts) < 2 {
-			b.sendText(chatID, "Использование: /subscribe <feed_id>")
-			return
-		}
-		feedID, parseErr := strconv.ParseInt(parts[1], 10, 64)
-		if parseErr != nil {
-			b.sendText(chatID, "❌ Неверный ID фида.")
-			return
-		}
-		result, err = b.newsTool.Subscribe(toolCtx, chatID, feedID)
-	case "/unsubscribe":
-		if len(parts) < 2 {
-			b.sendText(chatID, "Использование: /unsubscribe <feed_id>")
-			return
-		}
-		feedID, parseErr := strconv.ParseInt(parts[1], 10, 64)
-		if parseErr != nil {
-			b.sendText(chatID, "❌ Неверный ID фида.")
-			return
-		}
-		result, err = b.newsTool.Unsubscribe(toolCtx, chatID, feedID)
+	case "/feeds":
+		result, err = b.newsTool.DiscoverFeeds(toolCtx, "")
 	}
 
 	if err != nil {
