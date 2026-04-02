@@ -25,8 +25,22 @@ internal/
     web_search.go          — инструмент: поиск в интернете
     web_fetch.go           — инструмент: чтение веб-страниц
     pi_coder.go            — инструмент: доработка агента через pi
-  storage/sqlite.go        — SQLite: схема БД, migrations, CRUD для conversations/messages/notes
-  telegram/bot.go          — Telegram bot: long polling, auth по chat_id, обработка команд
+    news.go                — инструмент: агрегация новостей (RSS/Atom/JSON)
+  storage/
+    sqlite.go              — SQLite: схема БД, migrations, CRUD для conversations/messages/notes
+    news.go                — SQLite: новости, фиды, подписки
+  telegram/
+    bot.go                 — Telegram bot: long polling, auth по chat_id, обработка команд
+    markdown.go            — Markdown → HTML конвертация для Telegram
+  news/
+    parser.go              — парсер фидов (RSS/Atom/JSON Feed)
+    feed.go                — структура фида
+    item.go                — структура новости
+    subscription.go        — подписка на фид
+    fetcher.go             — загрузка фидов по HTTP
+    manager.go             — менеджер новостей: фильтрация, поиск
+    filter.go              — фильтры новостей
+    errors.go              — ошибки пакета news
 data/                      — БД и логи (в .gitignore)
 config.yaml                — конфиг с секретами (в .gitignore)
 config.example.yaml        — пример конфига без секретов
@@ -66,22 +80,57 @@ cp config.example.yaml config.yaml
 telegram:
   token: "<токен от @BotFather>"
   allowed_users: [<твой chat_id>]  # whitelist — только ты
+  proxy: ""                     # опционально: прокси только для Telegram
 
 llm:
-  base_url: "https://api.z.ai/api/coding/paas/v4"  # z.ai Coding endpoint
+  provider: "glm"               # провайдер LLM
+  base_url: "https://api.z.ai/api/coding/paas/v4"
   api_key: "<ключ из ~/.pi/agent/auth.json, провайдер zai>"
   models:
-    default: "glm-4.7"
-    fast: "glm-4.7-flash"
+    default: "glm-4-plus"
+    fast: "glm-4-flash"
+  max_iterations: 10            # лимит шагов ReAct-цикла
+
+database:
+  path: "./data/agent.db"       # путь к SQLite БД
 
 shell:
-  enabled: false  # включать осторожно
+  enabled: false                # включать осторожно
+  timeout: 30                   # таймаут выполнения (сек)
+  allowed_commands: [...]       # whitelist команд
+  blocked_patterns: [...]       # запрещённые паттерны
+  working_dir: "./sandbox"     # sandbox директория
+
+web:
+  enabled: true
+  provider: "brave"             # brave | serper | duckduckgo
+  api_key: ""                   # API ключ для brave/serper
+  max_results: 5
+  timeout: 15
+  max_fetch_size_kb: 100
 
 pi_coder:
   enabled: true
   project_dir: "/path/to/agent-shatrov"
   model: "glm-4.7"
   timeout: 300
+
+news:
+  enabled: false                # включить для агрегации новостей
+  fetch_interval_minutes: 30    # интервал автообновления
+  max_item_age_days: 30         # макс. возраст новостей
+  max_items_per_feed: 1000
+  fetch_timeout_seconds: 30
+  proxy: ""                     # прокси для фидов
+  feeds:
+    - url: "https://techcrunch.com/feed/"
+      title: "TechCrunch"
+      category: "tech"
+      enabled: false
+
+logging:
+  level: "info"                 # debug | info | warn | error
+  file: "./data/agent.log"
 ```
 
 Либо через переменные окружения:
@@ -145,11 +194,15 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 | Команда | Действие |
 |---------|----------|
 | `/start` | приветствие |
-| `/new` | начать новый диалог (сбросить контекст) |
+| `/new` | начать новый диалог (сбросить контекста) |
 | `/model` | показать текущую модель и доступные алиасы |
 | `/model fast` | переключиться на быструю модель |
 | `/model default` | переключиться на основную модель |
 | `/help` | справка |
+| `/news [запрос]` | последние новости или поиск по запросу |
+| `/unread` | непрочитанные новости |
+| `/saved` | сохранённые новости |
+| `/feeds` | список подписок на фиды |
 
 ## Зависимости
 
@@ -159,6 +212,7 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 | `github.com/mattn/go-sqlite3` | SQLite (CGo) |
 | `gopkg.in/yaml.v3` | парсинг конфига |
 | `github.com/stretchr/testify` | assertions в тестах |
+| `github.com/mmcdole/gofeed` | RSS/Atom/JSON Feed парсер |
 
 ## Реализованные функции
 
@@ -171,7 +225,41 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 - [x] Поиск в интернете (Brave / Serper / DuckDuckGo) + чтение страниц
 - [x] Самообновление через `pi_coder` — агент изменяет и пересобирает собственный код
 - [x] Агрегация новостей (RSS/Atom/JSON Feed) — подписки, чтение, поиск, избранное
-
-## Планируемые функции
-
 - [x] Переключение модели через Telegram (`/model fast`)
+
+## Инструмент news
+
+Агрегация новостей из RSS/Atom/JSON Feed источников.
+
+**Возможности:**
+- Подписка на произвольные RSS/Atom/JSON Feed источники
+- Автоматическое обновление фидов (по расписанию)
+- Поиск новостей по тексту, тегам, источникам
+- Фильтрация по дате, категории, языку
+- Сохранение новостей в избранное
+- Чтение статей через агент (web_fetch)
+
+**Конфигурация:**
+```yaml
+news:
+  enabled: true
+  fetch_interval_minutes: 30
+  max_item_age_days: 30
+  feeds:
+    - url: "https://techcrunch.com/feed/"
+      title: "TechCrunch"
+      category: "tech"
+      language: "en"
+      enabled: true
+    - url: "https://go.dev/blog/feed.atom"
+      title: "Go Blog"
+      category: "golang"
+      enabled: true
+```
+
+**Telegram команды:**
+- `/news` — последние новости
+- `/news запрос` — поиск по запросу
+- `/unread` — непрочитанные
+- `/saved` — сохранённые в избранное
+- `/feeds` — список подписок
