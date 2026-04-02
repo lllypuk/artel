@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -23,9 +25,29 @@ type Bot struct {
 	logger       *slog.Logger
 }
 
+// newHTTPClient создаёт http.Client с прокси (если задан) или без него.
+func newHTTPClient(proxyURL string) (*http.Client, error) {
+	if proxyURL == "" {
+		return &http.Client{}, nil
+	}
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse proxy url %q: %w", proxyURL, err)
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(parsed),
+		},
+	}, nil
+}
+
 // New creates a new Telegram bot.
-func New(token string, allowedUsers []int64, ag *agent.Agent, newsTool *tools.NewsTool, logger *slog.Logger) (*Bot, error) {
-	api, err := tgbotapi.NewBotAPI(token)
+func New(token, proxyURL string, allowedUsers []int64, ag *agent.Agent, newsTool *tools.NewsTool, logger *slog.Logger) (*Bot, error) {
+	httpClient, err := newHTTPClient(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("create http client: %w", err)
+	}
+	api, err := tgbotapi.NewBotAPIWithClient(token, tgbotapi.APIEndpoint, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("create bot: %w", err)
 	}

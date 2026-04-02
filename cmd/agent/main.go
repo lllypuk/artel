@@ -79,10 +79,10 @@ func main() {
 	}
 
 	// Create agent
-	ag := agent.New(llmClient, cfg.LLM.Models.Default, toolRegistry, db, logger)
+	ag := agent.New(llmClient, cfg.LLM.Models.Default, cfg.LLM.MaxIterations, toolRegistry, db, logger)
 
 	// Create and run Telegram bot
-	bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.AllowedUsers, ag, newsTool, logger)
+	bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.Proxy, cfg.Telegram.AllowedUsers, ag, newsTool, logger)
 	if err != nil {
 		logger.Error("create telegram bot", "error", err)
 		os.Exit(1)
@@ -221,7 +221,7 @@ func setupNews(ctx context.Context, cfg *config.Config, db *storage.DB, registry
 	}
 	fetcher := news.NewHTTPFetcher(timeout)
 
-	newsManager := news.NewNewsManager(newsRepo, parser, fetcher, logger)
+	newsManager := news.NewNewsManager(newsRepo, parser, fetcher, cfg.News.Proxy, logger)
 	nt := tools.NewNewsTool(newsManager)
 	registry.Register(nt)
 
@@ -260,6 +260,7 @@ func initDefaultFeeds(ctx context.Context, cfg *config.Config, newsRepo storage.
 			Category:      feedCfg.Category,
 			Language:      feedCfg.Language,
 			Enabled:       feedCfg.Enabled,
+			ProxyURL:      feedCfg.Proxy,
 			FetchInterval: time.Hour,
 		}
 

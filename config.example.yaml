@@ -4,6 +4,7 @@ telegram:
   token: ""              # @BotFather token
   allowed_users:         # whitelist chat_id (только ты)
     - 0
+  proxy: ""             # прокси только для Telegram, e.g. "http://127.0.0.1:2080"
 
 llm:
   provider: "glm"
@@ -12,6 +13,7 @@ llm:
     fast: "glm-4-flash"
   base_url: "https://api.z.ai/api/coding/paas/v4"
   api_key: ""
+  max_iterations: 10   # лимит шагов ReAct-цикла (tool call → LLM → ...)
 
 database:
   path: "./data/agent.db"
@@ -86,6 +88,9 @@ news:
   max_items_per_feed: 1000
   # HTTP таймаут для получения фидов (секунды)
   fetch_timeout_seconds: 30
+  # Прокси по умолчанию для всех фидов (опционально), e.g. "http://127.0.0.1:2080"
+  # Можно переопределить на уровне конкретного фида через proxy:
+  proxy: ""
   # Предустановленные источники новостей
   feeds:
     # Tech news
@@ -94,33 +99,39 @@ news:
       category: "tech"
       language: "en"
       enabled: false
+      proxy: ""           # прокси для этого фида (опционально)
     - url: "https://www.theverge.com/rss/index.xml"
       title: "The Verge"
       category: "tech"
       language: "en"
       enabled: false
+      proxy: ""
     - url: "https://feeds.arstechnica.com/arstechnica/index"
       title: "Ars Technica"
       category: "tech"
       language: "en"
       enabled: false
+      proxy: ""
     # Open Source / Dev
     - url: "https://lwn.net/headlines/newrss"
       title: "LWN.net"
       category: "opensource"
       language: "en"
       enabled: false
+      proxy: ""
     - url: "https://opensource.com/feeds"
       title: "Opensource.com"
       category: "opensource"
       language: "en"
       enabled: false
+      proxy: ""
     # Go
     - url: "https://go.dev/blog/feed.atom"
       title: "Go Blog"
       category: "golang"
       language: "en"
       enabled: false
+      proxy: ""
 
 logging:
   level: "info"           # debug, info, warn, error

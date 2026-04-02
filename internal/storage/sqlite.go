@@ -85,6 +85,7 @@ func (s *DB) migrate(ctx context.Context) error {
 			category TEXT DEFAULT '',
 			language TEXT DEFAULT 'en',
 			enabled INTEGER DEFAULT 1,
+			proxy_url TEXT DEFAULT '',
 			fetch_interval_seconds INTEGER DEFAULT 3600,
 			last_fetched DATETIME,
 			last_error TEXT DEFAULT '',
@@ -150,6 +151,14 @@ func (s *DB) migrate(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, m); err != nil {
 			return fmt.Errorf("exec migration: %w", err)
 		}
+	}
+
+	// Additive column migrations — tolerate "duplicate column" errors from older DBs.
+	additiveMigrations := []string{
+		`ALTER TABLE news_feeds ADD COLUMN proxy_url TEXT DEFAULT ''`,
+	}
+	for _, m := range additiveMigrations {
+		_, _ = s.db.ExecContext(ctx, m) // ignore error if column already exists
 	}
 
 	// Execute FTS5 migrations (optional - may fail if FTS5 not compiled in)

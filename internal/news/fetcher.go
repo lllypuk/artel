@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"sync"
 	"time"
 
 	"log/slog"
@@ -12,32 +14,66 @@ import (
 
 // Fetcher fetches feed data from URLs.
 type Fetcher interface {
-	Fetch(ctx context.Context, url string) ([]byte, error)
+	// Fetch downloads rawURL using proxyURL (empty = no proxy).
+	Fetch(ctx context.Context, rawURL, proxyURL string) ([]byte, error)
 }
 
 // HTTPFetcher fetches feeds via HTTP.
+// It keeps a pool of http.Client instances keyed by proxyURL so that
+// connections are reused across requests to the same proxy.
 type HTTPFetcher struct {
-	client    *http.Client
-	userAgent string
 	timeout   time.Duration
+	userAgent string
 	logger    *slog.Logger
+
+	mu      sync.Mutex
+	clients map[string]*http.Client // key: proxyURL (empty = direct)
 }
 
 // NewHTTPFetcher creates a new HTTPFetcher.
 func NewHTTPFetcher(timeout time.Duration) *HTTPFetcher {
 	return &HTTPFetcher{
-		client: &http.Client{
-			Timeout: timeout,
-		},
-		userAgent: "Mozilla/5.0 (compatible; agent-shatrov/1.0; +https://github.com/lllypuk/agent-shatrov)",
 		timeout:   timeout,
+		userAgent: "Mozilla/5.0 (compatible; agent-shatrov/1.0; +https://github.com/lllypuk/agent-shatrov)",
 		logger:    slog.Default(),
+		clients:   make(map[string]*http.Client),
 	}
 }
 
-// Fetch fetches feed data from the given URL.
-func (f *HTTPFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, http.NoBody)
+// clientFor returns (or lazily creates) an http.Client for the given proxyURL.
+func (f *HTTPFetcher) clientFor(proxyURL string) (*http.Client, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if c, ok := f.clients[proxyURL]; ok {
+		return c, nil
+	}
+
+	transport := &http.Transport{}
+	if proxyURL != "" {
+		parsed, err := url.Parse(proxyURL)
+		if err != nil {
+			return nil, fmt.Errorf("parse proxy url %q: %w", proxyURL, err)
+		}
+		transport.Proxy = http.ProxyURL(parsed)
+	}
+
+	c := &http.Client{
+		Timeout:   f.timeout,
+		Transport: transport,
+	}
+	f.clients[proxyURL] = c
+	return c, nil
+}
+
+// Fetch fetches feed data from rawURL, optionally routing through proxyURL.
+func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL, proxyURL string) ([]byte, error) {
+	client, err := f.clientFor(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -45,7 +81,7 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
 	req.Header.Set("User-Agent", f.userAgent)
 	req.Header.Set("Accept", "application/rss+xml, application/atom+xml, application/json")
 
-	resp, err := f.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch: %w", err)
 	}

@@ -21,13 +21,15 @@ type Config struct {
 type TelegramConfig struct {
 	Token        string  `yaml:"token"`
 	AllowedUsers []int64 `yaml:"allowed_users"`
+	Proxy        string  `yaml:"proxy"` // e.g. "http://127.0.0.1:2080"
 }
 
 type LLMConfig struct {
-	Provider string    `yaml:"provider"`
-	Models   LLMModels `yaml:"models"`
-	BaseURL  string    `yaml:"base_url"`
-	APIKey   string    `yaml:"api_key"`
+	Provider      string    `yaml:"provider"`
+	Models        LLMModels `yaml:"models"`
+	BaseURL       string    `yaml:"base_url"`
+	APIKey        string    `yaml:"api_key"`
+	MaxIterations int       `yaml:"max_iterations"` // ReAct loop limit (default: 10)
 }
 
 type LLMModels struct {
@@ -74,6 +76,7 @@ type NewsConfig struct {
 	MaxItemAgeDays       int          `yaml:"max_item_age_days"`
 	MaxItemsPerFeed      int          `yaml:"max_items_per_feed"`
 	FetchTimeoutSeconds  int          `yaml:"fetch_timeout_seconds"`
+	Proxy                string       `yaml:"proxy"` // default proxy for all feeds, e.g. "http://127.0.0.1:2080"
 	Feeds                []FeedConfig `yaml:"feeds"`
 }
 
@@ -83,6 +86,7 @@ type FeedConfig struct {
 	Category string `yaml:"category"`
 	Language string `yaml:"language"`
 	Enabled  bool   `yaml:"enabled"`
+	Proxy    string `yaml:"proxy"` // per-feed proxy, e.g. "http://127.0.0.1:2080"
 }
 
 func Load(path string) (*Config, error) {

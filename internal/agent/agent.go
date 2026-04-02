@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/lllypuk/agent-shatrov/internal/llm"
 	"github.com/lllypuk/agent-shatrov/internal/storage"
@@ -44,22 +45,27 @@ const systemPrompt = `Ты — персональный AI-ассистент С
 
 // Agent is the core agent implementing the ReAct loop.
 type Agent struct {
-	llmClient *llm.Client
-	model     string
-	tools     *tools.Registry
-	db        *storage.DB
-	logger    *slog.Logger
-	notify    tools.Notifier
+	llmClient     *llm.Client
+	model         string
+	maxIterations int
+	tools         *tools.Registry
+	db            *storage.DB
+	logger        *slog.Logger
+	notify        tools.Notifier
 }
 
 // New creates a new Agent.
-func New(llmClient *llm.Client, model string, toolRegistry *tools.Registry, db *storage.DB, logger *slog.Logger) *Agent {
+func New(llmClient *llm.Client, model string, maxIterations int, toolRegistry *tools.Registry, db *storage.DB, logger *slog.Logger) *Agent {
+	if maxIterations <= 0 {
+		maxIterations = 10
+	}
 	return &Agent{
-		llmClient: llmClient,
-		model:     model,
-		tools:     toolRegistry,
-		db:        db,
-		logger:    logger,
+		llmClient:     llmClient,
+		model:         model,
+		maxIterations: maxIterations,
+		tools:         toolRegistry,
+		db:            db,
+		logger:        logger,
 	}
 }
 
@@ -133,9 +139,9 @@ func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage str
 	// Build tool definitions
 	toolDefs := a.buildToolDefs()
 
-	// ReAct loop (max 10 iterations to prevent infinite loops)
+	// ReAct loop (max iterations to prevent infinite loops)
 	var totalUsage llm.Usage
-	for i := range 10 {
+	for i := range a.maxIterations {
 		a.logger.Debug("LLM request", "iteration", i, "messages", len(messages))
 
 		req := llm.ChatRequest{
@@ -181,9 +187,10 @@ func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage str
 
 		// Execute tool calls
 		for _, tc := range choice.Message.ToolCalls {
-			a.logger.Info("tool call", "tool", tc.Function.Name, "args", tc.Function.Arguments)
+			cleanArgs := sanitizeToolArgs(json.RawMessage(tc.Function.Arguments))
+			a.logger.Info("tool call", "tool", tc.Function.Name, "args", string(cleanArgs))
 
-			result, err := a.tools.ExecuteWithNotify(ctx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+			result, err := a.tools.ExecuteWithNotify(ctx, tc.Function.Name, cleanArgs)
 			if err != nil {
 				result = fmt.Sprintf("Error: %s", err.Error())
 				a.logger.Error("tool execution error", "tool", tc.Function.Name, "error", err)
@@ -208,6 +215,75 @@ func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage str
 func (a *Agent) NewConversation(ctx context.Context, chatID int64) error {
 	_, err := a.db.CreateConversation(ctx, chatID, a.model)
 	return err
+}
+
+// sanitizeToolArgs cleans up malformed JSON that GLM sometimes generates.
+// GLM occasionally encodes extra arguments inside the action string using
+// XML-like tags: {"action":"discover<arg_key>category</arg_key><arg_value>sports"}.
+// It also handles truncated output that ends with </tool_call>.
+func sanitizeToolArgs(raw json.RawMessage) json.RawMessage {
+	s := strings.TrimSpace(string(raw))
+
+	// Fast path: no XML artifacts → nothing to fix.
+	if !strings.Contains(s, "<arg_key>") && !strings.Contains(s, "</tool_call>") {
+		return raw
+	}
+
+	// Fix truncated JSON that ends with </tool_call> (model stopped mid-string).
+	if idx := strings.Index(s, "</tool_call>"); idx >= 0 {
+		s = s[:idx]
+		// Close the open JSON string and object if needed.
+		s = strings.TrimRight(s, " \t") + `"}`
+	}
+
+	// Parse into a generic map to manipulate fields.
+	var m map[string]any
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		// Can't fix, return original so the tool returns a proper error.
+		return raw
+	}
+
+	// Check whether the "action" field embeds XML-encoded extra args.
+	actionVal, _ := m["action"].(string)
+	if strings.Contains(actionVal, "<arg_key>") {
+		// Trim the clean action name.
+		cleanIdx := strings.Index(actionVal, "<")
+		if cleanIdx < 0 {
+			cleanIdx = len(actionVal)
+		}
+		m["action"] = actionVal[:cleanIdx]
+		remaining := actionVal[cleanIdx:]
+
+		// Extract <arg_key>key</arg_key><arg_value>value</arg_value> pairs.
+		for strings.Contains(remaining, "<arg_key>") {
+			ks := strings.Index(remaining, "<arg_key>") + len("<arg_key>")
+			ke := strings.Index(remaining, "</arg_key>")
+			if ks < 0 || ke < ks {
+				break
+			}
+			key := remaining[ks:ke]
+			remaining = remaining[ke+len("</arg_key>"):]
+
+			vs := strings.Index(remaining, "<arg_value>") + len("<arg_value>")
+			ve := strings.Index(remaining, "</arg_value>")
+			if vs < 0 || ve < vs {
+				break
+			}
+			val := remaining[vs:ve]
+			remaining = remaining[ve+len("</arg_value>"):]
+
+			// Only fill in if the field isn't already present.
+			if _, exists := m[key]; !exists {
+				m[key] = val
+			}
+		}
+	}
+
+	fixed, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return fixed
 }
 
 func (a *Agent) buildToolDefs() []llm.ToolDef {

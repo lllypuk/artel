@@ -43,19 +43,21 @@ type Repository interface {
 
 // NewsManager coordinates news operations.
 type NewsManager struct {
-	repo    Repository
-	parser  Parser
-	fetcher Fetcher
-	logger  *slog.Logger
+	repo         Repository
+	parser       Parser
+	fetcher      Fetcher
+	defaultProxy string // used when a feed has no ProxyURL of its own
+	logger       *slog.Logger
 }
 
 // NewNewsManager creates a new NewsManager.
-func NewNewsManager(repo Repository, parser Parser, fetcher Fetcher, logger *slog.Logger) *NewsManager {
+func NewNewsManager(repo Repository, parser Parser, fetcher Fetcher, defaultProxy string, logger *slog.Logger) *NewsManager {
 	return &NewsManager{
-		repo:    repo,
-		parser:  parser,
-		fetcher: fetcher,
-		logger:  logger,
+		repo:         repo,
+		parser:       parser,
+		fetcher:      fetcher,
+		defaultProxy: defaultProxy,
+		logger:       logger,
 	}
 }
 
@@ -74,7 +76,11 @@ func (m *NewsManager) FetchFeed(ctx context.Context, feedID int64) error {
 
 	m.logger.Debug("fetching from URL", "url", feed.URL)
 
-	data, err := m.fetcher.Fetch(ctx, feed.URL)
+	proxyURL := feed.ProxyURL
+	if proxyURL == "" {
+		proxyURL = m.defaultProxy
+	}
+	data, err := m.fetcher.Fetch(ctx, feed.URL, proxyURL)
 	if err != nil {
 		feed.LastError = err.Error()
 		if updateErr := m.repo.UpdateFeed(ctx, feed); updateErr != nil {
@@ -287,7 +293,7 @@ func (m *NewsManager) AddFeed(ctx context.Context, url, feedTypeStr string) (*Fe
 		feedType = FeedTypeJSON
 	default:
 		// Try to auto-detect by fetching
-		data, err := m.fetcher.Fetch(ctx, url)
+		data, err := m.fetcher.Fetch(ctx, url, "")
 		if err != nil {
 			return nil, fmt.Errorf("fetch feed: %w", err)
 		}
