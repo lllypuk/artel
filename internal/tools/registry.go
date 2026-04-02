@@ -85,7 +85,7 @@ func (r *Registry) ExecuteWithNotify(ctx context.Context, name string, args json
 // shouldNotify returns true if the tool should trigger a notification.
 func (r *Registry) shouldNotify(name string) bool {
 	switch name {
-	case "web_search", "web_fetch", "pi_coder", "notes":
+	case "web_search", "web_fetch", "pi_coder", "notes", "web_screenshot":
 		return true
 	default:
 		return false
@@ -111,6 +111,14 @@ func buildNotificationMessage(name string, args json.RawMessage) string {
 			return "📖 Читаю страницу: " + a.URL + "..."
 		}
 		return "📖 Читаю страницу..."
+	case "web_screenshot":
+		var a struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal(args, &a); err == nil && a.URL != "" {
+			return "📸 Делаю скриншот: " + a.URL + "..."
+		}
+		return "📸 Делаю скриншот..."
 	case "pi_coder":
 		return "⚙️ Выполняю доработку кода агента..."
 	case "notes":

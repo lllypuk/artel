@@ -97,6 +97,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Set up browser tool for bot
+	if cfg.Browser.Enabled {
+		if tool, ok := toolRegistry.Get("browser"); ok {
+			if bt, ok := tool.(*tools.BrowserTool); ok {
+				bot.SetBrowserTool(bt)
+			}
+		}
+	}
+
 	// Set up notification handler for long-running operations
 	bot.SetNotificationHandler()
 
@@ -194,6 +203,22 @@ func registerWebTools(cfg *config.Config, registry *tools.Registry, logger *slog
 		TimeoutSeconds: timeout,
 		MaxSizeKB:      maxFetchKB,
 	}))
+
+	// Register browser tool if enabled
+	if cfg.Browser.Enabled {
+		browserTimeout := cfg.Browser.TimeoutSeconds
+		if browserTimeout == 0 {
+			browserTimeout = 30
+		}
+		registry.Register(tools.NewBrowserTool(tools.BrowserConfig{
+			ScreenshotDir:    cfg.Browser.ScreenshotDir,
+			AgentBrowserPath: cfg.Browser.AgentBrowserPath,
+			TimeoutSeconds:   browserTimeout,
+			Proxy:            cfg.Browser.Proxy,
+		}))
+		logger.Info("Browser tool enabled", "screenshot_dir", cfg.Browser.ScreenshotDir)
+	}
+
 	logger.Info("Web tools enabled", "max_results", maxResults)
 }
 

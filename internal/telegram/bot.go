@@ -2,10 +2,12 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -23,6 +25,7 @@ type Bot struct {
 	allowedUsers map[int64]bool
 	newsOffsets  map[int64]int // chatID -> last offset for news pagination
 	logger       *slog.Logger
+	browserTool  *tools.BrowserTool
 }
 
 // newHTTPClient создаёт http.Client с прокси (если задан) или без него.
@@ -67,6 +70,11 @@ func New(token, proxyURL string, allowedUsers []int64, ag *agent.Agent, newsTool
 		newsOffsets:  make(map[int64]int),
 		logger:       logger,
 	}, nil
+}
+
+// SetBrowserTool sets the browser tool for the bot (used for /screenshot command).
+func (b *Bot) SetBrowserTool(tool *tools.BrowserTool) {
+	b.browserTool = tool
 }
 
 // SetNotificationHandler sets up the agent to send notifications through this bot.
@@ -157,6 +165,9 @@ const helpText = "\U0001F916 <b>Agent Shatrov</b>\n\n" +
 	"/new — начать новый диалог (сброс контекста)\n" +
 	"/model — показать / сменить модель LLM\n" +
 	"/help — эта справка\n\n" +
+	"<b>Скриншоты:</b>\n" +
+	"/screenshot <URL> — сделать скриншот страницы\n" +
+	"/open <URL> — открыть страницу и сделать скриншот\n\n" +
 	"<b>Новости:</b>\n" +
 	"/news [запрос] — последние новости (или поиск по запросу)\n" +
 	"/news_more [N] — следующие N новостей (по умолчанию 10)\n" +
@@ -167,7 +178,8 @@ const helpText = "\U0001F916 <b>Agent Shatrov</b>\n\n" +
 	"\U0001F50D Поиск в интернете (Brave / Serper / DuckDuckGo)\n" +
 	"\U0001F310 Чтение веб-страниц\n" +
 	"\U0001F6E0 Изменение собственного кода через pi_coder\n" +
-	"\U0001F4C3 Новости — чтение, поиск, избранное"
+	"\U0001F4C3 Новости — чтение, поиск, избранное\n" +
+	"\U0001F4F8 Скриншоты веб-страниц"
 
 func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 	parts := strings.Fields(text)
@@ -190,6 +202,10 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 		b.handleModelCommand(chatID, parts)
 	case "/help":
 		b.sendHTML(chatID, helpText)
+
+	// --- Screenshot commands ---
+	case "/screenshot", "/open":
+		b.handleScreenshotCommand(ctx, chatID, cmd, parts)
 
 	// --- News commands ---
 	case "/news", "/unread", "/saved":
@@ -354,4 +370,86 @@ func truncateLog(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+func (b *Bot) handleScreenshotCommand(ctx context.Context, chatID int64, cmd string, parts []string) {
+	if b.browserTool == nil {
+		b.sendText(chatID, "❌ Браузер отключён в конфигурации.")
+		return
+	}
+
+	if len(parts) < 2 {
+		b.sendText(chatID, "❌ Укажите URL. Например: /screenshot https://example.com")
+		return
+	}
+
+	targetURL := parts[1]
+
+	// Show typing action while processing
+	typing := tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)
+	_, _ = b.api.Send(typing)
+
+	toolCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	// Get browser tool from agent registry
+	tool, ok := b.agent.ToolRegistry().Get("browser")
+	if !ok {
+		b.sendText(chatID, "❌ Инструмент browser недоступен.")
+		return
+	}
+
+	// Step 1: open the page
+	openArgs, _ := json.Marshal(map[string]any{"command": "open", "url": targetURL})
+	ctxWithChatID := context.WithValue(toolCtx, tools.ChatIDKey, chatID)
+	if _, err := tool.Execute(ctxWithChatID, openArgs); err != nil {
+		b.sendText(chatID, fmt.Sprintf("❌ Ошибка открытия страницы: %s", err.Error()))
+		return
+	}
+
+	// Step 2: wait for page to settle
+	waitArgs, _ := json.Marshal(map[string]any{"command": "wait", "wait_ms": 2000})
+	_, _ = tool.Execute(ctxWithChatID, waitArgs)
+
+	// Step 3: take screenshot
+	screenshotArgs, _ := json.Marshal(map[string]any{"command": "screenshot", "full_page": false})
+	result, err := tool.Execute(ctxWithChatID, screenshotArgs)
+	if err != nil {
+		b.sendText(chatID, fmt.Sprintf("❌ Ошибка создания скриншота: %s", err.Error()))
+		return
+	}
+
+	// Extract screenshot path from result
+	// Result format: "screenshot_path: /path/to/screenshot-xxx.png\n..."
+	var screenshotPath string
+	for line := range strings.SplitSeq(result, "\n") {
+		if after, ok0 := strings.CutPrefix(line, "screenshot_path: "); ok0 {
+			screenshotPath = after
+			break
+		}
+	}
+
+	if screenshotPath == "" {
+		b.sendText(chatID, fmt.Sprintf("❌ Не удалось определить путь к скриншоту.\n\n%s", result))
+		return
+	}
+
+	if _, err := os.Stat(screenshotPath); os.IsNotExist(err) {
+		b.sendText(chatID, fmt.Sprintf("❌ Файл скриншота не найден: %s", screenshotPath))
+		return
+	}
+
+	b.sendPhoto(chatID, screenshotPath, targetURL)
+}
+
+func (b *Bot) sendPhoto(chatID int64, filePath, caption string) {
+	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
+	if caption != "" {
+		photo.Caption = fmt.Sprintf("📸 %s", caption)
+	}
+
+	if _, err := b.api.Send(photo); err != nil {
+		b.logger.Error("send photo", "error", err, "file", filePath)
+		b.sendText(chatID, fmt.Sprintf("❌ Не удалось отправить скриншот: %s\n\nФайл: %s", err.Error(), filePath))
+	}
 }

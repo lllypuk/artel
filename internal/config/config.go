@@ -13,6 +13,7 @@ type Config struct {
 	Database DatabaseConfig `yaml:"database"`
 	Shell    ShellConfig    `yaml:"shell"`
 	Web      WebConfig      `yaml:"web"`
+	Browser  BrowserConfig  `yaml:"browser"`
 	PiCoder  PiCoderConfig  `yaml:"pi_coder"`
 	News     NewsConfig     `yaml:"news"`
 	Logging  LoggingConfig  `yaml:"logging"`
@@ -56,6 +57,15 @@ type WebConfig struct {
 	MaxResults     int    `yaml:"max_results"`
 	TimeoutSeconds int    `yaml:"timeout"`
 	MaxFetchSizeKB int    `yaml:"max_fetch_size_kb"`
+}
+
+// BrowserConfig holds configuration for the universal browser automation tool.
+type BrowserConfig struct {
+	Enabled          bool   `yaml:"enabled"`
+	ScreenshotDir    string `yaml:"screenshot_dir"`     // Directory for screenshots (default: ./data/screenshots)
+	AgentBrowserPath string `yaml:"agent_browser_path"` // Path to agent-browser binary (default: agent-browser)
+	TimeoutSeconds   int    `yaml:"timeout_seconds"`    // Timeout for browser operations (default: 30s)
+	Proxy            string `yaml:"proxy"`              // Proxy URL, e.g. "http://127.0.0.1:2080"
 }
 
 type PiCoderConfig struct {

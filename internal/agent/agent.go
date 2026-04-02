@@ -109,6 +109,11 @@ func (a *Agent) SetNotifier(notify tools.Notifier) {
 	a.tools.SetNotifier(notify)
 }
 
+// ToolRegistry returns the tool registry.
+func (a *Agent) ToolRegistry() *tools.Registry {
+	return a.tools
+}
+
 // Response from the agent.
 type Response struct {
 	Text  string
