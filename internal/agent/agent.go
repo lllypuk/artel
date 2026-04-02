@@ -75,16 +75,6 @@ func (a *Agent) SetNotifier(notify tools.Notifier) {
 	a.tools.SetNotifier(notify)
 }
 
-// Notify sends a notification to the user about a tool operation.
-// This is used by external components (like Telegram bot) to send notifications.
-func (a *Agent) Notify(chatID int64, toolName string) error {
-	if a.notify != nil {
-		a.notify(chatID, toolName)
-		return nil
-	}
-	return fmt.Errorf("no notifier configured")
-}
-
 // Response from the agent.
 type Response struct {
 	Text  string

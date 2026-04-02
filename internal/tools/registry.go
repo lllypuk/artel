@@ -26,8 +26,8 @@ type Tool interface {
 }
 
 // Notifier is a callback for sending operation status notifications.
-// It receives the chat ID and tool name and should send an appropriate message to the user.
-type Notifier func(chatID int64, toolName string)
+// It receives the chat ID and a ready-to-send message string.
+type Notifier func(chatID int64, message string)
 
 // Registry holds all registered tools.
 type Registry struct {
@@ -75,7 +75,7 @@ func (r *Registry) ExecuteWithNotify(ctx context.Context, name string, args json
 	// Send notification before executing long-running tools
 	if r.notify != nil && r.shouldNotify(name) {
 		if chatID, ok := ctx.Value(ChatIDKey).(int64); ok {
-			r.notify(chatID, name)
+			r.notify(chatID, buildNotificationMessage(name, args))
 		}
 	}
 
@@ -92,13 +92,31 @@ func (r *Registry) shouldNotify(name string) bool {
 	}
 }
 
-// NotificationMessages returns user-friendly messages for tool operations.
-func NotificationMessages() map[string]string {
-	return map[string]string{
-		"web_search": "🔍 Ищу информацию в интернете...",
-		"web_fetch":  "📖 Читаю страницу...",
-		"pi_coder":   "⚙️ Выполняю доработку кода агента...",
-		"notes":      "📝 Работаю с заметками...",
+// buildNotificationMessage builds a context-aware notification message for a tool call.
+func buildNotificationMessage(name string, args json.RawMessage) string {
+	switch name {
+	case "web_search":
+		var a struct {
+			Query string `json:"query"`
+		}
+		if err := json.Unmarshal(args, &a); err == nil && a.Query != "" {
+			return "🔍 Ищу: " + a.Query + "..."
+		}
+		return "🔍 Ищу информацию в интернете..."
+	case "web_fetch":
+		var a struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal(args, &a); err == nil && a.URL != "" {
+			return "📖 Читаю страницу: " + a.URL + "..."
+		}
+		return "📖 Читаю страницу..."
+	case "pi_coder":
+		return "⚙️ Выполняю доработку кода агента..."
+	case "notes":
+		return "📝 Работаю с заметками..."
+	default:
+		return ""
 	}
 }
 

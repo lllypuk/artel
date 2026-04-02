@@ -71,10 +71,9 @@ func New(token, proxyURL string, allowedUsers []int64, ag *agent.Agent, newsTool
 // SetNotificationHandler sets up the agent to send notifications through this bot.
 // This should be called after Bot creation.
 func (b *Bot) SetNotificationHandler() {
-	b.agent.SetNotifier(func(chatID int64, toolName string) {
-		msg := tools.NotificationMessages()[toolName]
-		if msg != "" {
-			b.sendText(chatID, msg)
+	b.agent.SetNotifier(func(chatID int64, message string) {
+		if message != "" {
+			b.sendText(chatID, message)
 		}
 	})
 }
