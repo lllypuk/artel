@@ -328,7 +328,9 @@ func (b *Bot) handleNewsMoreCommand(ctx context.Context, chatID int64, parts []s
 }
 
 func (b *Bot) sendText(chatID int64, text string) {
-	b.sendHTML(chatID, markdownToHTML(text))
+	// Remove any HTML tags from LLM responses before converting to Telegram format
+	cleanText := SanitizeResponse(text)
+	b.sendHTML(chatID, markdownToHTML(cleanText))
 }
 
 func (b *Bot) sendHTML(chatID int64, html string) {
