@@ -164,6 +164,13 @@ func (s *DB) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_reminders_chat ON reminders(chat_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_reminders_trigger ON reminders(trigger_at, status)`,
+		// Usage statistics table
+		`CREATE TABLE IF NOT EXISTS usage_stats (
+			date TEXT PRIMARY KEY,
+			prompt_tokens INTEGER DEFAULT 0,
+			completion_tokens INTEGER DEFAULT 0,
+			requests_count INTEGER DEFAULT 0
+		)`,
 	}
 
 	// Execute core migrations (required)

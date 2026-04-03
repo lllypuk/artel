@@ -17,6 +17,7 @@
 | Переключение модели (`/model`) | ✅ Done | `/model`, `/model fast`, `/model default` |
 | Напоминания (`reminders` tool) | ✅ Done | CRUD, планировщик, recurring, парсинг естественного языка |
 | Обработка файлов и изображений | ✅ Done | Документы + фото в чат, Vision (base64), tool `files` (list/read/delete) |
+| Мониторинг (`/status`) | ✅ Done | Аптайм, размер БД, счётчики, статистика токенов per-day |
 
 ---
 
@@ -91,18 +92,19 @@
 
 ---
 
-### 5. Мониторинг и `/status`
+### ~~5. Мониторинг и `/status`~~ ✅ Done
 
 **Зачем:** Понимать, что происходит с агентом: сколько токенов потрачено, сколько запросов, статус фидов.
 
-**Что сделать:**
-- Команда `/status` → аптайм, размер БД, кол-во заметок/диалогов, статус фидов
-- Подсчёт использования токенов per-session и per-day
-- Таблица `usage_stats(date, prompt_tokens, completion_tokens, requests_count)`
-- Опциональный Prometheus-экспортер или простой HTTP `/metrics`
+**Реализовано:**
+- Команда `/status` → аптайм, текущая модель, размер БД, кол-во диалогов/сообщений/заметок/напоминаний/фидов
+- Таблица `usage_stats(date, prompt_tokens, completion_tokens, requests_count)` с `ON CONFLICT … DO UPDATE` для накопления
+- Запись токенов в `agent.go` после каждого LLM-вызова (per-request)
+- Статистика токенов за сегодня: кол-во запросов, prompt / completion / total
+- Статистика за последние 7 дней (построчно, если >1 дня)
+- Helpers: `formatDuration` (аптайм), `formatTokens` (тысячные разделители)
 
-**Сложность:** Лёгкая
-**Файлы:** `internal/telegram/bot.go`, `internal/storage/stats.go`, `internal/agent/agent.go` (подсчёт)
+**Файлы:** `internal/storage/stats.go` (новый), `internal/storage/stats_test.go` (новый), `internal/storage/sqlite.go` (миграция), `internal/agent/agent.go` (RecordUsage), `internal/telegram/bot.go` (команда + поля), `cmd/agent/main.go` (startTime + SetStatusInfo)
 
 ---
 
@@ -163,7 +165,7 @@
 | ~~2~~ | ~~Reminders~~ | ✅ Done | Агент становится проактивным |
 | ~~3~~ | ~~Управление контекстом~~ | ✅ Done | Устранение техдолга, стабильность |
 | ~~4~~ | ~~Обработка файлов~~ | ✅ Done | Расширение входных данных |
-| 5 | `/status` + мониторинг | Лёгкая | Наблюдаемость |
+| ~~5~~ | ~~`/status` + мониторинг~~ | ✅ Done | Наблюдаемость |
 | 6 | Code runner | Средняя | Вычислительные возможности |
 | 7 | Мультипровайдер LLM | Средняя | Отказоустойчивость |
 | 8 | Календарь | Высокая | Расширение экосистемы |

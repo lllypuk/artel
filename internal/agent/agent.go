@@ -227,6 +227,13 @@ func (a *Agent) handleMessage(ctx context.Context, chatID int64, userMessage str
 		totalUsage.CompletionTokens += resp.Usage.CompletionTokens
 		totalUsage.TotalTokens += resp.Usage.TotalTokens
 
+		// Persist usage statistics for /status reporting.
+		if resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0 {
+			if err := a.db.RecordUsage(ctx, resp.Usage.PromptTokens, resp.Usage.CompletionTokens); err != nil {
+				a.logger.Warn("record usage", "error", err)
+			}
+		}
+
 		if len(resp.Choices) == 0 {
 			return nil, fmt.Errorf("no choices in LLM response")
 		}

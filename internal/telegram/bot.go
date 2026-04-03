@@ -17,6 +17,7 @@ import (
 
 	"github.com/lllypuk/agent-shatrov/internal/agent"
 	"github.com/lllypuk/agent-shatrov/internal/config"
+	"github.com/lllypuk/agent-shatrov/internal/storage"
 	"github.com/lllypuk/agent-shatrov/internal/tools"
 )
 
@@ -34,6 +35,10 @@ type Bot struct {
 	maxFileSizeKB     int
 	allowedExtensions map[string]bool
 	visionEnabled     bool
+	// status / monitoring
+	startTime time.Time
+	dbPath    string
+	db        *storage.DB
 }
 
 // newHTTPClient создаёт http.Client с прокси (если задан) или без него.
@@ -118,6 +123,13 @@ func (b *Bot) GetNotifier() tools.Notifier {
 // SetNewsTool updates the news tool reference after bot creation.
 func (b *Bot) SetNewsTool(nt *tools.NewsTool) {
 	b.newsTool = nt
+}
+
+// SetStatusInfo configures the data needed for the /status command.
+func (b *Bot) SetStatusInfo(startTime time.Time, dbPath string, db *storage.DB) {
+	b.startTime = startTime
+	b.dbPath = dbPath
+	b.db = db
 }
 
 // Run starts the long-polling loop.
@@ -210,6 +222,7 @@ const helpText = "\U0001F916 **Agent Shatrov**\n\n" +
 	"/new — начать новый диалог (сброс контекста)\n" +
 	"/model — показать / сменить модель LLM\n" +
 	"/context — размер и статистика текущего контекста\n" +
+	"/status — аптайм, статистика БД и токенов\n" +
 	"/help — эта справка\n\n" +
 	"**Напоминания:**\n" +
 	"/reminders — список активных напоминаний\n" +
@@ -259,6 +272,8 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 		b.handleContextCommand(ctx, chatID)
 	case "/reminders":
 		b.handleRemindersCommand(ctx, chatID)
+	case "/status":
+		b.handleStatusCommand(ctx, chatID)
 	case "/help":
 		b.sendText(chatID, helpText)
 
@@ -369,6 +384,103 @@ func (b *Bot) handleRemindersCommand(ctx context.Context, chatID int64) {
 		return
 	}
 	b.sendText(chatID, result)
+}
+
+func (b *Bot) handleStatusCommand(ctx context.Context, chatID int64) {
+	var sb strings.Builder
+	sb.WriteString("📊 **Статус агента**\n\n")
+
+	// Uptime
+	if !b.startTime.IsZero() {
+		uptime := time.Since(b.startTime).Round(time.Second)
+		fmt.Fprintf(&sb, "⏱ Аптайм: **%s**\n", formatDuration(uptime))
+	}
+
+	// Current model
+	fmt.Fprintf(&sb, "🤖 Модель: `%s`\n", b.agent.GetModel())
+
+	// DB stats
+	if b.db != nil && b.dbPath != "" {
+		dbStats, err := b.db.GetDBStats(ctx, b.dbPath)
+		if err == nil {
+			sb.WriteString("\n📁 **База данных:**\n")
+			if dbStats.DBSizeBytes > 0 {
+				fmt.Fprintf(&sb, "• Размер: **%s**\n", formatDocSize(dbStats.DBSizeBytes))
+			}
+			fmt.Fprintf(&sb, "• Диалогов: **%d**\n", dbStats.ConversationsCount)
+			fmt.Fprintf(&sb, "• Сообщений: **%d**\n", dbStats.MessagesCount)
+			fmt.Fprintf(&sb, "• Заметок: **%d**\n", dbStats.NotesCount)
+			if dbStats.RemindersCount > 0 {
+				fmt.Fprintf(&sb, "• Напоминаний (активных): **%d**\n", dbStats.RemindersCount)
+			}
+			if dbStats.FeedsCount > 0 {
+				fmt.Fprintf(&sb, "• Фидов новостей: **%d**\n", dbStats.FeedsCount)
+			}
+		}
+	}
+
+	// Token usage today
+	if b.db != nil {
+		today, err := b.db.GetUsageToday(ctx)
+		if err == nil {
+			sb.WriteString("\n🔢 **Токены сегодня:**\n")
+			if today.RequestsCount == 0 {
+				sb.WriteString("• Запросов ещё не было\n")
+			} else {
+				fmt.Fprintf(&sb, "• Запросов: **%d**\n", today.RequestsCount)
+				fmt.Fprintf(&sb, "• Prompt: **%s**\n", formatTokens(today.PromptTokens))
+				fmt.Fprintf(&sb, "• Completion: **%s**\n", formatTokens(today.CompletionTokens))
+				fmt.Fprintf(&sb, "• Итого: **%s**\n", formatTokens(today.PromptTokens+today.CompletionTokens))
+			}
+		}
+
+		// Last 7 days summary
+		week, err := b.db.GetUsageLast7Days(ctx)
+		if err == nil && len(week) > 1 {
+			sb.WriteString("\n📅 **Последние 7 дней:**\n")
+			for _, day := range week {
+				totalDay := day.PromptTokens + day.CompletionTokens
+				fmt.Fprintf(&sb, "• %s — %s (%d зап.)\n",
+					day.Date, formatTokens(totalDay), day.RequestsCount)
+			}
+		}
+	}
+
+	b.sendText(chatID, sb.String())
+}
+
+// formatDuration formats a duration in human-readable form (e.g. "2д 3ч 15мин 4сек").
+func formatDuration(d time.Duration) string {
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	mins := int(d.Minutes()) % 60
+	secs := int(d.Seconds()) % 60
+
+	var parts []string
+	if days > 0 {
+		parts = append(parts, fmt.Sprintf("%dд", days))
+	}
+	if hours > 0 {
+		parts = append(parts, fmt.Sprintf("%dч", hours))
+	}
+	if mins > 0 {
+		parts = append(parts, fmt.Sprintf("%dмин", mins))
+	}
+	if secs > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%dсек", secs))
+	}
+	return strings.Join(parts, " ")
+}
+
+// formatTokens formats a token count with thousands separator.
+func formatTokens(n int) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	if n < 1_000_000 {
+		return fmt.Sprintf("%d,%03d", n/1000, n%1000)
+	}
+	return fmt.Sprintf("%d,%03d,%03d", n/1_000_000, (n/1000)%1000, n%1000)
 }
 
 func (b *Bot) handleNewsCommand(ctx context.Context, chatID int64, cmd string, parts []string) {

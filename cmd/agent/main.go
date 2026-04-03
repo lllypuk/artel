@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/lllypuk/agent-shatrov/internal/agent"
 	"github.com/lllypuk/agent-shatrov/internal/config"
@@ -49,6 +50,8 @@ func main() {
 	}
 	defer db.Close() //nolint:errcheck
 
+	startTime := time.Now()
+
 	llmClient := llm.NewClient(cfg.LLM.BaseURL, cfg.LLM.APIKey)
 
 	toolRegistry := tools.NewRegistry(logger)
@@ -70,6 +73,7 @@ func main() {
 	setupBot(bot, cfg, toolRegistry)
 
 	bot.SetNotificationHandler()
+	bot.SetStatusInfo(startTime, cfg.Database.Path, db)
 
 	go runReminderScheduler(ctx, db, bot.GetNotifier(), logger)
 
