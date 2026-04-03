@@ -8,16 +8,17 @@ import (
 )
 
 type Config struct {
-	Telegram TelegramConfig `yaml:"telegram"`
-	LLM      LLMConfig      `yaml:"llm"`
-	Database DatabaseConfig `yaml:"database"`
-	Shell    ShellConfig    `yaml:"shell"`
-	Web      WebConfig      `yaml:"web"`
-	Browser  BrowserConfig  `yaml:"browser"`
-	PiCoder  PiCoderConfig  `yaml:"pi_coder"`
-	News     NewsConfig     `yaml:"news"`
-	Files    FilesConfig    `yaml:"files"`
-	Logging  LoggingConfig  `yaml:"logging"`
+	Telegram   TelegramConfig   `yaml:"telegram"`
+	LLM        LLMConfig        `yaml:"llm"`
+	Database   DatabaseConfig   `yaml:"database"`
+	Shell      ShellConfig      `yaml:"shell"`
+	Web        WebConfig        `yaml:"web"`
+	Browser    BrowserConfig    `yaml:"browser"`
+	PiCoder    PiCoderConfig    `yaml:"pi_coder"`
+	News       NewsConfig       `yaml:"news"`
+	Files      FilesConfig      `yaml:"files"`
+	CodeRunner CodeRunnerConfig `yaml:"code_runner"`
+	Logging    LoggingConfig    `yaml:"logging"`
 }
 
 type TelegramConfig struct {
@@ -84,6 +85,14 @@ type FilesConfig struct {
 	MaxFileSizeKB     int      `yaml:"max_file_size_kb"`   // default: 10240 (10 MB)
 	AllowedExtensions []string `yaml:"allowed_extensions"` // default: see validate()
 	VisionEnabled     bool     `yaml:"vision_enabled"`     // send images to LLM as base64
+}
+
+// CodeRunnerConfig holds settings for the code execution tool.
+type CodeRunnerConfig struct {
+	Enabled        bool     `yaml:"enabled"`
+	TimeoutSeconds int      `yaml:"timeout_seconds"` // default: 30
+	MemLimitMB     int      `yaml:"mem_limit_mb"`    // 0 = no limit
+	EnabledLangs   []string `yaml:"enabled_langs"`   // empty = all (python, go, bash)
 }
 
 type LoggingConfig struct {

@@ -163,6 +163,16 @@ files:
   #   - gif
   #   - webp
 
+code_runner:
+  enabled: false           # включить для выполнения кода (Python / Go / bash)
+  timeout_seconds: 30      # максимальное время выполнения
+  mem_limit_mb: 0          # лимит виртуальной памяти (МБ); 0 = без ограничений
+  # Разрешённые языки (по умолчанию все: python, go, bash)
+  # enabled_langs:
+  #   - python
+  #   - go
+  #   - bash
+
 logging:
   level: "info"           # debug, info, warn, error
   file: "./data/agent.log"

@@ -18,6 +18,7 @@
 | Напоминания (`reminders` tool) | ✅ Done | CRUD, планировщик, recurring, парсинг естественного языка |
 | Обработка файлов и изображений | ✅ Done | Документы + фото в чат, Vision (base64), tool `files` (list/read/delete) |
 | Мониторинг (`/status`) | ✅ Done | Аптайм, размер БД, счётчики, статистика токенов per-day |
+| Выполнение кода (`code_runner`) | ✅ Done | Python / Go / bash, temp dir, таймаут, ulimit, stdout/stderr/exit code |
 
 ---
 
@@ -108,19 +109,22 @@
 
 ---
 
-### 6. Выполнение кода (`code_runner` tool)
+### ~~6. Выполнение кода (`code_runner` tool)~~ ✅ Done
 
 **Зачем:** Расширение shell, специализированное для вычислений и прототипов. Агент сможет писать и запускать код для ответа на вопросы.
 
-**Что сделать:**
-- Принимает код (Python/Go/bash) и язык
-- Выполняет в изолированной среде (temp dir, таймаут, лимит памяти)
-- Возвращает stdout/stderr/exit code
-- Автоматическая очистка temp-файлов
-- Опциональные ограничения: `ulimit`, `timeout`, `nsjail`
+**Реализовано:**
+- Принимает код (Python / Go / bash) и язык
+- Python и bash выполняются из temp-файла; Go — компилируется (`go build`) и затем запускается бинарник (корректный exit code)
+- Изолированная среда: временная директория (`os.MkdirTemp`), автоматически удаляется после выполнения
+- Таймаут через `context.WithTimeout`; при истечении возвращается результат с пометкой «timed out»
+- Опциональный лимит виртуальной памяти (`ulimit -v`, в МБ)
+- Возвращает exit code, stdout и stderr в читаемом формате; вывод обрезается до 2 KB каждый
+- Языковые алиасы: `python3` → python, `golang` → go, `sh` → bash
+- Конфигурация: `code_runner.enabled`, `timeout_seconds`, `mem_limit_mb`, `enabled_langs`
+- Уведомление в Telegram при вызове («⚙️ Выполняю код (python)...»)
 
-**Сложность:** Средняя
-**Файлы:** `internal/tools/code_runner.go`
+**Файлы:** `internal/tools/code_runner.go`, `internal/tools/code_runner_test.go`, `internal/config/config.go`, `cmd/agent/tools.go`, `internal/tools/registry.go`, `config.example.yaml`
 
 ---
 

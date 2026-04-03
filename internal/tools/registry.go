@@ -123,6 +123,14 @@ func buildNotificationMessage(name string, args json.RawMessage) string {
 		return "⚙️ Выполняю доработку кода агента..."
 	case "notes":
 		return "📝 Работаю с заметками..."
+	case "code_runner":
+		var a struct {
+			Language string `json:"language"`
+		}
+		if err := json.Unmarshal(args, &a); err == nil && a.Language != "" {
+			return "⚙️ Выполняю код (" + a.Language + ")..."
+		}
+		return "⚙️ Выполняю код..."
 	default:
 		return ""
 	}
