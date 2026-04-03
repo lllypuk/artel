@@ -87,6 +87,20 @@ func (b *Bot) SetNotificationHandler() {
 	})
 }
 
+// GetNotifier returns a Notifier function backed by this bot's sendText.
+func (b *Bot) GetNotifier() tools.Notifier {
+	return func(chatID int64, message string) {
+		if message != "" {
+			b.sendText(chatID, message)
+		}
+	}
+}
+
+// SetNewsTool updates the news tool reference after bot creation.
+func (b *Bot) SetNewsTool(nt *tools.NewsTool) {
+	b.newsTool = nt
+}
+
 // Run starts the long-polling loop.
 func (b *Bot) Run(ctx context.Context) error {
 	u := tgbotapi.NewUpdate(0)
@@ -159,22 +173,26 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 	}
 }
 
-const helpText = "\U0001F916 <b>Agent Shatrov</b>\n\n" +
+const helpText = "\U0001F916 **Agent Shatrov**\n\n" +
 	"Просто напиши что нужно — агент сам выберет инструмент.\n\n" +
-	"<b>Диалог:</b>\n" +
+	"**Диалог:**\n" +
 	"/new — начать новый диалог (сброс контекста)\n" +
 	"/model — показать / сменить модель LLM\n" +
 	"/help — эта справка\n\n" +
-	"<b>Скриншоты:</b>\n" +
+	"**Напоминания:**\n" +
+	"/reminders — список активных напоминаний\n" +
+	"Через агента: 'напомни через 2 часа сделать X', 'напомни каждый день в 9:00'\n\n" +
+	"**Скриншоты:**\n" +
 	"/screenshot <URL> — сделать скриншот страницы\n" +
 	"/open <URL> — открыть страницу и сделать скриншот\n\n" +
-	"<b>Новости:</b>\n" +
+	"**Новости:**\n" +
 	"/news [запрос] — последние новости (или поиск по запросу)\n" +
 	"/news_more [N] — следующие N новостей (по умолчанию 10)\n" +
 	"/unread — непрочитанные новости\n" +
 	"/saved — сохранённые новости\n\n" +
-	"<b>Что умеет агент (через чат):</b>\n" +
+	"**Что умеет агент (через чат):**\n" +
 	"\U0001F4DD Заметки — создать, найти, прочитать, редактировать, удалить\n" +
+	"⏰ Напоминания — создать, список, отменить (разовые и повторяющиеся)\n" +
 	"\U0001F50D Поиск в интернете (Brave / Serper / DuckDuckGo)\n" +
 	"\U0001F310 Чтение веб-страниц\n" +
 	"\U0001F6E0 Изменение собственного кода через pi_coder\n" +
@@ -200,8 +218,10 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 		b.sendText(chatID, "🆕 Новый диалог начат.")
 	case "/model":
 		b.handleModelCommand(chatID, parts)
+	case "/reminders":
+		b.handleRemindersCommand(ctx, chatID)
 	case "/help":
-		b.sendHTML(chatID, helpText)
+		b.sendText(chatID, helpText)
 
 	// --- Screenshot commands ---
 	case "/screenshot", "/open":
@@ -225,7 +245,7 @@ func (b *Bot) handleModelCommand(chatID int64, parts []string) {
 	if len(parts) == 1 {
 		// Show current model and available aliases
 		var lines strings.Builder
-		fmt.Fprintf(&lines, "🤖 Текущая модель: <code>%s</code>", escapeHTML(current))
+		fmt.Fprintf(&lines, "🤖 Текущая модель: `%s`", current)
 		if len(models) > 0 {
 			lines.WriteString("\n\nДоступные алиасы:")
 			for alias, name := range models {
@@ -233,11 +253,11 @@ func (b *Bot) handleModelCommand(chatID int64, parts []string) {
 				if name == current {
 					marker = " ✔️"
 				}
-				fmt.Fprintf(&lines, "\n• <code>%s</code> → %s%s", escapeHTML(alias), escapeHTML(name), marker)
+				fmt.Fprintf(&lines, "\n• `%s` → %s%s", alias, name, marker)
 			}
-			lines.WriteString("\n\nИспользование: <code>/model fast</code> или <code>/model default</code>")
+			lines.WriteString("\n\nИспользование: `/model fast` или `/model default`")
 		}
-		b.sendHTML(chatID, lines.String())
+		b.sendText(chatID, lines.String())
 		return
 	}
 
@@ -248,9 +268,26 @@ func (b *Bot) handleModelCommand(chatID int64, parts []string) {
 		modelName = alias
 	}
 	b.agent.SetModel(modelName)
-	b.sendHTML(chatID, fmt.Sprintf("✅ Модель переключена: <code>%s</code>", escapeHTML(modelName)))
+	b.sendText(chatID, fmt.Sprintf("✅ Модель переключена: `%s`", modelName))
 
 	b.logger.Info("model switched", "chat_id", chatID, "model", modelName)
+}
+
+func (b *Bot) handleRemindersCommand(ctx context.Context, chatID int64) {
+	// Proxy to the reminders tool directly for a quick list.
+	tool, ok := b.agent.ToolRegistry().Get("reminders")
+	if !ok {
+		b.sendText(chatID, "❌ Инструмент reminders недоступен.")
+		return
+	}
+	args, _ := json.Marshal(map[string]any{"action": "list"})
+	ctxWithID := context.WithValue(ctx, tools.ChatIDKey, chatID)
+	result, err := tool.Execute(ctxWithID, args)
+	if err != nil {
+		b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
+		return
+	}
+	b.sendText(chatID, result)
 }
 
 func (b *Bot) handleNewsCommand(ctx context.Context, chatID int64, cmd string, parts []string) {

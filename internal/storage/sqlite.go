@@ -152,6 +152,18 @@ func (s *DB) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_news_read_status_chat ON news_read_status(chat_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_news_read_status_item ON news_read_status(item_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_news_read_status_saved ON news_read_status(saved) WHERE saved = 1`,
+		// Reminders table
+		`CREATE TABLE IF NOT EXISTS reminders (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			chat_id INTEGER NOT NULL,
+			text TEXT NOT NULL,
+			trigger_at DATETIME NOT NULL,
+			repeat_interval INTEGER DEFAULT 0,
+			status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'done', 'cancelled')),
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_reminders_chat ON reminders(chat_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_reminders_trigger ON reminders(trigger_at, status)`,
 	}
 
 	// Execute core migrations (required)

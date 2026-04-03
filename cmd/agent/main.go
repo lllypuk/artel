@@ -62,21 +62,12 @@ func main() {
 	// Setup tools
 	toolRegistry := tools.NewRegistry(logger)
 	toolRegistry.Register(tools.NewNotesTool(db))
+	toolRegistry.Register(tools.NewRemindersTool(db))
 	registerOptionalTools(cfg, toolRegistry, logger, db)
 
 	// Graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	// Start news fetcher if enabled
-	var newsTool *tools.NewsTool
-	if cfg.News.Enabled {
-		nt, nm := setupNews(ctx, cfg, db, toolRegistry, logger)
-		if nt != nil {
-			newsTool = nt
-			go fetchNewsLoop(ctx, nm, logger)
-		}
-	}
 
 	// Create agent
 	ag := agent.New(llmClient, cfg.LLM.Models.Default, cfg.LLM.MaxIterations, toolRegistry, db, logger)
@@ -91,7 +82,7 @@ func main() {
 	ag.SetModels(modelAliases)
 
 	// Create and run Telegram bot
-	bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.Proxy, cfg.Telegram.AllowedUsers, ag, newsTool, logger)
+	bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.Proxy, cfg.Telegram.AllowedUsers, ag, nil, logger)
 	if err != nil {
 		logger.Error("create telegram bot", "error", err)
 		os.Exit(1)
@@ -106,8 +97,27 @@ func main() {
 		}
 	}
 
-	// Set up notification handler for long-running operations
+	// Set up notification handler (bot → agent → registry)
 	bot.SetNotificationHandler()
+
+	// Start reminder scheduler
+	notifier := bot.GetNotifier()
+	go runReminderScheduler(ctx, db, notifier, logger)
+
+	// Start news fetcher if enabled
+	var newsTool *tools.NewsTool
+	if cfg.News.Enabled {
+		nt, nm := setupNews(ctx, cfg, db, toolRegistry, logger)
+		if nt != nil {
+			newsTool = nt
+			go fetchNewsLoop(ctx, nm, logger)
+		}
+	}
+
+	// Update bot with newsTool if news enabled
+	if newsTool != nil {
+		bot.SetNewsTool(newsTool)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -447,6 +457,51 @@ func updateFeedIfNeeded(ctx context.Context, repo storage.NewsRepository, existi
 func deleteFeed(ctx context.Context, repo storage.NewsRepository, feed news.Feed) bool {
 	err := repo.DeleteFeed(ctx, feed.ID)
 	return err == nil
+}
+
+func runReminderScheduler(ctx context.Context, db *storage.DB, notifier tools.Notifier, logger *slog.Logger) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Info("reminder scheduler stopped")
+			return
+		case <-ticker.C:
+			processDueReminders(ctx, db, notifier, logger)
+		}
+	}
+}
+
+func processDueReminders(ctx context.Context, db *storage.DB, notifier tools.Notifier, logger *slog.Logger) {
+	now := time.Now()
+	reminders, err := db.GetDueReminders(ctx, now)
+	if err != nil {
+		logger.Error("get due reminders", "error", err)
+		return
+	}
+	for _, r := range reminders {
+		msg := fmt.Sprintf("⏰ Напоминание: %s", r.Text)
+		if notifier != nil {
+			notifier(r.ChatID, msg)
+		}
+		if r.RepeatInterval > 0 {
+			nextAt := r.TriggerAt.Add(time.Duration(r.RepeatInterval) * time.Second)
+			// If next occurrence is still in the past, advance until it's in the future.
+			for !nextAt.After(now) {
+				nextAt = nextAt.Add(time.Duration(r.RepeatInterval) * time.Second)
+			}
+			if err := db.RescheduleReminder(ctx, r.ID, nextAt); err != nil {
+				logger.Error("reschedule reminder", "id", r.ID, "error", err)
+			}
+			logger.Info("reminder rescheduled", "id", r.ID, "next_at", nextAt)
+		} else {
+			if err := db.MarkReminderDone(ctx, r.ID); err != nil {
+				logger.Error("mark reminder done", "id", r.ID, "error", err)
+			}
+			logger.Info("reminder fired", "id", r.ID, "chat_id", r.ChatID)
+		}
+	}
 }
 
 func fetchNewsLoop(ctx context.Context, manager *news.NewsManager, logger *slog.Logger) {

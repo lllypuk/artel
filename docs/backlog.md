@@ -15,25 +15,27 @@
 | pi_coder (самообновление) | ✅ Done | Агент меняет собственный код через pi |
 | Новости (RSS) | ✅ Done | Подписки, фиды, поиск, сохранённые, FTS5 |
 | Переключение модели (`/model`) | ✅ Done | `/model`, `/model fast`, `/model default` |
+| Напоминания (`reminders` tool) | ✅ Done | CRUD, планировщик, recurring, парсинг естественного языка |
+| Напоминания (`reminders` tool) | ✅ Done | CRUD, планировщик, recurring, парсинг естественного языка |
 
 ---
 
 ## 🔴 Tier 1 — Высокий приоритет
 
-### 1. Напоминания и отложенные задачи (`reminders` tool)
+### ~~1. Напоминания и отложенные задачи (`reminders` tool)~~ ✅ Done
 
 **Зачем:** Сейчас агент только реагирует на сообщения. Reminders сделают его проактивным — он сам напишет в нужное время.
 
-**Что сделать:**
-- Таблица `reminders(id, chat_id, text, trigger_at, repeat_interval, status, created_at)`
+**Реализовано:**
+- Таблица `reminders(id, chat_id, text, trigger_at, repeat_interval, status, created_at)` + индексы
 - Tool `reminders` с действиями: `create`, `list`, `delete`, `done`
 - Горутина-планировщик в `main.go` — раз в минуту проверяет `trigger_at <= NOW() AND status = 'pending'`
 - Отправка уведомления в Telegram через `Notifier`
-- Recurring reminders: daily, weekly, custom interval
-- Парсинг естественного языка: «напомни через 2 часа», «напомни завтра в 10:00»
+- Recurring reminders: daily, weekly, hourly, custom interval (Nm/Nh/Nd)
+- Парсинг естественного языка: «через 2 часа», «завтра в 10:00», «послезавтра в 15:30», «в 09:00», ISO datetime
+- Команда `/reminders` в Telegram — список активных напоминаний
 
-**Сложность:** Средняя (~200-300 строк)
-**Файлы:** `internal/tools/reminders.go`, `internal/storage/reminders.go`, миграция в `sqlite.go`
+**Файлы:** `internal/tools/reminders.go`, `internal/storage/reminders.go`, `internal/storage/sqlite.go`, `cmd/agent/main.go`, `internal/telegram/bot.go`
 
 ---
 
@@ -200,7 +202,7 @@
 | Очередь | Задача | Сложность | Ожидаемый эффект |
 |---------|--------|-----------|------------------|
 | ~~1~~ | ~~`/model` переключение~~ | ✅ Done | Быстрая победа, уже в планах |
-| 2 | Reminders | Средняя | Агент становится проактивным |
+| ~~2~~ | ~~Reminders~~ | ✅ Done | Агент становится проактивным |
 | 3 | Управление контекстом | Средняя | Устранение техдолга, стабильность |
 | 4 | Обработка файлов | Средняя | Расширение входных данных |
 | 5 | Inline-кнопки | Средняя | UX улучшение |
