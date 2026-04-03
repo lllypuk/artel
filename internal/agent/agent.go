@@ -49,15 +49,16 @@ const systemPrompt = `Ты — персональный AI-ассистент С
 
 // Agent is the core agent implementing the ReAct loop.
 type Agent struct {
-	llmClient     *llm.Client
-	model         string
-	mu            sync.RWMutex
-	models        map[string]string // alias → model name, e.g. "fast" → "glm-4.7-flash"
-	maxIterations int
-	tools         *tools.Registry
-	db            *storage.DB
-	logger        *slog.Logger
-	notify        tools.Notifier
+	llmClient          *llm.Client
+	model              string
+	mu                 sync.RWMutex
+	models             map[string]string // alias → model name, e.g. "fast" → "glm-4.7-flash"
+	maxIterations      int
+	maxContextMessages int // sliding context window (0 = no limit)
+	tools              *tools.Registry
+	db                 *storage.DB
+	logger             *slog.Logger
+	notify             tools.Notifier
 }
 
 // New creates a new Agent.
@@ -95,6 +96,16 @@ func (a *Agent) SetModels(models map[string]string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.models = models
+}
+
+// SetMaxContextMessages sets the sliding context window size.
+// When n > 0, messages older than the last n are summarised automatically.
+// Use 0 to disable context management (load full history, legacy behaviour).
+func (a *Agent) SetMaxContextMessages(n int) {
+	if n < 0 {
+		n = 0
+	}
+	a.maxContextMessages = n
 }
 
 // Models returns a copy of the named model aliases map.
@@ -142,25 +153,16 @@ func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage str
 		conv = &storage.Conversation{ID: convID, ChatID: chatID, Model: a.model}
 	}
 
-	// Load conversation history
-	storedMsgs, err := a.db.GetMessages(ctx, conv.ID)
+	// Load conversation history and apply context window management.
+	contextMsgs, err := a.manageContext(ctx, conv)
 	if err != nil {
-		return nil, fmt.Errorf("get messages: %w", err)
+		return nil, fmt.Errorf("build context: %w", err)
 	}
 
 	// Build messages for LLM
-	messages := []llm.Message{{Role: "system", Content: systemPrompt}}
-	for _, m := range storedMsgs {
-		msg := llm.Message{
-			Role:       m.Role,
-			Content:    m.Content,
-			ToolCallID: m.ToolCallID,
-		}
-		if m.ToolCallsJSON != "" {
-			_ = json.Unmarshal([]byte(m.ToolCallsJSON), &msg.ToolCalls)
-		}
-		messages = append(messages, msg)
-	}
+	messages := make([]llm.Message, 0, len(contextMsgs)+2)
+	messages = append(messages, llm.Message{Role: "system", Content: systemPrompt})
+	messages = append(messages, contextMsgs...)
 
 	// Add user message
 	messages = append(messages, llm.Message{Role: "user", Content: userMessage})

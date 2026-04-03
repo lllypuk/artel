@@ -177,6 +177,8 @@ func (s *DB) migrate(ctx context.Context) error {
 	additiveMigrations := []string{
 		`ALTER TABLE news_feeds ADD COLUMN proxy_url TEXT DEFAULT ''`,
 		`ALTER TABLE news_feeds ADD COLUMN tags TEXT DEFAULT ''`,
+		`ALTER TABLE conversations ADD COLUMN summary_text TEXT DEFAULT ''`,
+		`ALTER TABLE conversations ADD COLUMN summarized_until_id INTEGER DEFAULT 0`,
 	}
 	for _, m := range additiveMigrations {
 		_, _ = s.db.ExecContext(ctx, m) // ignore error if column already exists
@@ -265,12 +267,14 @@ func (s *DB) migrate(ctx context.Context) error {
 
 // Conversation represents a chat conversation.
 type Conversation struct {
-	ID        int64
-	ChatID    int64
-	Title     string
-	Model     string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID                int64
+	ChatID            int64
+	Title             string
+	Model             string
+	SummaryText       string // summary of older messages
+	SummarizedUntilID int64  // messages up to and including this ID are summarised
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // StoredMessage represents a stored message.
@@ -335,9 +339,16 @@ func (s *DB) GetMessages(ctx context.Context, convID int64) ([]StoredMessage, er
 func (s *DB) GetActiveConversation(ctx context.Context, chatID int64) (*Conversation, error) {
 	var c Conversation
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id, chat_id, title, model, created_at, updated_at FROM conversations WHERE chat_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
+		`SELECT id, chat_id, title, model,
+		        COALESCE(summary_text, ''), COALESCE(summarized_until_id, 0),
+		        created_at, updated_at
+		 FROM conversations
+		 WHERE chat_id = ?
+		 ORDER BY updated_at DESC, id DESC LIMIT 1`,
 		chatID,
-	).Scan(&c.ID, &c.ChatID, &c.Title, &c.Model, &c.CreatedAt, &c.UpdatedAt)
+	).Scan(&c.ID, &c.ChatID, &c.Title, &c.Model,
+		&c.SummaryText, &c.SummarizedUntilID,
+		&c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -495,4 +506,49 @@ func (s *DB) GetNote(ctx context.Context, id, chatID int64) (*Note, error) {
 		return nil, fmt.Errorf("note %d not found", id)
 	}
 	return &n, err
+}
+
+// GetMessagesSince returns messages with id > afterID ordered by id.
+// When afterID is 0 all messages are returned (same as GetMessages).
+func (s *DB) GetMessagesSince(ctx context.Context, convID, afterID int64) ([]StoredMessage, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, conversation_id, role, content, tool_call_id, tool_calls_json, created_at
+		 FROM messages WHERE conversation_id = ? AND id > ? ORDER BY id`,
+		convID, afterID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close() //nolint:errcheck
+
+	var msgs []StoredMessage
+	for rows.Next() {
+		var m StoredMessage
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.ToolCallID, &m.ToolCallsJSON, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
+// GetMessageCount returns the total number of messages stored for a conversation.
+func (s *DB) GetMessageCount(ctx context.Context, convID int64) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM messages WHERE conversation_id = ?", convID,
+	).Scan(&count)
+	return count, err
+}
+
+// UpdateConversationSummary persists a new summary and the highest message id
+// that the summary covers.
+func (s *DB) UpdateConversationSummary(ctx context.Context, convID int64, summaryText string, summarizedUntilID int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE conversations
+		 SET summary_text = ?, summarized_until_id = ?, updated_at = CURRENT_TIMESTAMP
+		 WHERE id = ?`,
+		summaryText, summarizedUntilID, convID,
+	)
+	return err
 }

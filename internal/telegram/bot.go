@@ -178,6 +178,7 @@ const helpText = "\U0001F916 **Agent Shatrov**\n\n" +
 	"**Диалог:**\n" +
 	"/new — начать новый диалог (сброс контекста)\n" +
 	"/model — показать / сменить модель LLM\n" +
+	"/context — размер и статистика текущего контекста\n" +
 	"/help — эта справка\n\n" +
 	"**Напоминания:**\n" +
 	"/reminders — список активных напоминаний\n" +
@@ -218,6 +219,8 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 		b.sendText(chatID, "🆕 Новый диалог начат.")
 	case "/model":
 		b.handleModelCommand(chatID, parts)
+	case "/context":
+		b.handleContextCommand(ctx, chatID)
 	case "/reminders":
 		b.handleRemindersCommand(ctx, chatID)
 	case "/help":
@@ -271,6 +274,42 @@ func (b *Bot) handleModelCommand(chatID int64, parts []string) {
 	b.sendText(chatID, fmt.Sprintf("✅ Модель переключена: `%s`", modelName))
 
 	b.logger.Info("model switched", "chat_id", chatID, "model", modelName)
+}
+
+func (b *Bot) handleContextCommand(ctx context.Context, chatID int64) {
+	info, err := b.agent.GetContextInfo(ctx, chatID)
+	if err != nil {
+		b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString("📊 **Контекст диалога**\n\n")
+
+	if info.ConversationID == 0 {
+		sb.WriteString("Диалог ещё не начат.")
+		b.sendText(chatID, sb.String())
+		return
+	}
+
+	fmt.Fprintf(&sb, "Всего сообщений в БД: **%d**\n", info.TotalMessages)
+	fmt.Fprintf(&sb, "В LLM-контексте: **%d**\n", info.ContextMessages)
+
+	if info.MaxMessages > 0 {
+		fmt.Fprintf(&sb, "Лимит окна: **%d** сообщений\n", info.MaxMessages)
+	} else {
+		sb.WriteString("Лимит окна: ∞ (без ограничений)\n")
+	}
+
+	if info.HasSummary {
+		fmt.Fprintf(&sb, "Суммаризация: ✅ (%d симв.)\n", info.SummaryLength)
+	} else {
+		sb.WriteString("Суммаризация: ❌ (ещё не требовалась)\n")
+	}
+
+	fmt.Fprintf(&sb, "Оценка токенов: ~%d\n", info.EstimatedTokens)
+
+	b.sendText(chatID, sb.String())
 }
 
 func (b *Bot) handleRemindersCommand(ctx context.Context, chatID int64) {

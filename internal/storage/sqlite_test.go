@@ -287,3 +287,139 @@ func TestNotesIsolatedByChat(t *testing.T) {
 		t.Errorf("unexpected notes for user 1200: %+v", notes2)
 	}
 }
+
+// ── context management ─────────────────────────────────────────────────────────────────────────────────
+
+func TestGetMessagesSince(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	convID, err := db.CreateConversation(ctx, 2000, "model")
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	// Add 5 messages
+	var ids []int64
+	for range 5 {
+		// We add messages and then retrieve their IDs via GetMessages.
+		_ = db.AddMessage(ctx, convID, "user", "msg", "", "")
+	}
+	msgs, err := db.GetMessages(ctx, convID)
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	for _, m := range msgs {
+		ids = append(ids, m.ID)
+	}
+
+	// GetMessagesSince(afterID=0) should return all 5
+	all, err := db.GetMessagesSince(ctx, convID, 0)
+	if err != nil {
+		t.Fatalf("get messages since 0: %v", err)
+	}
+	if len(all) != 5 {
+		t.Errorf("expected 5 messages, got %d", len(all))
+	}
+
+	// GetMessagesSince(afterID=ids[1]) should return messages 3,4,5 (after the second)
+	partial, err := db.GetMessagesSince(ctx, convID, ids[1])
+	if err != nil {
+		t.Fatalf("get messages since ids[1]: %v", err)
+	}
+	if len(partial) != 3 {
+		t.Errorf("expected 3 messages, got %d", len(partial))
+	}
+
+	// GetMessagesSince(afterID=last) should return 0 messages
+	none, err := db.GetMessagesSince(ctx, convID, ids[len(ids)-1])
+	if err != nil {
+		t.Fatalf("get messages since last: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("expected 0 messages, got %d", len(none))
+	}
+}
+
+func TestGetMessageCount(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	convID, err := db.CreateConversation(ctx, 2100, "model")
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	count, err := db.GetMessageCount(ctx, convID)
+	if err != nil {
+		t.Fatalf("get count (empty): %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0, got %d", count)
+	}
+
+	for range 7 {
+		_ = db.AddMessage(ctx, convID, "user", "msg", "", "")
+	}
+	count, err = db.GetMessageCount(ctx, convID)
+	if err != nil {
+		t.Fatalf("get count after inserts: %v", err)
+	}
+	if count != 7 {
+		t.Errorf("expected 7, got %d", count)
+	}
+}
+
+func TestUpdateConversationSummary(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	convID, err := db.CreateConversation(ctx, 2200, "model")
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	// Initially no summary
+	conv, err := db.GetActiveConversation(ctx, 2200)
+	if err != nil {
+		t.Fatalf("get conversation: %v", err)
+	}
+	if conv.SummaryText != "" {
+		t.Errorf("expected empty summary, got %q", conv.SummaryText)
+	}
+	if conv.SummarizedUntilID != 0 {
+		t.Errorf("expected SummarizedUntilID=0, got %d", conv.SummarizedUntilID)
+	}
+
+	// Add a summary
+	if err := db.UpdateConversationSummary(ctx, convID, "Тестовое резюме", 42); err != nil {
+		t.Fatalf("update summary: %v", err)
+	}
+
+	// Reload and verify
+	conv, err = db.GetActiveConversation(ctx, 2200)
+	if err != nil {
+		t.Fatalf("get conversation after update: %v", err)
+	}
+	if conv.SummaryText != "Тестовое резюме" {
+		t.Errorf("expected summary 'Тестовое резюме', got %q", conv.SummaryText)
+	}
+	if conv.SummarizedUntilID != 42 {
+		t.Errorf("expected SummarizedUntilID=42, got %d", conv.SummarizedUntilID)
+	}
+
+	// Update summary again
+	if err := db.UpdateConversationSummary(ctx, convID, "Новое резюме", 100); err != nil {
+		t.Fatalf("update summary again: %v", err)
+	}
+	conv, err = db.GetActiveConversation(ctx, 2200)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if conv.SummaryText != "Новое резюме" {
+		t.Errorf("expected updated summary, got %q", conv.SummaryText)
+	}
+	if conv.SummarizedUntilID != 100 {
+		t.Errorf("expected SummarizedUntilID=100, got %d", conv.SummarizedUntilID)
+	}
+}

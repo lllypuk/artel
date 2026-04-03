@@ -66,6 +66,11 @@ func main() {
 	}
 	ag.SetModels(modelAliases)
 
+	if cfg.LLM.MaxContextMessages > 0 {
+		ag.SetMaxContextMessages(cfg.LLM.MaxContextMessages)
+		logger.Info("context window enabled", "max_messages", cfg.LLM.MaxContextMessages)
+	}
+
 	bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.Proxy, cfg.Telegram.AllowedUsers, ag, nil, logger)
 	if err != nil {
 		logger.Error("create telegram bot", "error", err)

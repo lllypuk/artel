@@ -26,11 +26,12 @@ type TelegramConfig struct {
 }
 
 type LLMConfig struct {
-	Provider      string    `yaml:"provider"`
-	Models        LLMModels `yaml:"models"`
-	BaseURL       string    `yaml:"base_url"`
-	APIKey        string    `yaml:"api_key"`
-	MaxIterations int       `yaml:"max_iterations"` // ReAct loop limit (default: 10)
+	Provider           string    `yaml:"provider"`
+	Models             LLMModels `yaml:"models"`
+	BaseURL            string    `yaml:"base_url"`
+	APIKey             string    `yaml:"api_key"`
+	MaxIterations      int       `yaml:"max_iterations"`       // ReAct loop limit (default: 10)
+	MaxContextMessages int       `yaml:"max_context_messages"` // context window limit (default: 50, 0=disabled)
 }
 
 type LLMModels struct {
@@ -132,6 +133,9 @@ func (c *Config) validate() error {
 	}
 	if c.Database.Path == "" {
 		c.Database.Path = "./data/agent.db"
+	}
+	if c.LLM.MaxContextMessages < 0 {
+		c.LLM.MaxContextMessages = 0
 	}
 	return nil
 }
