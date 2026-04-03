@@ -10,9 +10,11 @@ import (
 
 // PiCoderTool запускает pi (AI coding agent) для модификации исходного кода агента.
 type PiCoderTool struct {
-	projectDir string
-	model      string
-	timeout    time.Duration
+	projectDir   string
+	model        string
+	timeout      time.Duration
+	restartFunc  func()        // вызывается в goroutine после успешной пересборки
+	restartDelay time.Duration // задержка перед перезапуском (default: 5s)
 }
 
 // PiCoderConfig содержит конфигурацию инструмента pi_coder.
@@ -20,6 +22,8 @@ type PiCoderConfig struct {
 	ProjectDir     string
 	Model          string
 	TimeoutSeconds int
+	RestartFunc    func()        // callback для перезапуска процесса агента
+	RestartDelay   time.Duration // задержка перед перезапуском; если 0 — используется 5s
 }
 
 // NewPiCoderTool создаёт инструмент для запуска pi.
@@ -32,16 +36,23 @@ func NewPiCoderTool(cfg PiCoderConfig) *PiCoderTool {
 	if timeout == 0 {
 		timeout = 5 * time.Minute
 	}
+	restartDelay := cfg.RestartDelay
+	if restartDelay == 0 {
+		restartDelay = 5 * time.Second
+	}
 	return &PiCoderTool{
-		projectDir: cfg.ProjectDir,
-		model:      model,
-		timeout:    timeout,
+		projectDir:   cfg.ProjectDir,
+		model:        model,
+		timeout:      timeout,
+		restartFunc:  cfg.RestartFunc,
+		restartDelay: restartDelay,
 	}
 }
 
 type piCoderArgs struct {
 	Task    string `json:"task"`
 	Rebuild bool   `json:"rebuild"`
+	Restart bool   `json:"restart"`
 }
 
 func (p *PiCoderTool) Name() string { return "pi_coder" }
@@ -51,6 +62,8 @@ func (p *PiCoderTool) Description() string {
 		"Используй этот инструмент когда нужно: добавить новую функцию, исправить баг, " +
 		"изменить логику или рефакторить код агента. " +
 		"Параметр rebuild=true пересобирает бинарник после изменений (make build). " +
+		"Параметр restart=true перезапускает агента после успешной пересборки (автоматически включает rebuild). " +
+		"Используй restart=true чтобы применить изменения без ручного make restart. " +
 		"ВНИМАНИЕ: изменения применяются к реальному коду — формулируй задачу точно."
 }
 
@@ -65,6 +78,10 @@ func (p *PiCoderTool) Parameters() map[string]any {
 			"rebuild": map[string]any{
 				"type":        "boolean",
 				"description": "Пересобрать агента после изменений кода (выполнить make build). По умолчанию false.",
+			},
+			"restart": map[string]any{
+				"type":        "boolean",
+				"description": "Перезапустить агента после успешной пересборки (автоматически включает rebuild=true). Агент будет недоступен несколько секунд, затем возобновит работу.",
 			},
 		},
 		"required": []string{"task"},
@@ -104,10 +121,27 @@ func (p *PiCoderTool) Execute(ctx context.Context, args json.RawMessage) (string
 		return fmt.Sprintf("pi завершился с кодом ошибки (%v)\n\n%s", err, result), nil
 	}
 
+	// restart требует rebuild
+	if a.Restart {
+		a.Rebuild = true
+	}
+
 	// Опциональная пересборка
 	if a.Rebuild {
-		buildResult := p.runBuild()
-		result += "\n\n" + buildResult
+		buildOutput, buildOK := p.runBuild()
+		result += "\n\n" + buildOutput
+
+		if a.Restart {
+			switch {
+			case !buildOK:
+				result += "\n\n❌ Перезапуск отменён: сборка завершилась с ошибкой."
+			case p.restartFunc == nil:
+				result += "\n\n⚠️ Перезапуск не настроен (restartFunc отсутствует)."
+			default:
+				result += fmt.Sprintf("\n\n⚠️ Агент перезапускается через %s...", p.restartDelay.Round(time.Second))
+				go p.scheduleRestart()
+			}
+		}
 	}
 
 	// Обрезаем очень большой вывод
@@ -119,8 +153,18 @@ func (p *PiCoderTool) Execute(ctx context.Context, args json.RawMessage) (string
 	return result, nil
 }
 
+// scheduleRestart ждёт restartDelay и вызывает restartFunc.
+// Запускается в отдельной goroutine, чтобы дать агенту отправить ответ пользователю.
+func (p *PiCoderTool) scheduleRestart() {
+	time.Sleep(p.restartDelay)
+	if p.restartFunc != nil {
+		p.restartFunc()
+	}
+}
+
 // runBuild выполняет make build в директории проекта.
-func (p *PiCoderTool) runBuild() string {
+// Возвращает вывод и флаг успеха.
+func (p *PiCoderTool) runBuild() (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -129,7 +173,7 @@ func (p *PiCoderTool) runBuild() string {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Sprintf("--- Сборка завершилась с ошибкой: %v ---\n%s", err, output)
+		return fmt.Sprintf("--- Сборка завершилась с ошибкой: %v ---\n%s", err, output), false
 	}
-	return fmt.Sprintf("--- Сборка успешна ---\n%s", output)
+	return fmt.Sprintf("--- Сборка успешна ---\n%s", output), true
 }

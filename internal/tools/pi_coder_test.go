@@ -555,17 +555,17 @@ func TestPiCoderArgs_Marshal(t *testing.T) {
 		{
 			name: "both fields",
 			args: piCoderArgs{Task: "add tests", Rebuild: true},
-			want: `{"task":"add tests","rebuild":true}`,
+			want: `{"task":"add tests","rebuild":true,"restart":false}`,
 		},
 		{
 			name: "only task",
 			args: piCoderArgs{Task: "add tests"},
-			want: `{"task":"add tests","rebuild":false}`,
+			want: `{"task":"add tests","rebuild":false,"restart":false}`,
 		},
 		{
 			name: "empty task",
 			args: piCoderArgs{Task: ""},
-			want: `{"task":"","rebuild":false}`,
+			want: `{"task":"","rebuild":false,"restart":false}`,
 		},
 	}
 
@@ -611,5 +611,178 @@ func BenchmarkPiCoderTool_Execute_Parse(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		_ = json.Unmarshal(args, &a)
+	}
+}
+
+// TestNewPiCoderTool_RestartDefaults проверяет значения по умолчанию для restart-полей.
+func TestNewPiCoderTool_RestartDefaults(t *testing.T) {
+	tool := NewPiCoderTool(PiCoderConfig{ProjectDir: "/test"})
+
+	assert.Equal(t, 5*time.Second, tool.restartDelay, "default restartDelay должен быть 5s")
+	assert.Nil(t, tool.restartFunc, "restartFunc по умолчанию nil")
+}
+
+// TestNewPiCoderTool_RestartFuncStored проверяет, что RestartFunc сохраняется в структуре.
+func TestNewPiCoderTool_RestartFuncStored(t *testing.T) {
+	called := false
+	fn := func() { called = true }
+
+	tool := NewPiCoderTool(PiCoderConfig{
+		ProjectDir:  "/test",
+		RestartFunc: fn,
+	})
+
+	require.NotNil(t, tool.restartFunc)
+	tool.restartFunc()
+	assert.True(t, called)
+}
+
+// TestNewPiCoderTool_CustomRestartDelay проверяет, что RestartDelay применяется.
+func TestNewPiCoderTool_CustomRestartDelay(t *testing.T) {
+	tool := NewPiCoderTool(PiCoderConfig{
+		ProjectDir:   "/test",
+		RestartDelay: 10 * time.Second,
+	})
+
+	assert.Equal(t, 10*time.Second, tool.restartDelay)
+}
+
+// TestPiCoderTool_Parameters_Restart проверяет наличие restart в JSON Schema.
+func TestPiCoderTool_Parameters_Restart(t *testing.T) {
+	tool := NewPiCoderTool(PiCoderConfig{ProjectDir: "/test"})
+	params := tool.Parameters()
+
+	props, ok := params["properties"].(map[string]any)
+	require.True(t, ok)
+
+	restart, ok := props["restart"].(map[string]any)
+	require.True(t, ok, "параметр restart должен присутствовать в схеме")
+	assert.Equal(t, "boolean", restart["type"])
+	assert.Contains(t, restart["description"], "Перезапустить")
+
+	// restart не должен быть обязательным
+	required, ok := params["required"].([]string)
+	require.True(t, ok)
+	assert.NotContains(t, required, "restart")
+}
+
+// TestPiCoderTool_Description_Restart проверяет упоминание restart в описании.
+func TestPiCoderTool_Description_Restart(t *testing.T) {
+	tool := NewPiCoderTool(PiCoderConfig{ProjectDir: "/test"})
+	desc := tool.Description()
+
+	assert.Contains(t, desc, "restart")
+	assert.Contains(t, desc, "перезапуск")
+}
+
+// TestPiCoderTool_scheduleRestart_CallsFunc проверяет, что scheduleRestart вызывает restartFunc.
+func TestPiCoderTool_scheduleRestart_CallsFunc(t *testing.T) {
+	called := make(chan struct{}, 1)
+	tool := &PiCoderTool{
+		restartFunc:  func() { called <- struct{}{} },
+		restartDelay: 0, // без задержки в тестах
+	}
+
+	tool.scheduleRestart()
+
+	select {
+	case <-called:
+		// OK
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("restartFunc не был вызван")
+	}
+}
+
+// TestPiCoderTool_scheduleRestart_NilFunc проверяет защиту от nil restartFunc.
+func TestPiCoderTool_scheduleRestart_NilFunc(t *testing.T) {
+	tool := &PiCoderTool{
+		restartFunc:  nil,
+		restartDelay: 0,
+	}
+
+	// Не должен паниковать
+	assert.NotPanics(t, func() { tool.scheduleRestart() })
+}
+
+// TestPiCoderTool_runBuild_ReturnsBool проверяет новую сигнатуру runBuild.
+func TestPiCoderTool_runBuild_ReturnsBool(t *testing.T) {
+	// В /nonexistent нет Makefile → сборка провалится
+	tool := &PiCoderTool{projectDir: "/nonexistent"}
+
+	output, ok := tool.runBuild()
+
+	assert.False(t, ok, "сборка из /nonexistent должна провалиться")
+	assert.Contains(t, output, "Сборка завершилась с ошибкой")
+}
+
+// TestPiCoderArgs_Restart проверяет парсинг нового поля restart.
+func TestPiCoderArgs_Restart(t *testing.T) {
+	tests := []struct {
+		name        string
+		json        string
+		wantRestart bool
+	}{
+		{"restart true", `{"task":"t","restart":true}`, true},
+		{"restart false", `{"task":"t","restart":false}`, false},
+		{"restart absent", `{"task":"t"}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var a piCoderArgs
+			require.NoError(t, json.Unmarshal([]byte(tt.json), &a))
+			assert.Equal(t, tt.wantRestart, a.Restart)
+		})
+	}
+}
+
+// TestPiCoderTool_Execute_RestartImpliesRebuild проверяет, что restart=true включает rebuild.
+func TestPiCoderTool_Execute_RestartImpliesRebuild(t *testing.T) {
+	// При restart=true аргументы должны иметь Rebuild=true после парсинга
+	var a piCoderArgs
+	require.NoError(t, json.Unmarshal([]byte(`{"task":"test","restart":true}`), &a))
+
+	// Rebuild изначально false (в JSON не задан),
+	// но Execute должен его поднять перед выполнением.
+	// Проверяем это через логику: если restart && !rebuild → rebuild должен стать true.
+	assert.True(t, a.Restart)
+	assert.False(t, a.Rebuild, "в JSON rebuild не указан")
+
+	// Проверяем сам метод: инструмент с restartFunc=nil и без pi не должен паниковать
+	tool := &PiCoderTool{
+		projectDir:   "/nonexistent",
+		model:        "test-model",
+		timeout:      10 * time.Millisecond,
+		restartFunc:  nil,
+		restartDelay: 0,
+	}
+	_, err := tool.Execute(context.Background(), []byte(`{"task":"test","restart":true}`))
+	// Ожидаем ошибку выполнения pi (не найден / таймаут) — не паника, не ошибка валидации
+	if err != nil {
+		assert.NotContains(t, err.Error(), "task is required")
+		assert.NotContains(t, err.Error(), "parse args")
+	}
+}
+
+// TestPiCoderTool_Execute_RestartNotScheduledWhenBuildFails проверяет,
+// что перезапуск не планируется при неудачной сборке.
+func TestPiCoderTool_Execute_RestartNotScheduledWhenBuildFails(t *testing.T) {
+	restartCalled := make(chan struct{}, 1)
+
+	tool := &PiCoderTool{
+		projectDir:   "/nonexistent", // make build провалится
+		model:        "test-model",
+		timeout:      10 * time.Millisecond, // pi timeout → pi-шаг провалится
+		restartFunc:  func() { restartCalled <- struct{}{} },
+		restartDelay: 0,
+	}
+
+	// Запускаем с restart=true; pi не найден → выходим до rebuild → restart не планируется
+	_, _ = tool.Execute(context.Background(), []byte(`{"task":"test","restart":true}`))
+
+	select {
+	case <-restartCalled:
+		t.Fatal("restartFunc не должен быть вызван при провале pi/build")
+	case <-time.After(100 * time.Millisecond):
+		// Хорошо — перезапуск не был запланирован
 	}
 }

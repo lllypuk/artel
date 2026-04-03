@@ -235,8 +235,38 @@ func registerPiCoderTool(cfg *config.Config, registry *tools.Registry, logger *s
 		ProjectDir:     projectDir,
 		Model:          model,
 		TimeoutSeconds: cfg.PiCoder.TimeoutSeconds,
+		RestartFunc:    makeRestartFunc(logger),
 	}))
 	logger.Info("PiCoder tool enabled", "project_dir", projectDir, "model", model)
+}
+
+// makeRestartFunc создаёт функцию безопасного перезапуска агента.
+// Использует syscall.Exec: текущий процесс атомарно заменяется новым бинарником без fork.
+// PID остаётся прежним, перенаправления stdin/stdout/stderr сохраняются.
+func makeRestartFunc(logger *slog.Logger) func() {
+	return func() {
+		executable, err := os.Executable()
+		if err != nil {
+			logger.Error("restart: cannot get executable path", "error", err)
+			return
+		}
+		// Разрешаем символические ссылки, чтобы получить реальный путь к бинарнику
+		executable, err = filepath.EvalSymlinks(executable)
+		if err != nil {
+			logger.Error("restart: eval symlinks failed", "error", err)
+			return
+		}
+		logger.Info("restarting agent via syscall.Exec",
+			"executable", executable,
+			"args", os.Args,
+		)
+		// syscall.Exec заменяет текущий процесс — возврат из этой функции невозможен
+		// executable получен через os.Executable() + EvalSymlinks — не внешний ввод
+		//nolint:gosec // G702: путь зафиксирован из os.Executable() — не является пользовательским вводом
+		if err := syscall.Exec(executable, os.Args, os.Environ()); err != nil {
+			logger.Error("restart: syscall.Exec failed", "error", err)
+		}
+	}
 }
 
 func setupNews(ctx context.Context, cfg *config.Config, db *storage.DB, registry *tools.Registry, logger *slog.Logger) (*tools.NewsTool, *news.NewsManager) {
