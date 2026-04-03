@@ -16,6 +16,7 @@
 | Новости (RSS) | ✅ Done | Подписки, фиды, поиск, сохранённые, FTS5 |
 | Переключение модели (`/model`) | ✅ Done | `/model`, `/model fast`, `/model default` |
 | Напоминания (`reminders` tool) | ✅ Done | CRUD, планировщик, recurring, парсинг естественного языка |
+| Обработка файлов и изображений | ✅ Done | Документы + фото в чат, Vision (base64), tool `files` (list/read/delete) |
 
 ---
 
@@ -71,23 +72,41 @@
 
 ## 🟡 Tier 2 — Средний приоритет
 
-### 4. Обработка файлов и изображений
+### ~~4. Обработка файлов и изображений~~ ✅ Done
 
 **Зачем:** Telegram позволяет отправлять документы и фото. Сейчас бот принимает только текст — это ограничивает его полезность.
 
-**Что сделать:**
-- Принимать документы (txt, md, json, csv, pdf) → сохранять в `./data/files/`
-- Передавать содержимое текстовых файлов в контекст LLM
-- Принимать фото → если модель поддерживает vision, отправлять как base64
-- Отправлять файлы обратно (результаты генерации, экспорт заметок)
-- Tool `files` с действиями: `list`, `read`, `delete`
+**Реализовано:**
+- Приём документов (txt, md, json, csv, pdf, jpg, png и др.) → скачивание и сохранение в `./data/files/`
+- Текстовые файлы (txt, md, json, csv и др.) автоматически инжектируются в контекст LLM при отправке
+- Приём фото → если включён `vision_enabled`, отправляется в LLM как base64 data URL
+- Поддержка multi-modal content в `llm.Message`: `ContentParts []ContentPart` с custom JSON marshal/unmarshal
+- Tool `files` с действиями: `list`, `read`, `delete`; вспомогательный метод `SaveFile`
+- Команды `/files` — список сохранённых файлов; `/getfile <имя>` — скачать файл обратно
+- Конфигурация: `files.enabled`, `files.storage_dir`, `files.max_file_size_kb`, `files.allowed_extensions`, `files.vision_enabled`
+- Защита от path traversal (`filepath.Base`), лимит размера файла, whitelist расширений
+- Рефакторинг `main()`: вынесены `createDirectories`, `setupAgent`, `setupBot` для снижения цикломатической сложности
 
-**Сложность:** Средняя
-**Файлы:** `internal/telegram/bot.go` (handleUpdate — обработка Document/Photo), `internal/tools/files.go`
+**Файлы:** `internal/tools/files.go`, `internal/tools/files_test.go`, `internal/llm/client.go`, `internal/agent/agent.go`, `internal/telegram/bot.go`, `internal/config/config.go`, `cmd/agent/main.go`, `config.example.yaml`
 
 ---
 
-### 5. Выполнение кода (`code_runner` tool)
+### 5. Мониторинг и `/status`
+
+**Зачем:** Понимать, что происходит с агентом: сколько токенов потрачено, сколько запросов, статус фидов.
+
+**Что сделать:**
+- Команда `/status` → аптайм, размер БД, кол-во заметок/диалогов, статус фидов
+- Подсчёт использования токенов per-session и per-day
+- Таблица `usage_stats(date, prompt_tokens, completion_tokens, requests_count)`
+- Опциональный Prometheus-экспортер или простой HTTP `/metrics`
+
+**Сложность:** Лёгкая
+**Файлы:** `internal/telegram/bot.go`, `internal/storage/stats.go`, `internal/agent/agent.go` (подсчёт)
+
+---
+
+### 6. Выполнение кода (`code_runner` tool)
 
 **Зачем:** Расширение shell, специализированное для вычислений и прототипов. Агент сможет писать и запускать код для ответа на вопросы.
 
@@ -103,69 +122,9 @@
 
 ---
 
-### 6. Экспорт/импорт данных
-
-**Зачем:** Бэкап данных, переносимость, удобство.
-
-**Что сделать:**
-- `/export notes` → отправляет все заметки как Markdown-файл в Telegram
-- `/export conversations` → экспорт истории диалогов
-- `/import` → принимает файл с заметками (Markdown с разделителями)
-- Автоматический бэкап БД по расписанию (ежедневно → `data/backups/`)
-
-**Сложность:** Лёгкая
-**Файлы:** `internal/telegram/bot.go` (handleCommand), `internal/tools/export.go`
-
----
-
-### 7. Интеграция с календарём (`calendar` tool)
-
-**Зачем:** Управление расписанием через агента. Хорошо сочетается с reminders.
-
-**Что сделать:**
-- CalDAV клиент (Nextcloud, Radicale) или Google Calendar API
-- Показать расписание на день/неделю
-- Создать/удалить событие через агента
-- Уведомления о предстоящих событиях
-
-**Сложность:** Высокая
-**Файлы:** `internal/tools/calendar.go`, `internal/calendar/` (пакет)
-
----
-
 ## 🟢 Tier 3 — Nice-to-have
 
-### 8. Inline-кнопки в Telegram
-
-**Зачем:** Сейчас вся навигация текстовая. Inline keyboards значительно улучшат UX.
-
-**Что сделать:**
-- Кнопки под новостями: «📖 Читать», «⭐ Сохранить», «➡️ Далее»
-- Кнопки подтверждения для опасных операций (shell, pi_coder rebuild)
-- Callback query handler в `bot.go`
-- Пагинация через кнопки вместо ручного ввода offset
-
-**Сложность:** Средняя
-**Файлы:** `internal/telegram/bot.go` (callback queries), `internal/telegram/keyboards.go` (новый)
-
----
-
-### 9. Мониторинг и `/status`
-
-**Зачем:** Понимать, что происходит с агентом: сколько токенов потрачено, сколько запросов, статус фидов.
-
-**Что сделать:**
-- Команда `/status` → аптайм, размер БД, кол-во заметок/диалогов, статус фидов
-- Подсчёт использования токенов per-session и per-day
-- Таблица `usage_stats(date, prompt_tokens, completion_tokens, requests_count)`
-- Опциональный Prometheus-экспортер или простой HTTP `/metrics`
-
-**Сложность:** Лёгкая-средняя
-**Файлы:** `internal/telegram/bot.go`, `internal/storage/stats.go`, `internal/agent/agent.go` (подсчёт)
-
----
-
-### 10. Мультипровайдер LLM с fallback
+### 7. Мультипровайдер LLM с fallback
 
 **Зачем:** Если z.ai недоступен → автоматическое переключение на backup-провайдер. Устойчивость к сбоям.
 
@@ -181,18 +140,18 @@
 
 ---
 
-### 11. Streaming ответов
+### 8. Интеграция с календарём (`calendar` tool)
 
-**Зачем:** Быстрее видна первая часть ответа. UX значительно лучше при длинных ответах.
+**Зачем:** Управление расписанием через агента. Хорошо сочетается с reminders.
 
 **Что сделать:**
-- SSE streaming в `llm/client.go`
-- Отправка чанков через Telegram `editMessageText` (обновление сообщения по мере генерации)
-- Ограничение частоты обновлений (Telegram rate limit ~30 msg/sec)
-- Адаптация ReAct loop для работы со streaming (tool calls приходят в конце)
+- CalDAV клиент (Nextcloud, Radicale) или Google Calendar API
+- Показать расписание на день/неделю
+- Создать/удалить событие через агента
+- Уведомления о предстоящих событиях
 
-**Сложность:** Высокая (переделка llm/client.go + agent.go + telegram/bot.go)
-**Файлы:** `internal/llm/client.go`, `internal/llm/stream.go` (новый), `internal/agent/agent.go`, `internal/telegram/bot.go`
+**Сложность:** Высокая
+**Файлы:** `internal/tools/calendar.go`, `internal/calendar/` (пакет)
 
 ---
 
@@ -203,11 +162,8 @@
 | ~~1~~ | ~~`/model` переключение~~ | ✅ Done | Быстрая победа, уже в планах |
 | ~~2~~ | ~~Reminders~~ | ✅ Done | Агент становится проактивным |
 | ~~3~~ | ~~Управление контекстом~~ | ✅ Done | Устранение техдолга, стабильность |
-| 4 | Обработка файлов | Средняя | Расширение входных данных |
-| 5 | Inline-кнопки | Средняя | UX улучшение |
-| 6 | `/status` + мониторинг | Лёгкая | Наблюдаемость |
-| 7 | Экспорт/импорт | Лёгкая | Безопасность данных |
-| 8 | Code runner | Средняя | Вычислительные возможности |
-| 9 | Мультипровайдер LLM | Средняя | Отказоустойчивость |
-| 10 | Streaming | Высокая | UX при длинных ответах |
-| 11 | Календарь | Высокая | Расширение экосистемы |
+| ~~4~~ | ~~Обработка файлов~~ | ✅ Done | Расширение входных данных |
+| 5 | `/status` + мониторинг | Лёгкая | Наблюдаемость |
+| 6 | Code runner | Средняя | Вычислительные возможности |
+| 7 | Мультипровайдер LLM | Средняя | Отказоустойчивость |
+| 8 | Календарь | Высокая | Расширение экосистемы |

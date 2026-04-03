@@ -145,6 +145,24 @@ news:
       enabled: false
       proxy: ""
 
+files:
+  enabled: false                 # включить для обработки файлов и изображений
+  storage_dir: "./data/files"    # директория для хранения загруженных файлов
+  max_file_size_kb: 10240        # максимальный размер файла (КБ, по умолчанию 10 МБ)
+  vision_enabled: false          # передавать изображения в LLM как base64 (если модель поддерживает Vision)
+  # Поддерживаемые расширения (по умолчанию: txt md json csv pdf jpg jpeg png gif webp)
+  # allowed_extensions:
+  #   - txt
+  #   - md
+  #   - json
+  #   - csv
+  #   - pdf
+  #   - jpg
+  #   - jpeg
+  #   - png
+  #   - gif
+  #   - webp
+
 logging:
   level: "info"           # debug, info, warn, error
   file: "./data/agent.log"

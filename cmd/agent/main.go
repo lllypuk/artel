@@ -37,10 +37,11 @@ func main() {
 		defer logCloser() //nolint:errcheck
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o750); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating data directory: %s\n", err)
+	if err := createDirectories(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating directories: %s\n", err)
 		os.Exit(1)
 	}
+
 	db, err := storage.Open(cfg.Database.Path)
 	if err != nil {
 		logger.Error("open database", "error", err)
@@ -59,31 +60,14 @@ func main() {
 	defer cancel()
 
 	ag := agent.New(llmClient, cfg.LLM.Models.Default, cfg.LLM.MaxIterations, toolRegistry, db, logger)
-
-	modelAliases := map[string]string{"default": cfg.LLM.Models.Default}
-	if cfg.LLM.Models.Fast != "" {
-		modelAliases["fast"] = cfg.LLM.Models.Fast
-	}
-	ag.SetModels(modelAliases)
-
-	if cfg.LLM.MaxContextMessages > 0 {
-		ag.SetMaxContextMessages(cfg.LLM.MaxContextMessages)
-		logger.Info("context window enabled", "max_messages", cfg.LLM.MaxContextMessages)
-	}
+	setupAgent(ag, cfg)
 
 	bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.Proxy, cfg.Telegram.AllowedUsers, ag, nil, logger)
 	if err != nil {
 		logger.Error("create telegram bot", "error", err)
 		os.Exit(1)
 	}
-
-	if cfg.Browser.Enabled {
-		if tool, ok := toolRegistry.Get("browser"); ok {
-			if bt, ok := tool.(*tools.BrowserTool); ok {
-				bot.SetBrowserTool(bt)
-			}
-		}
-	}
+	setupBot(bot, cfg, toolRegistry)
 
 	bot.SetNotificationHandler()
 
@@ -120,4 +104,47 @@ func main() {
 	}
 
 	logger.Info("agent-shatrov stopped")
+}
+
+// createDirectories ensures all required data directories exist.
+func createDirectories(cfg *config.Config) error {
+	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o750); err != nil {
+		return fmt.Errorf("data dir: %w", err)
+	}
+	if cfg.Files.Enabled {
+		if err := os.MkdirAll(cfg.Files.StorageDir, 0o750); err != nil {
+			return fmt.Errorf("files dir: %w", err)
+		}
+	}
+	return nil
+}
+
+// setupAgent configures model aliases and context window on the agent.
+func setupAgent(ag *agent.Agent, cfg *config.Config) {
+	modelAliases := map[string]string{"default": cfg.LLM.Models.Default}
+	if cfg.LLM.Models.Fast != "" {
+		modelAliases["fast"] = cfg.LLM.Models.Fast
+	}
+	ag.SetModels(modelAliases)
+	if cfg.LLM.MaxContextMessages > 0 {
+		ag.SetMaxContextMessages(cfg.LLM.MaxContextMessages)
+	}
+}
+
+// setupBot wires optional tools to the bot after creation.
+func setupBot(bot *telegram.Bot, cfg *config.Config, registry *tools.Registry) {
+	if cfg.Browser.Enabled {
+		if tool, ok := registry.Get("browser"); ok {
+			if bt, ok := tool.(*tools.BrowserTool); ok {
+				bot.SetBrowserTool(bt)
+			}
+		}
+	}
+	if cfg.Files.Enabled {
+		if tool, ok := registry.Get("files"); ok {
+			if ft, ok := tool.(*tools.FilesTool); ok {
+				bot.SetFilesTool(ft, cfg.Files)
+			}
+		}
+	}
 }

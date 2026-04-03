@@ -16,6 +16,7 @@ type Config struct {
 	Browser  BrowserConfig  `yaml:"browser"`
 	PiCoder  PiCoderConfig  `yaml:"pi_coder"`
 	News     NewsConfig     `yaml:"news"`
+	Files    FilesConfig    `yaml:"files"`
 	Logging  LoggingConfig  `yaml:"logging"`
 }
 
@@ -74,6 +75,15 @@ type PiCoderConfig struct {
 	ProjectDir     string `yaml:"project_dir"`
 	Model          string `yaml:"model"`
 	TimeoutSeconds int    `yaml:"timeout"`
+}
+
+// FilesConfig holds settings for the file-upload feature.
+type FilesConfig struct {
+	Enabled           bool     `yaml:"enabled"`
+	StorageDir        string   `yaml:"storage_dir"`        // default: ./data/files
+	MaxFileSizeKB     int      `yaml:"max_file_size_kb"`   // default: 10240 (10 MB)
+	AllowedExtensions []string `yaml:"allowed_extensions"` // default: see validate()
+	VisionEnabled     bool     `yaml:"vision_enabled"`     // send images to LLM as base64
 }
 
 type LoggingConfig struct {
@@ -136,6 +146,18 @@ func (c *Config) validate() error {
 	}
 	if c.LLM.MaxContextMessages < 0 {
 		c.LLM.MaxContextMessages = 0
+	}
+	if c.Files.StorageDir == "" {
+		c.Files.StorageDir = "./data/files"
+	}
+	if c.Files.MaxFileSizeKB <= 0 {
+		c.Files.MaxFileSizeKB = 10240 // 10 MB
+	}
+	if len(c.Files.AllowedExtensions) == 0 {
+		c.Files.AllowedExtensions = []string{
+			"txt", "md", "json", "csv", "pdf",
+			"jpg", "jpeg", "png", "gif", "webp",
+		}
 	}
 	return nil
 }

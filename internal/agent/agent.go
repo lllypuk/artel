@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -45,6 +46,13 @@ const systemPrompt = `Ты — персональный AI-ассистент С
   - Повторяющиеся напоминания: repeat="daily", "weekly", "hourly", "Nm", "Nh", "Nd"
 - Твой chat_id пользователя ВСЕГДА доступен автоматически через контекст — НЕ НУЖНО спрашивать его у пользователя
 - НЕ проси пользователя предоставить chat_id или любой другой идентификатор — агент сам его знает
+
+Работа с файлами:
+- Пользователь может отправлять текстовые файлы (txt, md, json, csv и др.) и изображения прямо в чат
+- Содержимое текстовых файлов автоматически включается в сообщение при отправке — читай и анализируй его
+- Для управления сохранёнными файлами используй tool "files": list, read, delete
+- Изображения передаются в модель напрямую, если включена поддержка Vision
+- Для отправки файла пользователю скажи ему выполнить команду /getfile <имя_файла>
 `
 
 // Agent is the core agent implementing the ReAct loop.
@@ -128,15 +136,33 @@ func (a *Agent) ToolRegistry() *tools.Registry {
 	return a.tools
 }
 
+// FileAttachment represents a binary file (typically an image) to include
+// in the LLM user message as base64-encoded data.
+type FileAttachment struct {
+	Data     []byte
+	MimeType string // e.g. "image/jpeg", "image/png"
+	Filename string
+}
+
 // Response from the agent.
 type Response struct {
 	Text  string
 	Usage *llm.Usage
 }
 
-// HandleMessage processes a user message and returns the agent's response.
-// It implements the ReAct loop: LLM → tool calls → LLM → ... → final text.
+// HandleMessage processes a text-only user message.
 func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage string) (*Response, error) {
+	return a.handleMessage(ctx, chatID, userMessage, nil)
+}
+
+// HandleMessageWithAttachments processes a user message with optional image
+// attachments (sent to the LLM as base64 data URLs when vision is supported).
+func (a *Agent) HandleMessageWithAttachments(ctx context.Context, chatID int64, userMessage string, attachments []FileAttachment) (*Response, error) {
+	return a.handleMessage(ctx, chatID, userMessage, attachments)
+}
+
+// handleMessage is the core ReAct-loop implementation used by both public entry points.
+func (a *Agent) handleMessage(ctx context.Context, chatID int64, userMessage string, attachments []FileAttachment) (*Response, error) {
 	// Add chatID to context for notifications
 	ctx = context.WithValue(ctx, tools.ChatIDKey, chatID)
 
@@ -164,8 +190,8 @@ func (a *Agent) HandleMessage(ctx context.Context, chatID int64, userMessage str
 	messages = append(messages, llm.Message{Role: "system", Content: systemPrompt})
 	messages = append(messages, contextMsgs...)
 
-	// Add user message
-	messages = append(messages, llm.Message{Role: "user", Content: userMessage})
+	// Add user message (multi-modal when image attachments are present)
+	messages = append(messages, buildUserMessage(userMessage, attachments))
 	if err := a.db.AddMessage(ctx, conv.ID, "user", userMessage, "", ""); err != nil {
 		return nil, fmt.Errorf("store user message: %w", err)
 	}
@@ -339,4 +365,23 @@ func (a *Agent) buildToolDefs() []llm.ToolDef {
 		})
 	}
 	return defs
+}
+
+// buildUserMessage constructs a user llm.Message.
+// When attachments are provided the content becomes a multi-modal array
+// with text + base64-encoded image data URLs.
+func buildUserMessage(text string, attachments []FileAttachment) llm.Message {
+	if len(attachments) == 0 {
+		return llm.Message{Role: "user", Content: text}
+	}
+	parts := []llm.ContentPart{{Type: "text", Text: text}}
+	for _, att := range attachments {
+		b64 := base64.StdEncoding.EncodeToString(att.Data)
+		dataURL := fmt.Sprintf("data:%s;base64,%s", att.MimeType, b64)
+		parts = append(parts, llm.ContentPart{
+			Type:     "image_url",
+			ImageURL: &llm.ImageURLContent{URL: dataURL},
+		})
+	}
+	return llm.Message{Role: "user", ContentParts: parts}
 }

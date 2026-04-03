@@ -4,16 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/lllypuk/agent-shatrov/internal/agent"
+	"github.com/lllypuk/agent-shatrov/internal/config"
 	"github.com/lllypuk/agent-shatrov/internal/tools"
 )
 
@@ -22,10 +25,15 @@ type Bot struct {
 	api          *tgbotapi.BotAPI
 	agent        *agent.Agent
 	newsTool     *tools.NewsTool
+	filesTool    *tools.FilesTool
 	allowedUsers map[int64]bool
 	newsOffsets  map[int64]int // chatID -> last offset for news pagination
 	logger       *slog.Logger
 	browserTool  *tools.BrowserTool
+	// files config
+	maxFileSizeKB     int
+	allowedExtensions map[string]bool
+	visionEnabled     bool
 }
 
 // newHTTPClient создаёт http.Client с прокси (если задан) или без него.
@@ -70,6 +78,17 @@ func New(token, proxyURL string, allowedUsers []int64, ag *agent.Agent, newsTool
 		newsOffsets:  make(map[int64]int),
 		logger:       logger,
 	}, nil
+}
+
+// SetFilesTool configures file-upload handling for the bot.
+func (b *Bot) SetFilesTool(ft *tools.FilesTool, cfg config.FilesConfig) {
+	b.filesTool = ft
+	b.maxFileSizeKB = cfg.MaxFileSizeKB
+	b.visionEnabled = cfg.VisionEnabled
+	b.allowedExtensions = make(map[string]bool, len(cfg.AllowedExtensions))
+	for _, ext := range cfg.AllowedExtensions {
+		b.allowedExtensions[strings.ToLower(ext)] = true
+	}
 }
 
 // SetBrowserTool sets the browser tool for the bot (used for /screenshot command).
@@ -136,6 +155,18 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 		return
 	}
 
+	// Handle file uploads before checking for text.
+	if msg.Document != nil {
+		b.logger.Info("document received", "chat_id", chatID, "filename", msg.Document.FileName)
+		b.handleDocumentMessage(ctx, chatID, msg)
+		return
+	}
+	if len(msg.Photo) > 0 {
+		b.logger.Info("photo received", "chat_id", chatID)
+		b.handlePhotoMessage(ctx, chatID, msg)
+		return
+	}
+
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
 		return
@@ -183,6 +214,10 @@ const helpText = "\U0001F916 **Agent Shatrov**\n\n" +
 	"**Напоминания:**\n" +
 	"/reminders — список активных напоминаний\n" +
 	"Через агента: 'напомни через 2 часа сделать X', 'напомни каждый день в 9:00'\n\n" +
+	"**Файлы:**\n" +
+	"/files — список загруженных файлов\n" +
+	"/getfile <имя> — скачать сохранённый файл\n" +
+	"Отправь документ или фото прямо в чат — агент прочитает и обсудит\n\n" +
 	"**Скриншоты:**\n" +
 	"/screenshot <URL> — сделать скриншот страницы\n" +
 	"/open <URL> — открыть страницу и сделать скриншот\n\n" +
@@ -198,7 +233,8 @@ const helpText = "\U0001F916 **Agent Shatrov**\n\n" +
 	"\U0001F310 Чтение веб-страниц\n" +
 	"\U0001F6E0 Изменение собственного кода через pi_coder\n" +
 	"\U0001F4C3 Новости — чтение, поиск, избранное\n" +
-	"\U0001F4F8 Скриншоты веб-страниц"
+	"\U0001F4F8 Скриншоты веб-страниц\n" +
+	"\U0001F4CE Файлы — отправь документ или фото в чат"
 
 func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 	parts := strings.Fields(text)
@@ -225,6 +261,12 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 		b.handleRemindersCommand(ctx, chatID)
 	case "/help":
 		b.sendText(chatID, helpText)
+
+	// --- Files commands ---
+	case "/files":
+		b.handleFilesCommand(ctx, chatID)
+	case "/getfile":
+		b.handleGetFileCommand(ctx, chatID, parts)
 
 	// --- Screenshot commands ---
 	case "/screenshot", "/open":
@@ -530,4 +572,221 @@ func (b *Bot) sendPhoto(chatID int64, filePath, caption string) {
 		b.logger.Error("send photo", "error", err, "file", filePath)
 		b.sendText(chatID, fmt.Sprintf("❌ Не удалось отправить скриншот: %s\n\nФайл: %s", err.Error(), filePath))
 	}
+}
+
+// ── File-upload handlers ─────────────────────────────────────────────────────
+
+// handleDocumentMessage downloads the document, saves it, and injects its
+// content (for text files) or a reference (for binary files) into the agent.
+func (b *Bot) handleDocumentMessage(ctx context.Context, chatID int64, msg *tgbotapi.Message) {
+	if b.filesTool == nil {
+		b.sendText(chatID, "📎 Обработка файлов отключена в конфигурации.")
+		return
+	}
+
+	doc := msg.Document
+	caption := strings.TrimSpace(msg.Caption)
+
+	// Extension check.
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(doc.FileName), "."))
+	if len(b.allowedExtensions) > 0 && !b.allowedExtensions[ext] {
+		b.sendText(chatID, fmt.Sprintf("❌ Тип файла .%s не поддерживается.", ext))
+		return
+	}
+
+	// Size check.
+	if b.maxFileSizeKB > 0 && doc.FileSize > b.maxFileSizeKB*1024 {
+		b.sendText(chatID, fmt.Sprintf(
+			"❌ Файл слишком большой (%.1f МБ, лимит %d МБ).",
+			float64(doc.FileSize)/1024/1024, b.maxFileSizeKB/1024))
+		return
+	}
+
+	// Download.
+	data, err := b.downloadTelegramFile(ctx, doc.FileID)
+	if err != nil {
+		b.sendText(chatID, fmt.Sprintf("❌ Ошибка загрузки: %s", err.Error()))
+		return
+	}
+
+	// Save.
+	_, savedName, err := b.filesTool.SaveFile(doc.FileName, data)
+	if err != nil {
+		b.sendText(chatID, fmt.Sprintf("❌ Ошибка сохранения: %s", err.Error()))
+		return
+	}
+
+	// Build agent message.
+	const maxContextBytes = 50 * 1024
+	var agentMsg strings.Builder
+	if tools.IsTextFile(doc.FileName) && len(data) > 0 {
+		text := data
+		truncated := ""
+		if len(text) > maxContextBytes {
+			text = data[:maxContextBytes]
+			truncated = fmt.Sprintf("\n\n(файл обрезан: показаны первые %d / %d байт)", maxContextBytes, len(data))
+		}
+		fmt.Fprintf(&agentMsg, "📎 Файл: %s\n\n%s%s", savedName, string(text), truncated)
+	} else {
+		fmt.Fprintf(&agentMsg, "📎 Файл сохранён: %s (%s)", savedName, formatDocSize(int64(len(data))))
+	}
+	if caption != "" {
+		agentMsg.WriteString("\n\n---\n")
+		agentMsg.WriteString(caption)
+	}
+
+	b.logger.Info("document saved", "chat_id", chatID, "filename", savedName, "size", len(data))
+
+	// Send typing and process.
+	typing := tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)
+	_, _ = b.api.Send(typing)
+
+	resp, err := b.agent.HandleMessage(ctx, chatID, agentMsg.String())
+	if err != nil {
+		b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
+		return
+	}
+	b.sendLongText(chatID, resp.Text)
+}
+
+// handlePhotoMessage downloads the photo, saves it, and either sends it to
+// the LLM as base64 (vision mode) or notifies the agent about the saved file.
+func (b *Bot) handlePhotoMessage(ctx context.Context, chatID int64, msg *tgbotapi.Message) {
+	if b.filesTool == nil {
+		b.sendText(chatID, "📷 Обработка изображений отключена в конфигурации.")
+		return
+	}
+
+	// Use the largest available photo size.
+	photoSize := msg.Photo[len(msg.Photo)-1]
+	caption := strings.TrimSpace(msg.Caption)
+	if caption == "" {
+		caption = "Что изображено на этом фото?"
+	}
+
+	// Download.
+	data, err := b.downloadTelegramFile(ctx, photoSize.FileID)
+	if err != nil {
+		b.sendText(chatID, fmt.Sprintf("❌ Ошибка загрузки фото: %s", err.Error()))
+		return
+	}
+
+	// Save.
+	_, savedName, err := b.filesTool.SaveFile("photo.jpg", data)
+	if err != nil {
+		b.sendText(chatID, fmt.Sprintf("❌ Ошибка сохранения: %s", err.Error()))
+		return
+	}
+
+	b.logger.Info("photo saved", "chat_id", chatID, "filename", savedName, "size", len(data))
+
+	typing := tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)
+	_, _ = b.api.Send(typing)
+
+	var resp *agent.Response
+	if b.visionEnabled {
+		attachments := []agent.FileAttachment{{
+			Data:     data,
+			MimeType: "image/jpeg",
+			Filename: savedName,
+		}}
+		resp, err = b.agent.HandleMessageWithAttachments(ctx, chatID, caption, attachments)
+	} else {
+		agentMsg := fmt.Sprintf("📷 Фото сохранено: %s\n\n%s", savedName, caption)
+		resp, err = b.agent.HandleMessage(ctx, chatID, agentMsg)
+	}
+	if err != nil {
+		b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
+		return
+	}
+	b.sendLongText(chatID, resp.Text)
+}
+
+// handleFilesCommand shows the list of saved files.
+func (b *Bot) handleFilesCommand(_ context.Context, chatID int64) {
+	if b.filesTool == nil {
+		b.sendText(chatID, "📁 Обработка файлов отключена в конфигурации.")
+		return
+	}
+	result, err := b.filesTool.Execute(context.Background(), mustMarshal(map[string]any{"action": "list"}))
+	if err != nil {
+		b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
+		return
+	}
+	b.sendText(chatID, "📁 Сохранённые файлы:\n\n"+result+"\n\nДля скачивания: /getfile <имя>")
+}
+
+// handleGetFileCommand sends a stored file back to the user.
+func (b *Bot) handleGetFileCommand(_ context.Context, chatID int64, parts []string) {
+	if b.filesTool == nil {
+		b.sendText(chatID, "📁 Обработка файлов отключена в конфигурации.")
+		return
+	}
+	if len(parts) < 2 {
+		b.sendText(chatID, "❌ Укажите имя файла. Например: /getfile 20260402_120000_report.txt")
+		return
+	}
+	filename := strings.Join(parts[1:], " ")
+	filePath := filepath.Join(b.filesTool.StorageDir(), filepath.Base(filename))
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		b.sendText(chatID, fmt.Sprintf("❌ Файл не найден: %s", filename))
+		return
+	}
+	b.sendDocument(chatID, filePath, "")
+}
+
+// downloadTelegramFile downloads a file from Telegram servers by fileID.
+func (b *Bot) downloadTelegramFile(ctx context.Context, fileID string) ([]byte, error) {
+	fileURL, err := b.api.GetFileDirectURL(fileID)
+	if err != nil {
+		return nil, fmt.Errorf("get file URL: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, http.NoBody)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	resp, err := b.api.Client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("download: %w", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d when downloading file", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// sendDocument sends a file from disk to the user.
+func (b *Bot) sendDocument(chatID int64, filePath, caption string) {
+	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
+	if caption != "" {
+		doc.Caption = caption
+	}
+	if _, err := b.api.Send(doc); err != nil {
+		b.logger.Error("send document", "error", err, "file", filePath)
+		b.sendText(chatID, fmt.Sprintf("❌ Не удалось отправить файл: %s", err.Error()))
+	}
+}
+
+// mustMarshal marshals v to JSON, panicking on error (only for static maps).
+func mustMarshal(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+// formatDocSize returns a compact human-readable file size string.
+func formatDocSize(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }

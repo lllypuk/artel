@@ -14,12 +14,86 @@ import (
 	"time"
 )
 
+// ContentPart represents one element of a multi-modal content array.
+type ContentPart struct {
+	Type     string           `json:"type"`
+	Text     string           `json:"text,omitempty"`
+	ImageURL *ImageURLContent `json:"image_url,omitempty"`
+}
+
+// ImageURLContent is the image reference within a ContentPart.
+type ImageURLContent struct {
+	URL string `json:"url"`
+}
+
 // Message represents a chat message.
+// Content holds plain-text content; ContentParts holds multi-modal content
+// (e.g. text + images). When ContentParts is non-empty it takes precedence
+// during JSON serialisation.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role         string        `json:"-"`
+	Content      string        `json:"-"`
+	ContentParts []ContentPart `json:"-"`
+	ToolCalls    []ToolCall    `json:"-"`
+	ToolCallID   string        `json:"-"`
+}
+
+// msgWire is the flat wire representation used for JSON marshal/unmarshal.
+type msgWire struct {
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content,omitempty"`
+	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+}
+
+// MarshalJSON serialises the message. When ContentParts is set the content
+// field is an array (vision / multi-modal); otherwise it is a plain string.
+func (m Message) MarshalJSON() ([]byte, error) {
+	w := msgWire{
+		Role:       m.Role,
+		ToolCalls:  m.ToolCalls,
+		ToolCallID: m.ToolCallID,
+	}
+	if len(m.ContentParts) > 0 {
+		b, err := json.Marshal(m.ContentParts)
+		if err != nil {
+			return nil, err
+		}
+		w.Content = b
+	} else if m.Content != "" {
+		b, err := json.Marshal(m.Content)
+		if err != nil {
+			return nil, err
+		}
+		w.Content = b
+	}
+	return json.Marshal(w)
+}
+
+// UnmarshalJSON deserialises the message. The content field from API responses
+// is always a plain string; ContentParts is preserved for round-trip use.
+func (m *Message) UnmarshalJSON(data []byte) error {
+	var w msgWire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	m.Role = w.Role
+	m.ToolCalls = w.ToolCalls
+	m.ToolCallID = w.ToolCallID
+	if len(w.Content) > 0 && string(w.Content) != "null" {
+		// Try plain string first (normal API response).
+		var s string
+		if err := json.Unmarshal(w.Content, &s); err == nil {
+			m.Content = s
+		} else {
+			// Fall back to array of content parts (unlikely from server, but safe).
+			var parts []ContentPart
+			if err := json.Unmarshal(w.Content, &parts); err == nil {
+				m.ContentParts = parts
+			}
+		}
+	}
+	return nil
 }
 
 // ToolCall represents a function call from the LLM.
