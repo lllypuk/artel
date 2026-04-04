@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/lllypuk/agent-shatrov/internal/tools"
@@ -29,18 +28,19 @@ func TestRegistryNotify(t *testing.T) {
 	r.Register(&mockTool{name: "web_search", result: "search results"})
 	r.Register(&mockTool{name: "test_tool", result: "ok"})
 
-	// web_search with query — message must mention the query
+	// web_search with query — notifications are disabled for silent operation
 	ctx := context.WithValue(context.Background(), tools.ChatIDKey, int64(12345))
 	_, err := r.ExecuteWithNotify(ctx, "web_search", []byte(`{"query":"golang channels"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if notifiedChatID != 12345 {
-		t.Errorf("expected chat ID 12345, got %d", notifiedChatID)
+	// Notifications should be disabled
+	if notifiedMsg != "" {
+		t.Errorf("expected no notification (notifications disabled), got %q", notifiedMsg)
 	}
-	if !strings.Contains(notifiedMsg, "golang channels") {
-		t.Errorf("expected notification to mention query, got %q", notifiedMsg)
+	if notifiedChatID != 0 {
+		t.Errorf("expected chat ID 0 (no notification), got %d", notifiedChatID)
 	}
 
 	// test_tool must NOT trigger a notification
@@ -72,8 +72,9 @@ func TestRegistryNotifyWebFetch(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(notifiedMsg, "https://example.com") {
-		t.Errorf("expected notification to mention URL, got %q", notifiedMsg)
+	// Notifications should be disabled
+	if notifiedMsg != "" {
+		t.Errorf("expected no notification (notifications disabled), got %q", notifiedMsg)
 	}
 }
 
@@ -88,12 +89,12 @@ func TestRegistryNotifyWithoutChatID(t *testing.T) {
 
 	r.Register(&mockTool{name: "web_search", result: "search results"})
 
-	// No chatID in context — notification must NOT fire
+	// No chatID in context — notification must NOT fire (and they're disabled anyway)
 	_, err := r.ExecuteWithNotify(context.Background(), "web_search", []byte(`{"query":"test"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if notified {
-		t.Error("expected no notification when chatID is not in context")
+		t.Error("expected no notification (notifications disabled)")
 	}
 }

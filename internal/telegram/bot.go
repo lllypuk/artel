@@ -184,7 +184,7 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 		return
 	}
 
-	b.logger.Info("message received", "chat_id", chatID, "text", truncateLog(text, 100))
+	b.logger.Debug("message received", "chat_id", chatID, "text", truncateLog(text, 100))
 
 	// Handle commands
 	if strings.HasPrefix(text, "/") {
@@ -208,7 +208,7 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 	b.sendLongText(chatID, resp.Text)
 
 	if resp.Usage != nil {
-		b.logger.Info("usage",
+		b.logger.Debug("usage",
 			"prompt_tokens", resp.Usage.PromptTokens,
 			"completion_tokens", resp.Usage.CompletionTokens,
 			"total_tokens", resp.Usage.TotalTokens,

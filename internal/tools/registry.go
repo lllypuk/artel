@@ -65,75 +65,16 @@ func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessag
 	return r.ExecuteWithNotify(ctx, name, args)
 }
 
-// ExecuteWithNotify finds and executes a tool by name, sending a notification first.
+// ExecuteWithNotify finds and executes a tool by name.
+// Notifications are disabled for silent operation.
 func (r *Registry) ExecuteWithNotify(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	t, ok := r.tools[name]
 	if !ok {
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
 
-	// Send notification before executing long-running tools
-	if r.notify != nil && r.shouldNotify(name) {
-		if chatID, ok := ctx.Value(ChatIDKey).(int64); ok {
-			r.notify(chatID, buildNotificationMessage(name, args))
-		}
-	}
-
+	// Notifications disabled - execute tools silently
 	return t.Execute(ctx, args)
-}
-
-// shouldNotify returns true if the tool should trigger a notification.
-func (r *Registry) shouldNotify(name string) bool {
-	switch name {
-	case "web_search", "web_fetch", "pi_coder", "notes", "web_screenshot":
-		return true
-	default:
-		return false
-	}
-}
-
-// buildNotificationMessage builds a context-aware notification message for a tool call.
-func buildNotificationMessage(name string, args json.RawMessage) string {
-	switch name {
-	case "web_search":
-		var a struct {
-			Query string `json:"query"`
-		}
-		if err := json.Unmarshal(args, &a); err == nil && a.Query != "" {
-			return "🔍 Ищу: " + a.Query + "..."
-		}
-		return "🔍 Ищу информацию в интернете..."
-	case "web_fetch":
-		var a struct {
-			URL string `json:"url"`
-		}
-		if err := json.Unmarshal(args, &a); err == nil && a.URL != "" {
-			return "📖 Читаю страницу: " + a.URL + "..."
-		}
-		return "📖 Читаю страницу..."
-	case "web_screenshot":
-		var a struct {
-			URL string `json:"url"`
-		}
-		if err := json.Unmarshal(args, &a); err == nil && a.URL != "" {
-			return "📸 Делаю скриншот: " + a.URL + "..."
-		}
-		return "📸 Делаю скриншот..."
-	case "pi_coder":
-		return "⚙️ Выполняю доработку кода агента..."
-	case "notes":
-		return "📝 Работаю с заметками..."
-	case "code_runner":
-		var a struct {
-			Language string `json:"language"`
-		}
-		if err := json.Unmarshal(args, &a); err == nil && a.Language != "" {
-			return "⚙️ Выполняю код (" + a.Language + ")..."
-		}
-		return "⚙️ Выполняю код..."
-	default:
-		return ""
-	}
 }
 
 // All returns all registered tools as LLM tool definitions.
