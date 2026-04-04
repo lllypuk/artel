@@ -24,4 +24,4 @@ data/
 
 # Go
 vendor/
-agent
+/bin/agent
