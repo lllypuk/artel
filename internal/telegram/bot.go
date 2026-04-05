@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -166,6 +167,9 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 		b.sendText(chatID, "⛔ Доступ запрещён.")
 		return
 	}
+
+	// Acknowledge receipt immediately with 👀 reaction
+	b.sendReaction(chatID, msg.MessageID, "👀")
 
 	// Handle file uploads before checking for text.
 	if msg.Document != nil {
@@ -555,6 +559,45 @@ func (b *Bot) handleNewsMoreCommand(ctx context.Context, chatID int64, parts []s
 	b.newsOffsets[chatID] = offset + limit
 
 	b.sendLongText(chatID, result)
+}
+
+// sendReaction sets an emoji reaction on a message using the Telegram Bot API directly
+// (setMessageReaction was added in Bot API 7.0 and is not yet supported by the v5 library).
+func (b *Bot) sendReaction(chatID int64, messageID int, emoji string) {
+	type reactionType struct {
+		Type  string `json:"type"`
+		Emoji string `json:"emoji"`
+	}
+	type request struct {
+		ChatID    int64          `json:"chat_id"`
+		MessageID int            `json:"message_id"`
+		Reaction  []reactionType `json:"reaction"`
+	}
+
+	payload, err := json.Marshal(request{
+		ChatID:    chatID,
+		MessageID: messageID,
+		Reaction:  []reactionType{{Type: "emoji", Emoji: emoji}},
+	})
+	if err != nil {
+		b.logger.Debug("sendReaction: marshal", "error", err)
+		return
+	}
+
+	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/setMessageReaction", b.api.Token)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		b.logger.Debug("sendReaction: create request", "error", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := b.api.Client.Do(req)
+	if err != nil {
+		b.logger.Debug("sendReaction: http", "error", err)
+		return
+	}
+	_ = resp.Body.Close()
 }
 
 func (b *Bot) sendText(chatID int64, text string) {
