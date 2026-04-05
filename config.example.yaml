@@ -173,6 +173,11 @@ code_runner:
   #   - go
   #   - bash
 
+weather:
+  enabled: true            # включить для получения прогноза погоды (Open-Meteo, бесплатно, без API-ключа)
+  timeout_seconds: 15      # таймаут HTTP-запросов (секунды)
+  proxy: ""                # прокси для запросов к Open-Meteo (опционально)
+
 logging:
   level: "info"           # debug, info, warn, error
   file: "./data/agent.log"

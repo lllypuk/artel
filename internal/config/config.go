@@ -18,6 +18,7 @@ type Config struct {
 	News       NewsConfig       `yaml:"news"`
 	Files      FilesConfig      `yaml:"files"`
 	CodeRunner CodeRunnerConfig `yaml:"code_runner"`
+	Weather    WeatherConfig    `yaml:"weather"`
 	Logging    LoggingConfig    `yaml:"logging"`
 }
 
@@ -93,6 +94,13 @@ type CodeRunnerConfig struct {
 	TimeoutSeconds int      `yaml:"timeout_seconds"` // default: 30
 	MemLimitMB     int      `yaml:"mem_limit_mb"`    // 0 = no limit
 	EnabledLangs   []string `yaml:"enabled_langs"`   // empty = all (python, go, bash)
+}
+
+// WeatherConfig holds settings for the weather forecast tool (Open-Meteo).
+type WeatherConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	TimeoutSeconds int    `yaml:"timeout_seconds"` // default: 15
+	Proxy          string `yaml:"proxy"`           // optional proxy override, e.g. "http://127.0.0.1:2080"
 }
 
 type LoggingConfig struct {

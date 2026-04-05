@@ -48,6 +48,8 @@ func registerOptionalTools(cfg *config.Config, registry *tools.Registry, logger 
 			"langs", cfg.CodeRunner.EnabledLangs,
 		)
 	}
+
+	registerWeatherTool(cfg, registry, logger)
 }
 
 func registerWebTools(cfg *config.Config, registry *tools.Registry, logger *slog.Logger) {
@@ -89,6 +91,21 @@ func registerWebTools(cfg *config.Config, registry *tools.Registry, logger *slog
 	}
 
 	logger.Info("Web tools enabled", "max_results", maxResults)
+}
+
+func registerWeatherTool(cfg *config.Config, registry *tools.Registry, logger *slog.Logger) {
+	if !cfg.Weather.Enabled {
+		return
+	}
+	timeout := cfg.Weather.TimeoutSeconds
+	if timeout == 0 {
+		timeout = 15
+	}
+	registry.Register(tools.NewWeatherTool(tools.WeatherConfig{
+		TimeoutSeconds: timeout,
+		Proxy:          cfg.Weather.Proxy,
+	}))
+	logger.Info("Weather tool enabled", "timeout", timeout)
 }
 
 func registerPiCoderTool(cfg *config.Config, registry *tools.Registry, logger *slog.Logger) {
