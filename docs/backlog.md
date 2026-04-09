@@ -130,19 +130,23 @@
 
 ## 🟢 Tier 3 — Nice-to-have
 
-### 7. Мультипровайдер LLM с fallback
+### ~~7. Мультипровайдер LLM с fallback~~ ✅ Done
 
 **Зачем:** Если z.ai недоступен → автоматическое переключение на backup-провайдер. Устойчивость к сбоям.
 
-**Что сделать:**
-- Конфиг с несколькими провайдерами (z.ai, Ollama local, OpenRouter, etc.)
-- Retry с экспоненциальным backoff
-- Автоматический fallback при ошибках 5xx или таймауте
-- Разные модели для разных задач (vision, fast, reasoning)
-- Health check провайдеров
+**Реализовано:**
+- Конфиг с несколькими провайдерами (`llm.providers`): z.ai, OpenRouter, Ollama, любой OpenAI-compatible API
+- Retry с экспоненциальным backoff и jitter (настраиваемые `max_retries`, `initial_backoff_ms`, `max_backoff_ms`)
+- Автоматический fallback при ошибках 5xx, 429 (rate limit) или сетевых ошибках
+- Кросс-провайдерный маппинг моделей: алиасы `default`/`fast` автоматически резолвятся в модель конкретного провайдера
+- Circuit breaker: после N ошибок провайдер помечается «unhealthy» с cooldown-периодом
+- Forced fallback: если все провайдеры unhealthy — пробуем все заново
+- Health check провайдеров: `/status` и `/model` отображают состояние каждого провайдера
+- Extra headers (OpenRouter: `HTTP-Referer`, `X-Title`) и per-provider proxy/timeout
+- Полная обратная совместимость: без `providers` работает как раньше (single client)
+- Интерфейс `llm.Provider`: `Client` (single) и `MultiClient` (multi) реализуют одинаковый интерфейс
 
-**Сложность:** Средняя
-**Файлы:** `internal/llm/client.go` (рефакторинг), `internal/llm/provider.go` (интерфейс), `internal/llm/fallback.go`
+**Файлы:** `internal/llm/provider.go` (новый), `internal/llm/multi.go` (новый), `internal/llm/multi_test.go` (новый), `internal/llm/client.go` (рефакторинг), `internal/config/config.go`, `internal/agent/agent.go`, `cmd/agent/main.go`, `internal/telegram/bot.go`, `config.example.yaml`
 
 ---
 
@@ -151,10 +155,9 @@
 **Зачем:** Управление расписанием через агента. Хорошо сочетается с reminders.
 
 **Что сделать:**
-- CalDAV клиент (Nextcloud, Radicale) или Google Calendar API
+- Google Calendar API
 - Показать расписание на день/неделю
 - Создать/удалить событие через агента
-- Уведомления о предстоящих событиях
 
 **Сложность:** Высокая
 **Файлы:** `internal/tools/calendar.go`, `internal/calendar/` (пакет)
@@ -170,6 +173,6 @@
 | ~~3~~ | ~~Управление контекстом~~ | ✅ Done | Устранение техдолга, стабильность |
 | ~~4~~ | ~~Обработка файлов~~ | ✅ Done | Расширение входных данных |
 | ~~5~~ | ~~`/status` + мониторинг~~ | ✅ Done | Наблюдаемость |
-| 6 | Code runner | Средняя | Вычислительные возможности |
+| ~~6~~ | ~~Code runner~~ | ✅ Done | Вычислительные возможности |
 | 7 | Мультипровайдер LLM | Средняя | Отказоустойчивость |
 | 8 | Календарь | Высокая | Расширение экосистемы |

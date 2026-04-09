@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -164,30 +165,70 @@ type StreamDelta struct {
 
 // Client is the LLM API client.
 type Client struct {
-	baseURL    string
-	apiKey     string
-	httpClient *http.Client
+	baseURL      string
+	apiKey       string
+	httpClient   *http.Client
+	extraHeaders map[string]string
 }
 
-// NewClient creates a new LLM client.
-func NewClient(baseURL, apiKey string) *Client {
-	return &Client{
+// ClientOption configures optional Client parameters.
+type ClientOption func(*Client, *http.Transport)
+
+// WithExtraHeaders sets additional HTTP headers sent with every request.
+// Useful for OpenRouter (HTTP-Referer, X-Title) and other providers.
+func WithExtraHeaders(headers map[string]string) ClientOption {
+	return func(c *Client, _ *http.Transport) {
+		c.extraHeaders = headers
+	}
+}
+
+// WithTimeout overrides the default HTTP client timeout (120s).
+func WithTimeout(d time.Duration) ClientOption {
+	return func(c *Client, _ *http.Transport) {
+		c.httpClient.Timeout = d
+	}
+}
+
+// WithProxy sets an HTTP proxy for the client.
+func WithProxy(proxyURL string) ClientOption {
+	return func(_ *Client, tr *http.Transport) {
+		if proxyURL == "" {
+			return
+		}
+		parsed, err := url.Parse(proxyURL)
+		if err == nil {
+			tr.Proxy = http.ProxyURL(parsed)
+		}
+	}
+}
+
+// NewClient creates a new LLM client with optional configuration.
+func NewClient(baseURL, apiKey string, opts ...ClientOption) *Client {
+	tr := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+	}
+
+	c := &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
-			Transport: &http.Transport{
-				DialContext: (&net.Dialer{
-					Timeout:   10 * time.Second,
-					KeepAlive: 30 * time.Second,
-				}).DialContext,
-				TLSHandshakeTimeout:   10 * time.Second,
-				TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
-				ResponseHeaderTimeout: 30 * time.Second,
-				IdleConnTimeout:       90 * time.Second,
-			},
+			Timeout:   120 * time.Second,
+			Transport: tr,
 		},
 	}
+
+	for _, opt := range opts {
+		opt(c, tr)
+	}
+
+	return c
 }
 
 // Chat sends a non-streaming chat completion request.
@@ -204,6 +245,9 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	for k, v := range c.extraHeaders {
+		httpReq.Header.Set(k, v)
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -213,7 +257,7 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	var chatResp ChatResponse
@@ -238,6 +282,9 @@ func (c *Client) ChatStream(ctx context.Context, req ChatRequest, onDelta func(S
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	for k, v := range c.extraHeaders {
+		httpReq.Header.Set(k, v)
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -247,7 +294,7 @@ func (c *Client) ChatStream(ctx context.Context, req ChatRequest, onDelta func(S
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+		return &APIError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	scanner := bufio.NewScanner(resp.Body)

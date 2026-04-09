@@ -50,7 +50,7 @@ const systemPrompt = `Ты — персональный AI-ассистент С
 
 // Agent is the core agent implementing the ReAct loop.
 type Agent struct {
-	llmClient          *llm.Client
+	llmClient          llm.Provider
 	model              string
 	mu                 sync.RWMutex
 	models             map[string]string // alias → model name, e.g. "fast" → "glm-4.7-flash"
@@ -63,7 +63,7 @@ type Agent struct {
 }
 
 // New creates a new Agent.
-func New(llmClient *llm.Client, model string, maxIterations int, toolRegistry *tools.Registry, db *storage.DB, logger *slog.Logger) *Agent {
+func New(llmClient llm.Provider, model string, maxIterations int, toolRegistry *tools.Registry, db *storage.DB, logger *slog.Logger) *Agent {
 	if maxIterations <= 0 {
 		maxIterations = 10
 	}
@@ -127,6 +127,32 @@ func (a *Agent) SetNotifier(notify tools.Notifier) {
 // ToolRegistry returns the tool registry.
 func (a *Agent) ToolRegistry() *tools.Registry {
 	return a.tools
+}
+
+// ProviderStatusEntry describes the health of a single LLM provider.
+type ProviderStatusEntry struct {
+	Name     string
+	Priority int
+	Healthy  bool
+}
+
+// GetProviderStatus returns the health status of all LLM providers.
+// Returns nil when a single-provider Client is used (no fallback configured).
+func (a *Agent) GetProviderStatus() []ProviderStatusEntry {
+	mc, ok := a.llmClient.(*llm.MultiClient)
+	if !ok {
+		return nil
+	}
+	statuses := mc.ProviderStatus()
+	result := make([]ProviderStatusEntry, len(statuses))
+	for i, s := range statuses {
+		result[i] = ProviderStatusEntry{
+			Name:     s.Name,
+			Priority: s.Priority,
+			Healthy:  s.Healthy,
+		}
+	}
+	return result
 }
 
 // FileAttachment represents a binary file (typically an image) to include

@@ -17,7 +17,10 @@ cmd/agent/main.go          — точка входа, wiring всех завис
 internal/
   config/config.go         — загрузка config.yaml + override через env
   agent/agent.go           — ядро: ReAct loop (LLM → tools → LLM → ответ)
-  llm/client.go            — HTTP-клиент к OpenAI-compatible API
+  llm/
+    provider.go            — интерфейс Provider, APIError, IsRetriable
+    client.go              — HTTP-клиент к OpenAI-compatible API (single provider)
+    multi.go               — MultiClient: мультипровайдер с fallback, retry, circuit breaker
   tools/
     registry.go            — реестр инструментов, интерфейс Tool
     notes.go               — инструмент: заметки (create/search/list) через SQLite
@@ -90,6 +93,24 @@ llm:
     default: "glm-4-plus"
     fast: "glm-4-flash"
   max_iterations: 10            # лимит шагов ReAct-цикла
+
+  # Мультипровайдер (опционально): при наличии providers — base_url/api_key выше игнорируются
+  providers:                    # список провайдеров с приоритетом (priority: меньше = первым)
+    - name: "zai"
+      base_url: "..."
+      api_key: "..."
+      priority: 1
+      models: { default: "glm-4-plus", fast: "glm-4-flash" }
+    - name: "openrouter"
+      base_url: "https://openrouter.ai/api/v1"
+      api_key: "..."
+      priority: 2
+      models: { default: "google/gemini-2.5-flash", fast: "google/gemini-2.5-flash" }
+      extra_headers: { HTTP-Referer: "...", X-Title: "..." }
+  retry:
+    max_retries: 2
+    initial_backoff_ms: 500
+    max_backoff_ms: 5000
 
 database:
   path: "./data/agent.db"       # путь к SQLite БД
@@ -244,6 +265,7 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 - [x] Универсальная автоматизация браузера (agent-browser) — навигация, клики, формы, скриншоты, JS, snapshot
 - [x] Переключение модели через Telegram (`/model fast`)
 - [x] Прогноз погоды (Open-Meteo) — текущие условия, прогноз на 1–7 дней, геокодирование городов
+- [x] Мультипровайдер LLM с fallback — OpenRouter, z.ai, любой OpenAI-compatible API; retry с backoff, circuit breaker, кросс-провайдерный маппинг моделей
 
 ## Инструмент news
 

@@ -29,17 +29,38 @@ type TelegramConfig struct {
 }
 
 type LLMConfig struct {
-	Provider           string    `yaml:"provider"`
-	Models             LLMModels `yaml:"models"`
-	BaseURL            string    `yaml:"base_url"`
-	APIKey             string    `yaml:"api_key"`
-	MaxIterations      int       `yaml:"max_iterations"`       // ReAct loop limit (default: 10)
-	MaxContextMessages int       `yaml:"max_context_messages"` // context window limit (default: 50, 0=disabled)
+	Provider           string              `yaml:"provider"`
+	Models             LLMModels           `yaml:"models"`
+	BaseURL            string              `yaml:"base_url"`
+	APIKey             string              `yaml:"api_key"`
+	MaxIterations      int                 `yaml:"max_iterations"`       // ReAct loop limit (default: 10)
+	MaxContextMessages int                 `yaml:"max_context_messages"` // context window limit (default: 50, 0=disabled)
+	Providers          []LLMProviderConfig `yaml:"providers"`            // multi-provider fallback
+	Retry              LLMRetryConfig      `yaml:"retry"`                // retry / backoff settings
 }
 
 type LLMModels struct {
 	Default string `yaml:"default"`
 	Fast    string `yaml:"fast"`
+}
+
+// LLMProviderConfig describes a single LLM provider for multi-provider fallback.
+type LLMProviderConfig struct {
+	Name           string            `yaml:"name"`
+	BaseURL        string            `yaml:"base_url"`
+	APIKey         string            `yaml:"api_key"`
+	Priority       int               `yaml:"priority"` // lower = tried first
+	Models         LLMModels         `yaml:"models"`
+	ExtraHeaders   map[string]string `yaml:"extra_headers"`   // e.g. HTTP-Referer, X-Title for OpenRouter
+	Proxy          string            `yaml:"proxy"`           // HTTP proxy for this provider
+	TimeoutSeconds int               `yaml:"timeout_seconds"` // HTTP client timeout (default: 120)
+}
+
+// LLMRetryConfig holds retry and backoff settings for multi-provider fallback.
+type LLMRetryConfig struct {
+	MaxRetries       int `yaml:"max_retries"`        // retries per provider (default: 2)
+	InitialBackoffMs int `yaml:"initial_backoff_ms"` // initial backoff in ms (default: 500)
+	MaxBackoffMs     int `yaml:"max_backoff_ms"`     // max backoff in ms (default: 5000)
 }
 
 type DatabaseConfig struct {
@@ -155,8 +176,18 @@ func (c *Config) validate() error {
 	if len(c.Telegram.AllowedUsers) == 0 {
 		return fmt.Errorf("telegram.allowed_users must have at least one user")
 	}
-	if c.LLM.APIKey == "" {
-		return fmt.Errorf("llm.api_key is required")
+	// api_key is required only when providers are not configured.
+	if len(c.LLM.Providers) == 0 && c.LLM.APIKey == "" {
+		return fmt.Errorf("llm.api_key is required (or configure llm.providers)")
+	}
+	// Validate provider configs.
+	for i, p := range c.LLM.Providers {
+		if p.BaseURL == "" {
+			return fmt.Errorf("llm.providers[%d].base_url is required", i)
+		}
+		if p.APIKey == "" {
+			return fmt.Errorf("llm.providers[%d].api_key is required", i)
+		}
 	}
 	if c.Database.Path == "" {
 		c.Database.Path = "./data/agent.db"

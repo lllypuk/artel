@@ -16,6 +16,37 @@ llm:
   max_iterations: 10   # лимит шагов ReAct-цикла (tool call → LLM → ...)
   max_context_messages: 50  # лимит сообщений в окне LLM-контекста (0 = без ограничений)
 
+  # Мультипровайдер с fallback (опционально).
+  # Если providers заданы, base_url / api_key выше игнорируются.
+  # Провайдеры пробуются по приоритету (priority: меньше = первым).
+  # providers:
+  #   - name: "zai"
+  #     base_url: "https://api.z.ai/api/coding/paas/v4"
+  #     api_key: ""
+  #     priority: 1
+  #     models:
+  #       default: "glm-4-plus"
+  #       fast: "glm-4-flash"
+  #
+  #   - name: "openrouter"
+  #     base_url: "https://openrouter.ai/api/v1"
+  #     api_key: ""               # ключ из https://openrouter.ai/keys
+  #     priority: 2
+  #     models:
+  #       default: "google/gemini-2.5-flash"
+  #       fast: "google/gemini-2.5-flash"
+  #     extra_headers:            # рекомендуемые заголовки OpenRouter
+  #       HTTP-Referer: "https://github.com/lllypuk/agent-shatrov"
+  #       X-Title: "agent-shatrov"
+  #     proxy: ""                 # прокси для этого провайдера (опционально)
+  #     timeout_seconds: 120      # таймаут HTTP-клиента (по умолчанию 120)
+  #
+  # Настройки retry / backoff (при использовании providers):
+  # retry:
+  #   max_retries: 2             # повторы на провайдер перед fallback
+  #   initial_backoff_ms: 500    # начальный backoff (мс)
+  #   max_backoff_ms: 5000       # максимальный backoff (мс)
+
 database:
   path: "./data/agent.db"
 

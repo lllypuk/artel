@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -52,7 +53,7 @@ func main() {
 
 	startTime := time.Now()
 
-	llmClient := llm.NewClient(cfg.LLM.BaseURL, cfg.LLM.APIKey)
+	llmProvider := buildLLMProvider(cfg, logger)
 
 	toolRegistry := tools.NewRegistry(logger)
 	toolRegistry.Register(tools.NewNotesTool(db))
@@ -62,7 +63,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ag := agent.New(llmClient, cfg.LLM.Models.Default, cfg.LLM.MaxIterations, toolRegistry, db, logger)
+	ag := agent.New(llmProvider, cfg.LLM.Models.Default, cfg.LLM.MaxIterations, toolRegistry, db, logger)
 	setupAgent(ag, cfg)
 
 	bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.Proxy, cfg.Telegram.AllowedUsers, ag, nil, logger)
@@ -151,4 +152,63 @@ func setupBot(bot *telegram.Bot, cfg *config.Config, registry *tools.Registry) {
 			}
 		}
 	}
+}
+
+// buildLLMProvider creates the appropriate LLM provider:
+// - MultiClient with fallback when llm.providers is configured
+// - Single Client for backward-compatible llm.base_url + llm.api_key config
+func buildLLMProvider(cfg *config.Config, logger *slog.Logger) llm.Provider {
+	if len(cfg.LLM.Providers) == 0 {
+		logger.Info("using single LLM provider", "base_url", cfg.LLM.BaseURL)
+		return llm.NewClient(cfg.LLM.BaseURL, cfg.LLM.APIKey)
+	}
+
+	providers := make([]llm.ProviderClientConfig, 0, len(cfg.LLM.Providers))
+	for _, p := range cfg.LLM.Providers {
+		var opts []llm.ClientOption
+		if len(p.ExtraHeaders) > 0 {
+			opts = append(opts, llm.WithExtraHeaders(p.ExtraHeaders))
+		}
+		if p.Proxy != "" {
+			opts = append(opts, llm.WithProxy(p.Proxy))
+		}
+		if p.TimeoutSeconds > 0 {
+			opts = append(opts, llm.WithTimeout(time.Duration(p.TimeoutSeconds)*time.Second))
+		}
+
+		models := make(map[string]string)
+		if p.Models.Default != "" {
+			models["default"] = p.Models.Default
+		}
+		if p.Models.Fast != "" {
+			models["fast"] = p.Models.Fast
+		}
+
+		providers = append(providers, llm.ProviderClientConfig{
+			Name:     p.Name,
+			Client:   llm.NewClient(p.BaseURL, p.APIKey, opts...),
+			Models:   models,
+			Priority: p.Priority,
+		})
+
+		logger.Info("LLM provider configured",
+			"name", p.Name,
+			"base_url", p.BaseURL,
+			"priority", p.Priority,
+		)
+	}
+
+	multiCfg := llm.MultiClientConfig{}
+	if cfg.LLM.Retry.MaxRetries > 0 {
+		multiCfg.MaxRetries = cfg.LLM.Retry.MaxRetries
+	}
+	if cfg.LLM.Retry.InitialBackoffMs > 0 {
+		multiCfg.InitialBackoff = time.Duration(cfg.LLM.Retry.InitialBackoffMs) * time.Millisecond
+	}
+	if cfg.LLM.Retry.MaxBackoffMs > 0 {
+		multiCfg.MaxBackoff = time.Duration(cfg.LLM.Retry.MaxBackoffMs) * time.Millisecond
+	}
+
+	logger.Info("multi-provider LLM enabled", "providers", len(providers))
+	return llm.NewMultiClient(providers, multiCfg, logger)
 }

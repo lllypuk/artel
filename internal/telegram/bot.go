@@ -321,6 +321,16 @@ func (b *Bot) handleModelCommand(chatID int64, parts []string) {
 			}
 			lines.WriteString("\n\nИспользование: `/model fast` или `/model default`")
 		}
+		if ps := b.agent.GetProviderStatus(); len(ps) > 0 {
+			lines.WriteString("\n\n🔌 Провайдеры:")
+			for _, p := range ps {
+				icon := "✅"
+				if !p.Healthy {
+					icon = "❌"
+				}
+				fmt.Fprintf(&lines, "\n• %s %s", icon, p.Name)
+			}
+		}
 		b.sendText(chatID, lines.String())
 		return
 	}
@@ -447,6 +457,18 @@ func (b *Bot) handleStatusCommand(ctx context.Context, chatID int64) {
 				fmt.Fprintf(&sb, "• %s — %s (%d зап.)\n",
 					day.Date, formatTokens(totalDay), day.RequestsCount)
 			}
+		}
+	}
+
+	// LLM provider status (multi-provider)
+	if providerStatus := b.agent.GetProviderStatus(); len(providerStatus) > 0 {
+		sb.WriteString("\n🔌 **Провайдеры LLM:**\n")
+		for _, ps := range providerStatus {
+			icon := "✅"
+			if !ps.Healthy {
+				icon = "❌"
+			}
+			fmt.Fprintf(&sb, "• %s %s (приоритет %d)\n", icon, ps.Name, ps.Priority)
 		}
 	}
 
