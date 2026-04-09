@@ -155,6 +155,36 @@ func (a *Agent) GetProviderStatus() []ProviderStatusEntry {
 	return result
 }
 
+// ProviderNames returns all provider names in priority order.
+// Returns nil for single-provider setups.
+func (a *Agent) ProviderNames() []string {
+	mc, ok := a.llmClient.(*llm.MultiClient)
+	if !ok {
+		return nil
+	}
+	return mc.ProviderNames()
+}
+
+// SetForcedProvider forces all requests through the named provider.
+// Use "" or "auto" to return to automatic priority-based selection.
+// Returns false if the provider name is not found.
+func (a *Agent) SetForcedProvider(name string) bool {
+	mc, ok := a.llmClient.(*llm.MultiClient)
+	if !ok {
+		return false
+	}
+	return mc.SetForcedProvider(name)
+}
+
+// GetForcedProvider returns the currently forced provider name, or "" if auto.
+func (a *Agent) GetForcedProvider() string {
+	mc, ok := a.llmClient.(*llm.MultiClient)
+	if !ok {
+		return ""
+	}
+	return mc.GetForcedProvider()
+}
+
 // FileAttachment represents a binary file (typically an image) to include
 // in the LLM user message as base64-encoded data.
 type FileAttachment struct {

@@ -81,6 +81,9 @@ type MultiClient struct {
 	cooldownDuration time.Duration
 	maxConsecErrors  int
 
+	mu             sync.RWMutex
+	forcedProvider string // when set, only this provider is used (no fallback)
+
 	logger *slog.Logger
 }
 
@@ -164,13 +167,31 @@ func (mc *MultiClient) resolveModel(model string, provider *providerEntry) strin
 	return model
 }
 
+// activeProviders returns the providers to try for a request.
+// If a provider is forced, only that provider is returned.
+func (mc *MultiClient) activeProviders() []*providerEntry {
+	mc.mu.RLock()
+	forced := mc.forcedProvider
+	mc.mu.RUnlock()
+
+	if forced == "" {
+		return mc.providers
+	}
+	for _, p := range mc.providers {
+		if p.name == forced {
+			return []*providerEntry{p}
+		}
+	}
+	return mc.providers
+}
+
 // Chat sends a non-streaming chat completion request, trying providers in
 // priority order with per-provider retries and exponential backoff.
 func (mc *MultiClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	var lastErr error
 	tried := 0
 
-	for _, provider := range mc.providers {
+	for _, provider := range mc.activeProviders() {
 		provider.mu.Lock()
 		healthy := provider.isHealthy(mc.cooldownDuration, mc.maxConsecErrors)
 		provider.mu.Unlock()
@@ -271,7 +292,7 @@ func (mc *MultiClient) ChatStream(ctx context.Context, req ChatRequest, onDelta 
 	var lastErr error
 	tried := 0
 
-	for _, provider := range mc.providers {
+	for _, provider := range mc.activeProviders() {
 		provider.mu.Lock()
 		healthy := provider.isHealthy(mc.cooldownDuration, mc.maxConsecErrors)
 		provider.mu.Unlock()
@@ -371,4 +392,40 @@ func (mc *MultiClient) ProviderStatus() []ProviderHealth {
 		p.mu.Unlock()
 	}
 	return result
+}
+
+// SetForcedProvider forces all requests to go through the named provider,
+// bypassing priority ordering and fallback. Use "" or "auto" to clear.
+func (mc *MultiClient) SetForcedProvider(name string) bool {
+	if name == "auto" || name == "" {
+		mc.mu.Lock()
+		mc.forcedProvider = ""
+		mc.mu.Unlock()
+		return true
+	}
+	for _, p := range mc.providers {
+		if p.name == name {
+			mc.mu.Lock()
+			mc.forcedProvider = name
+			mc.mu.Unlock()
+			return true
+		}
+	}
+	return false
+}
+
+// GetForcedProvider returns the currently forced provider name, or "" if auto.
+func (mc *MultiClient) GetForcedProvider() string {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+	return mc.forcedProvider
+}
+
+// ProviderNames returns the names of all configured providers in priority order.
+func (mc *MultiClient) ProviderNames() []string {
+	names := make([]string, len(mc.providers))
+	for i, p := range mc.providers {
+		names[i] = p.name
+	}
+	return names
 }

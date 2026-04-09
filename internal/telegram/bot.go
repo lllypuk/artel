@@ -225,6 +225,7 @@ const helpText = "\U0001F916 **Agent Shatrov**\n\n" +
 	"**Диалог:**\n" +
 	"/new — начать новый диалог (сброс контекста)\n" +
 	"/model — показать / сменить модель LLM\n" +
+	"/provider — показать / сменить LLM-провайдер\n" +
 	"/context — размер и статистика текущего контекста\n" +
 	"/status — аптайм, статистика БД и токенов\n" +
 	"/help — эта справка\n\n" +
@@ -272,6 +273,8 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 		b.sendText(chatID, "🆕 Новый диалог начат.")
 	case "/model":
 		b.handleModelCommand(chatID, parts)
+	case "/provider":
+		b.handleProviderCommand(chatID, parts)
 	case "/context":
 		b.handleContextCommand(ctx, chatID)
 	case "/reminders":
@@ -345,6 +348,57 @@ func (b *Bot) handleModelCommand(chatID int64, parts []string) {
 	b.sendText(chatID, fmt.Sprintf("✅ Модель переключена: `%s`", modelName))
 
 	b.logger.Info("model switched", "chat_id", chatID, "model", modelName)
+}
+
+func (b *Bot) handleProviderCommand(chatID int64, parts []string) {
+	names := b.agent.ProviderNames()
+	if len(names) == 0 {
+		b.sendText(chatID, "ℹ️ Мультипровайдер не настроен — используется один провайдер.")
+		return
+	}
+
+	if len(parts) == 1 {
+		forced := b.agent.GetForcedProvider()
+		statuses := b.agent.GetProviderStatus()
+
+		var sb strings.Builder
+		if forced == "" {
+			sb.WriteString("🔌 Режим: **auto** (по приоритету)\n")
+		} else {
+			fmt.Fprintf(&sb, "🔌 Режим: **%s** (принудительный)\n", forced)
+		}
+		sb.WriteString("\nПровайдеры:")
+		for _, ps := range statuses {
+			icon := "✅"
+			if !ps.Healthy {
+				icon = "❌"
+			}
+			marker := ""
+			if ps.Name == forced {
+				marker = " ✔️"
+			}
+			fmt.Fprintf(&sb, "\n• %s `%s` (приоритет %d)%s", icon, ps.Name, ps.Priority, marker)
+		}
+		sb.WriteString("\n\nИспользование: `/provider <имя>` или `/provider auto`")
+		b.sendText(chatID, sb.String())
+		return
+	}
+
+	target := parts[1]
+	if target == "auto" {
+		b.agent.SetForcedProvider("")
+		b.sendText(chatID, "✅ Провайдер: **auto** (по приоритету с fallback)")
+		b.logger.Info("provider set to auto", "chat_id", chatID)
+		return
+	}
+
+	if b.agent.SetForcedProvider(target) {
+		b.sendText(chatID, fmt.Sprintf("✅ Провайдер: **%s** (без fallback)", target))
+		b.logger.Info("provider forced", "chat_id", chatID, "provider", target)
+	} else {
+		b.sendText(chatID, fmt.Sprintf("❌ Провайдер `%s` не найден.\nДоступные: %s",
+			target, strings.Join(names, ", ")))
+	}
 }
 
 func (b *Bot) handleContextCommand(ctx context.Context, chatID int64) {
