@@ -15,7 +15,7 @@ import (
 	"github.com/lllypuk/agent-shatrov/internal/tools"
 )
 
-const systemPrompt = `Ты — персональный AI-ассистент Саши. Твоё имя — Agent.
+const systemPrompt = `Ты — персональный AI-ассистент. Твоё имя — Agent.
 Ты работаешь на локальном компьютере и можешь выполнять задачи через доступные инструменты.
 
 КРИТИЧЕСКИЕ ПРАВИЛА:
