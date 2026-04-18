@@ -11,6 +11,7 @@ import (
 
 	"github.com/lllypuk/agent-shatrov/internal/agent"
 	"github.com/lllypuk/agent-shatrov/internal/config"
+	"github.com/lllypuk/agent-shatrov/internal/storage"
 	"github.com/lllypuk/agent-shatrov/internal/tools"
 )
 
@@ -21,13 +22,15 @@ const eventWindow = 3 * time.Minute
 // proactiveScheduler sends scheduled messages to users without any user input.
 // Each event fires at most once per day; per-user daily message limit is enforced.
 type proactiveScheduler struct {
-	cfg    config.ProactiveConfig
-	ag     *agent.Agent
-	send   tools.Notifier
-	users  []int64
-	loc    *time.Location
-	logger *slog.Logger
-	nowFn  func() time.Time // injectable for testing; default is time.Now
+	cfg            config.ProactiveConfig
+	ag             *agent.Agent
+	send           tools.Notifier
+	users          []int64
+	loc            *time.Location
+	logger         *slog.Logger
+	db             *storage.DB      // for P-5 goal reminder queries (may be nil)
+	weatherEnabled bool             // true only when weather tool is registered
+	nowFn          func() time.Time // injectable for testing; default is time.Now
 
 	mu        sync.Mutex
 	today     string          // "2006-01-02"
@@ -43,13 +46,15 @@ func runProactiveScheduler(
 	ag *agent.Agent,
 	send tools.Notifier,
 	users []int64,
+	db *storage.DB,
+	weatherEnabled bool,
 	logger *slog.Logger,
 ) {
 	if !cfg.Enabled {
 		logger.Info("proactive scheduler disabled")
 		return
 	}
-	s := newProactiveScheduler(cfg, ag, send, users, logger)
+	s := newProactiveScheduler(cfg, ag, send, users, db, weatherEnabled, logger)
 	s.run(ctx)
 }
 
@@ -58,14 +63,15 @@ func newProactiveScheduler(
 	ag *agent.Agent,
 	send tools.Notifier,
 	users []int64,
+	db *storage.DB,
+	weatherEnabled bool,
 	logger *slog.Logger,
 ) *proactiveScheduler {
 	if cfg.MaxMessagesPerDay <= 0 {
 		cfg.MaxMessagesPerDay = 7
 	}
-	if cfg.GoalReminderDaysIdle <= 0 {
-		cfg.GoalReminderDaysIdle = 3
-	}
+	// GoalReminderDaysIdle: 0 means «disabled». We never override it with a default.
+	// The positive-only guard in tick() is the single source of truth for enabling P-5.
 
 	loc := time.Local
 	if cfg.Timezone != "" {
@@ -77,14 +83,16 @@ func newProactiveScheduler(
 	}
 
 	return &proactiveScheduler{
-		cfg:       cfg,
-		ag:        ag,
-		send:      send,
-		users:     users,
-		loc:       loc,
-		logger:    logger,
-		sentToday: make(map[int64]int),
-		fired:     make(map[string]bool),
+		cfg:            cfg,
+		ag:             ag,
+		send:           send,
+		users:          users,
+		loc:            loc,
+		logger:         logger,
+		db:             db,
+		weatherEnabled: weatherEnabled,
+		sentToday:      make(map[int64]int),
+		fired:          make(map[string]bool),
 	}
 }
 
@@ -148,6 +156,14 @@ func (s *proactiveScheduler) tick(ctx context.Context) {
 	if s.cfg.WeeklyReportTime != "" && now.Weekday() == time.Sunday {
 		s.maybeFireEvent(ctx, "weekly_report", s.cfg.WeeklyReportTime, now, s.fireWeeklyReport)
 	}
+	// P-5: Goal reminder — fires daily when GoalReminderDaysIdle > 0
+	if s.cfg.GoalReminderDaysIdle > 0 && s.db != nil {
+		reminderTime := s.cfg.MorningBriefingTime
+		if reminderTime == "" {
+			reminderTime = "09:00"
+		}
+		s.maybeFireEvent(ctx, "goal_reminder", reminderTime, now, s.fireGoalReminder)
+	}
 }
 
 // maybeFireEvent fires the handler if now is within [scheduled, scheduled+eventWindow)
@@ -196,7 +212,8 @@ func (s *proactiveScheduler) canSendToUser(chatID int64) bool {
 
 func (s *proactiveScheduler) fireMorningBriefing(ctx context.Context) {
 	var prompt string
-	if s.cfg.City != "" {
+	switch {
+	case s.cfg.City != "" && s.weatherEnabled:
 		prompt = fmt.Sprintf(
 			"🔔 [АВТО: УТРЕННИЙ БРИФИНГ] Составь краткое утреннее сообщение: "+
 				"1) Приветствие + день недели и дата "+
@@ -205,7 +222,17 @@ func (s *proactiveScheduler) fireMorningBriefing(ctx context.Context) {
 				"Всего 5-7 строк.",
 			s.cfg.City,
 		)
-	} else {
+	case s.cfg.City != "":
+		// City is configured but weather tool is disabled — mention city without tool call.
+		prompt = fmt.Sprintf(
+			"🔔 [АВТО: УТРЕННИЙ БРИФИНГ] Составь краткое утреннее сообщение: "+
+				"1) Приветствие + день недели и дата "+
+				"2) Одна мотивирующая мысль на день. "+
+				"Упомяни что пользователь находится в %s. "+
+				"Всего 4-5 строк.",
+			s.cfg.City,
+		)
+	default:
 		prompt = "🔔 [АВТО: УТРЕННИЙ БРИФИНГ] Составь краткое утреннее сообщение: " +
 			"1) Приветствие + день недели и дата " +
 			"2) Одна мотивирующая мысль на день. " +
@@ -229,10 +256,59 @@ func (s *proactiveScheduler) fireEveningCheckin(ctx context.Context) {
 // --- P-4: Weekly report ---
 
 func (s *proactiveScheduler) fireWeeklyReport(ctx context.Context) {
-	prompt := "🔔 [АВТО: ЕЖЕНЕДЕЛЬНЫЙ РЕВЬЮ] Напиши воскресное вечернее сообщение. " +
-		"Поздравь с завершением недели и предложи сделать ревью: " +
-		"что получилось, что нет, план на следующую неделю. Максимум 5 строк."
+	prompt := "🔔 [АВТО: ЕЖЕНЕДЕЛЬНЫЙ РЕВЬЮ] Составь воскресный вечерний отчёт за неделю. " +
+		"Используй доступные инструменты: " +
+		"1) workout stats за эту неделю (from=<прошлый понедельник>, to=<сегодня>) — статистика тренировок; " +
+		"2) goals dashboard — прогресс по активным целям. " +
+		"Затем поздравь с завершением недели и предложи сделать ревью: " +
+		"что получилось, что нет, план на следующую неделю. Максимум 10 строк, тёплый тон."
 	for _, chatID := range s.users {
+		s.dispatch(ctx, chatID, prompt)
+	}
+}
+
+// --- P-5: Goal reminder ---
+
+// fireGoalReminder checks each user's active objectives. For any goal that has
+// not been updated in GoalReminderDaysIdle days it sends a gentle reminder
+// through the agent, asking the user to update their progress.
+func (s *proactiveScheduler) fireGoalReminder(ctx context.Context) {
+	if s.db == nil {
+		return
+	}
+	// tick() already guards GoalReminderDaysIdle > 0, so it's always positive here.
+	daysIdle := s.cfg.GoalReminderDaysIdle
+	threshold := s.now().AddDate(0, 0, -daysIdle)
+
+	for _, chatID := range s.users {
+		stale, err := s.db.GetStaleObjectives(ctx, chatID, threshold)
+		if err != nil {
+			s.logger.Error("goal reminder: get stale objectives",
+				"chat_id", chatID, "error", err)
+			continue
+		}
+		if len(stale) == 0 {
+			s.logger.Debug("goal reminder: no stale objectives", "chat_id", chatID)
+			continue
+		}
+
+		// Build a short summary of stale goals.
+		lines := make([]string, 0, len(stale))
+		for _, o := range stale {
+			days := int(s.now().Sub(o.UpdatedAt).Hours() / 24)
+			lines = append(lines, fmt.Sprintf(
+				"• %s (%d%% прогресс, %d дн. без обновлений)",
+				o.Title, o.Progress, days,
+			))
+		}
+		prompt := fmt.Sprintf(
+			"🔔 [АВТО: НАПОМИНАНИЕ О ЦЕЛЯХ] Следующие активные цели не обновлялись %d+ дней:\n%s\n"+
+				"Деликатно напомни об этих целях и спроси, как продвигается работа. "+
+				"Предложи обновить прогресс или наметить конкретные шаги на ближайшие дни. "+
+				"Максимум 5-6 строк, тёплый тон.",
+			daysIdle,
+			strings.Join(lines, "\n"),
+		)
 		s.dispatch(ctx, chatID, prompt)
 	}
 }

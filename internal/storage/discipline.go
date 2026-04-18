@@ -490,6 +490,37 @@ func (s *DB) listKeyResults(ctx context.Context, objectiveID int64) ([]KeyResult
 	return result, rows.Err()
 }
 
+// GetStaleObjectives returns active objectives for a chat that have not been
+// updated since updatedBefore. Results are ordered oldest-first.
+func (s *DB) GetStaleObjectives(ctx context.Context, chatID int64, updatedBefore time.Time) ([]Objective, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, chat_id, title, description, horizon, period, status, progress,
+		       created_at, updated_at
+		FROM objectives
+		WHERE chat_id = ? AND status = 'active'
+		  AND updated_at < ?
+		ORDER BY updated_at ASC`,
+		chatID, updatedBefore.UTC().Format("2006-01-02 15:04:05"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close() //nolint:errcheck
+
+	var result []Objective
+	for rows.Next() {
+		var o Objective
+		if err := rows.Scan(
+			&o.ID, &o.ChatID, &o.Title, &o.Description, &o.Horizon, &o.Period,
+			&o.Status, &o.Progress, &o.CreatedAt, &o.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		result = append(result, o)
+	}
+	return result, rows.Err()
+}
+
 func orDefault(s, def string) string {
 	if s == "" {
 		return def

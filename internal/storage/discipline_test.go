@@ -371,3 +371,89 @@ func TestDeleteKeyResult_IsolatedByChatID(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, kr)
 }
+
+// ── GetStaleObjectives (P-5) ──────────────────────────────────────────────────
+
+func TestGetStaleObjectives_Empty(t *testing.T) {
+	db := openDisciplineTestDB(t)
+	ctx := context.Background()
+
+	// Threshold far in the future: every objective would be considered stale.
+	threshold := time.Now().Add(24 * time.Hour)
+	result, err := db.GetStaleObjectives(ctx, 1, threshold)
+	require.NoError(t, err)
+	assert.Empty(t, result, "no objectives → empty result")
+}
+
+func TestGetStaleObjectives_ReturnsStale(t *testing.T) {
+	db := openDisciplineTestDB(t)
+	ctx := context.Background()
+
+	// Create two active objectives.
+	_, err := db.CreateObjective(ctx, storage.Objective{
+		ChatID: 1, Title: "Old goal", Horizon: "quarter", Status: "active",
+	})
+	require.NoError(t, err)
+	_, err = db.CreateObjective(ctx, storage.Objective{
+		ChatID: 1, Title: "Another goal", Horizon: "year", Status: "active",
+	})
+	require.NoError(t, err)
+
+	// Threshold far in the future → both are stale (updated_at = created_at ≈ now).
+	threshold := time.Now().Add(time.Hour)
+	result, err := db.GetStaleObjectives(ctx, 1, threshold)
+	require.NoError(t, err)
+	assert.Len(t, result, 2)
+}
+
+func TestGetStaleObjectives_SkipsDone(t *testing.T) {
+	db := openDisciplineTestDB(t)
+	ctx := context.Background()
+
+	id, err := db.CreateObjective(ctx, storage.Objective{
+		ChatID: 1, Title: "Done goal", Horizon: "quarter", Status: "active",
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.UpdateObjective(ctx, 1, id, "Done goal", "", "done", 100))
+
+	threshold := time.Now().Add(time.Hour)
+	result, err := db.GetStaleObjectives(ctx, 1, threshold)
+	require.NoError(t, err)
+	assert.Empty(t, result, "done objectives must not appear in stale list")
+}
+
+func TestGetStaleObjectives_SkipsRecentlyUpdated(t *testing.T) {
+	db := openDisciplineTestDB(t)
+	ctx := context.Background()
+
+	_, err := db.CreateObjective(ctx, storage.Objective{
+		ChatID: 1, Title: "Fresh goal", Horizon: "quarter", Status: "active",
+	})
+	require.NoError(t, err)
+
+	// Threshold in the past → objective was just created, so updated_at > threshold.
+	threshold := time.Now().Add(-time.Hour)
+	result, err := db.GetStaleObjectives(ctx, 1, threshold)
+	require.NoError(t, err)
+	assert.Empty(t, result, "recently created/updated objective must not be stale")
+}
+
+func TestGetStaleObjectives_IsolatedByChat(t *testing.T) {
+	db := openDisciplineTestDB(t)
+	ctx := context.Background()
+
+	_, err := db.CreateObjective(ctx, storage.Objective{
+		ChatID: 1, Title: "Chat1 goal", Horizon: "quarter", Status: "active",
+	})
+	require.NoError(t, err)
+	_, err = db.CreateObjective(ctx, storage.Objective{
+		ChatID: 2, Title: "Chat2 goal", Horizon: "quarter", Status: "active",
+	})
+	require.NoError(t, err)
+
+	threshold := time.Now().Add(time.Hour)
+	result, err := db.GetStaleObjectives(ctx, 1, threshold)
+	require.NoError(t, err)
+	assert.Len(t, result, 1, "only chat 1 objectives should appear")
+	assert.Equal(t, "Chat1 goal", result[0].Title)
+}

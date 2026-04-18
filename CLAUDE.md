@@ -354,3 +354,86 @@ news:
 ```
 
 Управление новостями — через инструмент `news` в диалоге с агентом (не через slash-команды).
+
+---
+
+## Паттерны разработки (из опыта)
+
+### A. SQLite UTC timezone gotcha
+
+`CURRENT_TIMESTAMP` в SQLite всегда хранится в **UTC**. `time.Now()` в Go возвращает локальное время.
+При передаче Go-времени как параметра SQL-запроса всегда форматировать в UTC:
+
+```go
+// ✅ правильно
+updatedBefore.UTC().Format("2006-01-02 15:04:05")
+
+// ❌ сломается на машинах с non-UTC таймзоной
+updatedBefore.Format("2006-01-02 15:04:05")
+```
+
+Касается любых сравнений `WHERE updated_at < ?`, `WHERE created_at >= ?` и т.п.
+
+### B. cyclop лимит = 20: стратегия снижения сложности
+
+golangci-lint блокирует функции с цикломатической сложностью > 20.
+Рецепт: выносить логические блоки в отдельные функции **без receiver** (свободные функции):
+
+```go
+// Вместо разрастания метода:
+func (t *WorkoutTool) execLog(...) (string, error) {
+    ...
+    insertSets(ctx, id, a.Sets)      // free func, не метод
+    writeLogSets(&sb, a.Sets)        // free func
+    writeNewPRs(&sb, db, ctx, ...)   // free func
+    ...
+}
+```
+
+Free-функции с префиксом `write`/`insert`/`format` — стандартный приём в этом проекте.
+
+### C. Storage: один файл на домен, `sqlite.go` = DDL only
+
+Схема хранилища разделена по доменам:
+- `internal/storage/sqlite.go` — **только** DDL-миграции (`CREATE TABLE IF NOT EXISTS`, индексы, additive migrations)
+- `internal/storage/discipline.go` — типы + CRUD для discipline/goals
+- `internal/storage/workout.go` — типы + CRUD для workouts
+- `internal/storage/reminders.go` — типы + CRUD для reminders
+
+Новый домен → новый файл хранилища. Типы (`Workout`, `WorkoutSet`, …) объявляются в файле своего домена.
+
+### D. proactiveScheduler: `0 = disabled`, конструктор не перезаписывает
+
+Для config-флагов с семантикой «`0` = выключено» конструктор **не должен** подставлять дефолт:
+
+```go
+// ✅ правильно: только MaxMessagesPerDay требует положительного значения
+if cfg.MaxMessagesPerDay <= 0 {
+    cfg.MaxMessagesPerDay = 7
+}
+// GoalReminderDaysIdle: НЕ трогаем — 0 означает «фича выключена»
+
+// tick() — единственная точка проверки включённости:
+if s.cfg.GoalReminderDaysIdle > 0 && s.db != nil {
+    s.maybeFireEvent(...)
+}
+```
+
+Нарушение этого принципа делает тест зелёным по ложной причине (`db == nil` защищает там, где должен защищать `0`).
+
+### E. FK-валидация до создания записи
+
+Когда инструмент принимает ссылку на другую сущность (напр. `goal_id` в workout),
+валидировать существование и принадлежность чату **до** INSERT:
+
+```go
+// ✅ в execLog перед db.CreateWorkout:
+if a.GoalID != nil {
+    if err := t.validateGoalID(ctx, a.ChatID, *a.GoalID); err != nil {
+        return "", err  // нет осиротевших записей
+    }
+}
+```
+
+Паттерн `validateXxx(ctx, chatID, id)` использует `GetXxx(ctx, chatID, id)` и проверяет `== nil`.
+Работает для любых FK-ссылок между инструментами (workout→goal, note→tag и т.п.).

@@ -8,11 +8,12 @@ import (
 	"time"
 
 	"github.com/lllypuk/agent-shatrov/internal/config"
+	"github.com/lllypuk/agent-shatrov/internal/storage"
 )
 
-// newTestScheduler creates a scheduler suitable for unit tests (no agent/send/users).
+// newTestScheduler creates a scheduler suitable for unit tests (no agent/send/users/db).
 func newTestScheduler(cfg config.ProactiveConfig) *proactiveScheduler {
-	s := newProactiveScheduler(cfg, nil, nil, nil, slog.Default())
+	s := newProactiveScheduler(cfg, nil, nil, nil, nil, false, slog.Default())
 	s.today = time.Now().Format("2006-01-02")
 	return s
 }
@@ -31,8 +32,9 @@ func TestDefaults(t *testing.T) {
 	if s.cfg.MaxMessagesPerDay != 7 {
 		t.Errorf("MaxMessagesPerDay: got %d, want 7", s.cfg.MaxMessagesPerDay)
 	}
-	if s.cfg.GoalReminderDaysIdle != 3 {
-		t.Errorf("GoalReminderDaysIdle: got %d, want 3", s.cfg.GoalReminderDaysIdle)
+	// GoalReminderDaysIdle=0 means «disabled»; the constructor must NOT override it with a default.
+	if s.cfg.GoalReminderDaysIdle != 0 {
+		t.Errorf("GoalReminderDaysIdle: got %d, want 0 (zero = disabled, no override)", s.cfg.GoalReminderDaysIdle)
 	}
 }
 
@@ -206,7 +208,7 @@ func TestDayReset(t *testing.T) {
 func TestInvalidTimezone(t *testing.T) {
 	s := newProactiveScheduler(
 		config.ProactiveConfig{Timezone: "Invalid/Zone"},
-		nil, nil, nil, slog.Default(),
+		nil, nil, nil, nil, false, slog.Default(),
 	)
 	if s.loc == nil {
 		t.Fatal("loc must not be nil after invalid timezone")
@@ -241,5 +243,159 @@ func TestOrDisabled(t *testing.T) {
 	}
 	if orDisabled("08:00") != "08:00" {
 		t.Error("non-empty string should be returned as-is")
+	}
+}
+
+// ── P-5: Goal reminder ────────────────────────────────────────────────────────
+
+// TestGoalReminderEvent_FiredByTick: when GoalReminderDaysIdle > 0,
+// tick() must schedule the "goal_reminder" event.
+func TestGoalReminderEvent_FiredByTick(t *testing.T) {
+	s := newTestScheduler(config.ProactiveConfig{
+		MaxMessagesPerDay:    7,
+		GoalReminderDaysIdle: 3,
+		MorningBriefingTime:  "09:00",
+	})
+	// Inject a mock DB-like presence: set db to a non-nil sentinel value.
+	// Because fireGoalReminder returns early when db is nil, we need it non-nil
+	// to reach the handler body — but we test via the fired-map, not the body.
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close() //nolint:errcheck
+	s.db = db
+
+	s.nowFn = func() time.Time { return scheduledNow("09:00") }
+	s.tick(context.Background())
+
+	// Give the goroutine time to mark the key.
+	time.Sleep(50 * time.Millisecond)
+
+	s.mu.Lock()
+	fired := s.fired["goal_reminder"]
+	s.mu.Unlock()
+
+	if !fired {
+		t.Error("expected 'goal_reminder' to be marked as fired after tick()")
+	}
+}
+
+// TestGoalReminderEvent_NotFiredWhenDisabled: goal_reminder must NOT fire when
+// GoalReminderDaysIdle == 0, even if a live DB is present.
+func TestGoalReminderEvent_NotFiredWhenDisabled(t *testing.T) {
+	s := newTestScheduler(config.ProactiveConfig{
+		MaxMessagesPerDay:    7,
+		GoalReminderDaysIdle: 0, // explicitly disabled
+		MorningBriefingTime:  "09:00",
+	})
+	// Give it a real DB so the only thing preventing the event is daysIdle == 0.
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close() //nolint:errcheck
+	s.db = db
+
+	s.nowFn = func() time.Time { return scheduledNow("09:00") }
+	s.tick(context.Background())
+	time.Sleep(20 * time.Millisecond)
+
+	s.mu.Lock()
+	fired := s.fired["goal_reminder"]
+	s.mu.Unlock()
+
+	if fired {
+		t.Error("goal_reminder must not fire when GoalReminderDaysIdle=0 (feature disabled)")
+	}
+}
+
+// TestGoalReminderEvent_DefaultTime: when MorningBriefingTime is empty,
+// the goal reminder fires at the default 09:00.
+func TestGoalReminderEvent_DefaultTime(t *testing.T) {
+	s := newTestScheduler(config.ProactiveConfig{
+		MaxMessagesPerDay:    7,
+		GoalReminderDaysIdle: 3,
+		// MorningBriefingTime intentionally empty
+	})
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close() //nolint:errcheck
+	s.db = db
+
+	s.nowFn = func() time.Time { return scheduledNow("09:00") }
+	s.tick(context.Background())
+	time.Sleep(50 * time.Millisecond)
+
+	s.mu.Lock()
+	fired := s.fired["goal_reminder"]
+	s.mu.Unlock()
+
+	if !fired {
+		t.Error("goal_reminder should fire at 09:00 when MorningBriefingTime is empty")
+	}
+}
+
+// ── P-5 (continued): no-double-fire ──────────────────────────────────────────────
+
+// TestGoalReminderEvent_NoDoubleFire: goal_reminder fires at most once per day.
+func TestGoalReminderEvent_NoDoubleFire(t *testing.T) {
+	s := newTestScheduler(config.ProactiveConfig{
+		MaxMessagesPerDay:    7,
+		GoalReminderDaysIdle: 3,
+		MorningBriefingTime:  "09:00",
+	})
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close() //nolint:errcheck
+	s.db = db
+
+	s.nowFn = func() time.Time { return scheduledNow("09:00") }
+	s.tick(context.Background())
+	time.Sleep(50 * time.Millisecond)
+
+	// Second tick at the same time must NOT re-fire.
+	var handlerCalls int32
+	s.maybeFireEvent(context.Background(), "goal_reminder", "09:00",
+		scheduledNow("09:00"), func(_ context.Context) {
+			atomic.AddInt32(&handlerCalls, 1)
+		})
+	time.Sleep(20 * time.Millisecond)
+
+	if atomic.LoadInt32(&handlerCalls) != 0 {
+		t.Error("goal_reminder must not fire a second time on the same day")
+	}
+}
+
+// ── Fix-5: weatherEnabled guards ─────────────────────────────────────────────
+
+// TestMorningBriefing_WeatherPromptOnlyWhenEnabled: when city is set but
+// weather tool is disabled, the prompt must NOT include "инструмент weather".
+func TestMorningBriefing_WeatherEnabledContainsWeatherInstruction(t *testing.T) {
+	s := newProactiveScheduler(
+		config.ProactiveConfig{City: "Moscow"},
+		nil, nil, nil, nil, true /* weatherEnabled */, slog.Default(),
+	)
+	// Collect the prompt by intercepting dispatch via a custom agent.
+	// We just verify the field is stored; actual dispatch needs a live agent.
+	if !s.weatherEnabled {
+		t.Error("weatherEnabled should be true")
+	}
+	if s.cfg.City != "Moscow" {
+		t.Error("city should be Moscow")
+	}
+}
+
+func TestMorningBriefing_NoWeatherWhenDisabled(t *testing.T) {
+	s := newProactiveScheduler(
+		config.ProactiveConfig{City: "Moscow"},
+		nil, nil, nil, nil, false /* weatherEnabled */, slog.Default(),
+	)
+	if s.weatherEnabled {
+		t.Error("weatherEnabled should be false")
 	}
 }

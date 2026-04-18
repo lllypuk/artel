@@ -236,6 +236,41 @@ func (s *DB) migrate(ctx context.Context) error {
 			completion_tokens INTEGER DEFAULT 0,
 			requests_count INTEGER DEFAULT 0
 		)`,
+		// Workouts table (H-1)
+		`CREATE TABLE IF NOT EXISTS workouts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			chat_id INTEGER NOT NULL,
+			date TEXT NOT NULL,
+			type TEXT NOT NULL,
+			duration_min INTEGER DEFAULT 0,
+			note TEXT DEFAULT '',
+			goal_id INTEGER,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_workouts_chat_date ON workouts(chat_id, date DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_workouts_type ON workouts(chat_id, type)`,
+		// Workout sets table (H-1)
+		`CREATE TABLE IF NOT EXISTS workout_sets (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			workout_id INTEGER NOT NULL REFERENCES workouts(id) ON DELETE CASCADE,
+			exercise TEXT NOT NULL,
+			sets INTEGER DEFAULT 0,
+			reps INTEGER DEFAULT 0,
+			weight_kg REAL DEFAULT 0,
+			distance_km REAL DEFAULT 0,
+			note TEXT DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_workout_sets_workout ON workout_sets(workout_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_workout_sets_exercise ON workout_sets(exercise)`,
+		// Workout templates table (H-3)
+		`CREATE TABLE IF NOT EXISTS workout_templates (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			chat_id INTEGER NOT NULL,
+			name TEXT NOT NULL,
+			exercises TEXT NOT NULL DEFAULT '[]',
+			UNIQUE(chat_id, name)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_workout_templates_chat ON workout_templates(chat_id)`,
 	}
 
 	// Execute core migrations (required)

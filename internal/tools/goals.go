@@ -392,7 +392,12 @@ func (t *GoalsTool) dashboard(ctx context.Context, a goalsArgs) (string, error) 
 	sb.WriteString("**Топ целей:**\n")
 	for _, o := range objs[:limit] {
 		bar := progressEmoji(o.Progress)
-		fmt.Fprintf(&sb, "%s **%s** — %d%% [%s %s]\n", bar, o.Title, o.Progress, o.Horizon, o.Period)
+		fmt.Fprintf(&sb, "%s **%s** — %d%% [%s %s]", bar, o.Title, o.Progress, o.Horizon, o.Period)
+		// H-5: show linked workout count if any.
+		if wCount, err := t.db.CountWorkoutsForGoal(ctx, a.ChatID, o.ID); err == nil && wCount > 0 {
+			fmt.Fprintf(&sb, " 🏋️%d", wCount)
+		}
+		sb.WriteString("\n")
 		for _, kr := range o.KeyResults {
 			fmt.Fprintf(&sb, "   • %s — %d%%\n", kr.Title, kr.Progress)
 		}
