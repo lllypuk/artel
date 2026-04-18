@@ -209,6 +209,12 @@ weather:
   timeout_seconds: 15      # таймаут HTTP-запросов (секунды)
   proxy: ""                # прокси для запросов к Open-Meteo (опционально)
 
+stocks:
+  enabled: true            # включить для получения котировок акций и индексов
+  cache_ttl_minutes: 15    # TTL кэша котировок в SQLite (0 = без кэша)
+  timeout_seconds: 15      # таймаут HTTP-запросов (секунды)
+                           # Источники: Yahoo Finance (US) + MOEX ISS API (RU), без API-ключей
+
 logging:
   level: "info"           # debug, info, warn, error
   file: "./data/agent.log"

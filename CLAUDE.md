@@ -37,6 +37,9 @@ internal/
     pi_coder.go      — инструмент: доработка агента через pi
     news.go          — инструмент: агрегация новостей (RSS/Atom/JSON)
     weather.go       — инструмент: прогноз погоды (Open-Meteo)
+    stocks.go        — инструмент: котировки акций и индексов (Yahoo Finance + MOEX ISS)
+    stocks_moex.go   — клиент MOEX ISS API
+    stocks_yahoo.go  — клиент Yahoo Finance v8 API
     files.go         — инструмент: управление файлами (list/read/delete)
     code_runner.go   — инструмент: выполнение кода (Python/Go/bash)
   storage/
@@ -314,6 +317,7 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 - [x] Универсальная автоматизация браузера (agent-browser) — навигация, клики, формы, скриншоты, JS, snapshot
 - [x] Переключение модели и провайдера через Telegram (`/model fast`, `/provider openrouter`)
 - [x] Прогноз погоды (Open-Meteo) — текущие условия, прогноз на 1–7 дней, геокодирование городов
+- [x] Котировки акций и индексов — US (через Yahoo Finance) + RU (через MOEX ISS); S&P 500, Nasdaq, DJI, Russell, IMOEX, RTSI, любые тикеры; кэш в SQLite
 - [x] Мультипровайдер LLM с fallback — OpenRouter, z.ai, любой OpenAI-compatible API; retry с backoff, circuit breaker
 - [x] Файлы — приём файлов и изображений через Telegram, list/read/delete; Vision API для изображений
 - [x] Выполнение кода — Python, Go, bash в изолированной временной директории с таймаутом и лимитом памяти

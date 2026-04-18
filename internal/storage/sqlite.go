@@ -164,6 +164,14 @@ func (s *DB) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_reminders_chat ON reminders(chat_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_reminders_trigger ON reminders(trigger_at, status)`,
+		// Stock quotes cache table
+		`CREATE TABLE IF NOT EXISTS stock_quotes_cache (
+			ticker     TEXT NOT NULL,
+			source     TEXT NOT NULL,
+			data_json  TEXT NOT NULL,
+			fetched_at DATETIME NOT NULL,
+			PRIMARY KEY (ticker, source)
+		)`,
 		// Usage statistics table
 		`CREATE TABLE IF NOT EXISTS usage_stats (
 			date TEXT PRIMARY KEY,

@@ -149,14 +149,14 @@ stocks:
 - Create: `internal/storage/stocks_test.go`
 - Modify: `internal/storage/sqlite.go` (добавить миграцию)
 
-- [ ] написать тест `TestSaveAndGetQuoteCache_Hit` — сохранить котировку, получить обратно, данные совпадают
-- [ ] написать тест `TestGetQuoteCache_Miss` — несуществующий тикер возвращает `nil, nil`
-- [ ] написать тест `TestGetQuoteCache_Expired` — TTL истёк, возвращает `nil, nil`
-- [ ] написать тест `TestSaveQuoteCache_Upsert` — повторное сохранение обновляет запись
-- [ ] добавить миграцию `stock_quotes_cache` в `sqlite.go`
-- [ ] реализовать `SaveQuoteCache(ctx, ticker, source, dataJSON)` в `stocks.go`
-- [ ] реализовать `GetQuoteCache(ctx, ticker, source, ttl) (string, error)` — возвращает JSON или `""`
-- [ ] запустить тесты — должны пройти перед Task 2
+- [x] написать тест `TestSaveAndGetQuoteCache_Hit` — сохранить котировку, получить обратно, данные совпадают
+- [x] написать тест `TestGetQuoteCache_Miss` — несуществующий тикер возвращает `nil, nil`
+- [x] написать тест `TestGetQuoteCache_Expired` — TTL истёк, возвращает `nil, nil`
+- [x] написать тест `TestSaveQuoteCache_Upsert` — повторное сохранение обновляет запись
+- [x] добавить миграцию `stock_quotes_cache` в `sqlite.go`
+- [x] реализовать `SaveQuoteCache(ctx, ticker, source, dataJSON)` в `stocks.go`
+- [x] реализовать `GetQuoteCache(ctx, ticker, source, ttl) (string, error)` — возвращает JSON или `""`
+- [x] запустить тесты — должны пройти перед Task 2
 
 ### Task 2: MOEX API клиент
 
@@ -164,14 +164,14 @@ stocks:
 - Create: `internal/tools/stocks_moex.go`
 - Create: `internal/tools/stocks_moex_test.go`
 
-- [ ] написать тест `TestFetchMOEXStock_Success` — mock HTTP, корректный JSON, проверить `Quote` поля
-- [ ] написать тест `TestFetchMOEXStock_NotFound` — mock HTTP 200 с пустыми данными → ошибка
-- [ ] написать тест `TestFetchMOEXIndex_Success` — mock HTTP, IMOEX/RTSI, проверить `Quote` поля
-- [ ] написать тест `TestFetchMOEXIndex_HTTPError` — mock HTTP 500 → ошибка
-- [ ] реализовать `moexClient` struct с методами `FetchStock(ctx, ticker)` и `FetchIndex(ctx, ticker)`
-- [ ] парсинг MOEX ISS JSON: `columns` + `data` → `Quote` (MOEX возвращает columnar format)
-- [ ] установить `Source: "moex_stock"` / `"moex_index"`, `Currency: "RUB"`
-- [ ] запустить тесты — должны пройти перед Task 3
+- [x] написать тест `TestFetchMOEXStock_Success` — mock HTTP, корректный JSON, проверить `Quote` поля
+- [x] написать тест `TestFetchMOEXStock_NotFound` — mock HTTP 200 с пустыми данными → ошибка
+- [x] написать тест `TestFetchMOEXIndex_Success` — mock HTTP, IMOEX/RTSI, проверить `Quote` поля
+- [x] написать тест `TestFetchMOEXIndex_HTTPError` — mock HTTP 500 → ошибка
+- [x] реализовать `moexClient` struct с методами `FetchStock(ctx, ticker)` и `FetchIndex(ctx, ticker)`
+- [x] парсинг MOEX ISS JSON: `columns` + `data` → `Quote` (MOEX возвращает columnar format)
+- [x] установить `Source: "moex_stock"` / `"moex_index"`, `Currency: "RUB"`
+- [x] запустить тесты — должны пройти перед Task 3
 
 ### Task 3: Yahoo Finance API клиент
 
@@ -179,15 +179,15 @@ stocks:
 - Create: `internal/tools/stocks_yahoo.go`
 - Create: `internal/tools/stocks_yahoo_test.go`
 
-- [ ] написать тест `TestFetchYahooQuote_Stock_Success` — mock HTTP, AAPL, проверить `Quote` поля
-- [ ] написать тест `TestFetchYahooQuote_Index_Success` — mock HTTP, ^GSPC
-- [ ] написать тест `TestFetchYahooQuote_NotFound` — пустой `quoteResponse.result` → ошибка
-- [ ] написать тест `TestFetchYahooQuote_HTTPError` — mock HTTP 403 → ошибка
-- [ ] написать тест `TestResolveYahooAlias` — таблица: `sp500`→`^GSPC`, `nasdaq`→`^IXIC` и др.
-- [ ] реализовать `yahooClient` struct с методом `FetchQuote(ctx, ticker)`
-- [ ] реализовать `resolveAlias(ticker) string` — нормализация алиасов к Yahoo-тикеру
-- [ ] парсинг Yahoo v8 JSON → `Quote`, `Source: "yahoo"`, определить `Currency` из `currency` поля
-- [ ] запустить тесты — должны пройти перед Task 4
+- [x] написать тест `TestFetchYahooQuote_Stock_Success` — mock HTTP, AAPL, проверить `Quote` поля
+- [x] написать тест `TestFetchYahooQuote_Index_Success` — mock HTTP, ^GSPC
+- [x] написать тест `TestFetchYahooQuote_NotFound` — пустой `quoteResponse.result` → ошибка
+- [x] написать тест `TestFetchYahooQuote_HTTPError` — mock HTTP 403 → ошибка
+- [x] написать тест `TestResolveYahooAlias` — таблица: `sp500`→`^GSPC`, `nasdaq`→`^IXIC` и др.
+- [x] реализовать `yahooClient` struct с методом `FetchQuote(ctx, ticker)`
+- [x] реализовать `resolveAlias(ticker) string` — нормализация алиасов к Yahoo-тикеру
+- [x] парсинг Yahoo v8 JSON → `Quote`, `Source: "yahoo"`, определить `Currency` из `currency` поля
+- [x] запустить тесты — должны пройти перед Task 4
 
 ### Task 4: StocksTool — роутинг, кэш, форматирование
 
@@ -195,20 +195,20 @@ stocks:
 - Create: `internal/tools/stocks.go`
 - Create: `internal/tools/stocks_test.go`
 
-- [ ] написать тест `TestRouteToSource` (table-driven): IMOEX→moex_index, SBER→moex_stock, AAPL→yahoo, sp500→yahoo, ^GSPC→yahoo
-- [ ] написать тест `TestStocksTool_CacheHit` — при cache hit не делать HTTP-запрос
-- [ ] написать тест `TestStocksTool_CacheMiss_FetchAndStore` — при cache miss — запрос + сохранение
-- [ ] написать тест `TestStocksTool_MOEXFallbackToYahoo` — MOEX вернул «не найдено» → Yahoo
-- [ ] написать тест `TestFormatQuote_Positive` — рост: зелёная стрелка, знак `+`
-- [ ] написать тест `TestFormatQuote_Negative` — падение: красная стрелка
-- [ ] написать тест `TestFormatQuote_ZeroVolume` — нулевой объём отображается как «н/д»
-- [ ] реализовать `StocksTool` struct + конструктор `NewStocksTool(cfg StocksConfig, db *storage.DB, logger)`
-- [ ] реализовать `routeToSource(ticker) (source, resolvedTicker)` — авто-роутинг
-- [ ] реализовать `fetchQuote(ctx, ticker)` — check cache → fetch API → save cache → return Quote
-- [ ] реализовать `formatQuote(q Quote) string` — красивый вывод: эмодзи, цена, %, объём, диапазон
-- [ ] реализовать `Execute(ctx, args)` — принять `tickers []string`, вернуть multi-quote результат
-- [ ] реализовать `Name`, `Description`, `Parameters` (JSON Schema)
-- [ ] запустить тесты — должны пройти перед Task 5
+- [x] написать тест `TestRouteToSource` (table-driven): IMOEX→moex_index, SBER→moex_stock, AAPL→yahoo, sp500→yahoo, ^GSPC→yahoo
+- [x] написать тест `TestStocksTool_CacheHit` — при cache hit не делать HTTP-запрос
+- [x] написать тест `TestStocksTool_CacheMiss_FetchAndStore` — при cache miss — запрос + сохранение
+- [x] написать тест `TestStocksTool_MOEXFallbackToYahoo` — MOEX вернул «не найдено» → Yahoo
+- [x] написать тест `TestFormatQuote_Positive` — рост: зелёная стрелка, знак `+`
+- [x] написать тест `TestFormatQuote_Negative` — падение: красная стрелка
+- [x] написать тест `TestFormatQuote_ZeroVolume` — нулевой объём отображается как «н/д»
+- [x] реализовать `StocksTool` struct + конструктор `NewStocksTool(cfg StocksConfig, db *storage.DB, logger)`
+- [x] реализовать `routeToSource(ticker) (source, resolvedTicker)` — авто-роутинг
+- [x] реализовать `fetchQuote(ctx, ticker)` — check cache → fetch API → save cache → return Quote
+- [x] реализовать `formatQuote(q Quote) string` — красивый вывод: эмодзи, цена, %, объём, диапазон
+- [x] реализовать `Execute(ctx, args)` — принять `tickers []string`, вернуть multi-quote результат
+- [x] реализовать `Name`, `Description`, `Parameters` (JSON Schema)
+- [x] запустить тесты — должны пройти перед Task 5
 
 ### Task 5: Конфигурация и регистрация инструмента
 
@@ -217,24 +217,24 @@ stocks:
 - Modify: `cmd/agent/tools.go`
 - Modify: `config.example.yaml`
 
-- [ ] добавить `StocksConfig` в `config.go` (`Enabled`, `CacheTTLMinutes`, `TimeoutSeconds`)
-- [ ] добавить поле `Stocks StocksConfig \`yaml:"stocks"\`` в `Config`
-- [ ] добавить `registerStocksTool` функцию в `tools.go` и вызов из `registerOptionalTools`
-- [ ] добавить секцию `stocks:` в `config.example.yaml` с комментариями
-- [ ] запустить `make build` — должен собираться без ошибок
+- [x] добавить `StocksConfig` в `config.go` (`Enabled`, `CacheTTLMinutes`, `TimeoutSeconds`)
+- [x] добавить поле `Stocks StocksConfig \`yaml:"stocks"\`` в `Config`
+- [x] добавить `registerStocksTool` функцию в `tools.go` и вызов из `registerOptionalTools`
+- [x] добавить секцию `stocks:` в `config.example.yaml` с комментариями
+- [x] запустить `make build` — должен собираться без ошибок
 
 ### Task 6: Проверка критериев приёмки
 
 **Files:**
 - None (верификация)
 
-- [ ] проверить: `{"tickers": ["IMOEX"]}` → MOEX index, цена, изм.%, объём
-- [ ] проверить: `{"tickers": ["SBER"]}` → MOEX stock, цена в RUB
-- [ ] проверить: `{"tickers": ["AAPL"]}` → Yahoo, цена в USD
-- [ ] проверить: `{"tickers": ["sp500"]}` → Yahoo ^GSPC через алиас
-- [ ] проверить: `{"tickers": ["SBER", "AAPL", "IMOEX"]}` → смешанный запрос, все три результата
-- [ ] проверить: повторный вызов в течение 15 мин — данные из кэша (лог «cache hit»)
-- [ ] запустить полный тест-сьют: `make lint test`
+- [x] проверить: `{"tickers": ["IMOEX"]}` → MOEX index, цена, изм.%, объём
+- [x] проверить: `{"tickers": ["SBER"]}` → MOEX stock, цена в RUB
+- [x] проверить: `{"tickers": ["AAPL"]}` → Yahoo, цена в USD
+- [x] проверить: `{"tickers": ["sp500"]}` → Yahoo ^GSPC через алиас
+- [x] проверить: `{"tickers": ["SBER", "AAPL", "IMOEX"]}` → смешанный запрос, все три результата
+- [x] проверить: повторный вызов в течение 15 мин — данные из кэша (лог «cache hit»)
+- [x] запустить полный тест-сьют: `make lint test`
 
 ### Task 7: [Final] Обновление документации
 

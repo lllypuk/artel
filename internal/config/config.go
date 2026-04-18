@@ -19,6 +19,7 @@ type Config struct {
 	Files      FilesConfig      `yaml:"files"`
 	CodeRunner CodeRunnerConfig `yaml:"code_runner"`
 	Weather    WeatherConfig    `yaml:"weather"`
+	Stocks     StocksConfig     `yaml:"stocks"`
 	Logging    LoggingConfig    `yaml:"logging"`
 }
 
@@ -122,6 +123,13 @@ type WeatherConfig struct {
 	Enabled        bool   `yaml:"enabled"`
 	TimeoutSeconds int    `yaml:"timeout_seconds"` // default: 15
 	Proxy          string `yaml:"proxy"`           // optional proxy override, e.g. "http://127.0.0.1:2080"
+}
+
+// StocksConfig holds settings for the stocks market data tool.
+type StocksConfig struct {
+	Enabled         bool `yaml:"enabled"`
+	CacheTTLMinutes int  `yaml:"cache_ttl_minutes"` // default: 15, 0 = no cache
+	TimeoutSeconds  int  `yaml:"timeout_seconds"`   // default: 15
 }
 
 type LoggingConfig struct {

@@ -50,6 +50,7 @@ func registerOptionalTools(cfg *config.Config, registry *tools.Registry, logger 
 	}
 
 	registerWeatherTool(cfg, registry, logger)
+	registerStocksTool(cfg, registry, logger, db)
 }
 
 func registerWebTools(cfg *config.Config, registry *tools.Registry, logger *slog.Logger) {
@@ -91,6 +92,26 @@ func registerWebTools(cfg *config.Config, registry *tools.Registry, logger *slog
 	}
 
 	logger.Info("Web tools enabled", "max_results", maxResults)
+}
+
+func registerStocksTool(cfg *config.Config, registry *tools.Registry, logger *slog.Logger, db *storage.DB) {
+	if !cfg.Stocks.Enabled {
+		return
+	}
+	cacheTTL := cfg.Stocks.CacheTTLMinutes
+	if cacheTTL == 0 {
+		cacheTTL = 15
+	}
+	timeout := cfg.Stocks.TimeoutSeconds
+	if timeout == 0 {
+		timeout = 15
+	}
+	registry.Register(tools.NewStocksTool(tools.StocksConfig{
+		Enabled:         true,
+		CacheTTLMinutes: cacheTTL,
+		TimeoutSeconds:  timeout,
+	}, db, logger))
+	logger.Info("Stocks tool enabled", "cache_ttl_minutes", cacheTTL, "timeout", timeout)
 }
 
 func registerWeatherTool(cfg *config.Config, registry *tools.Registry, logger *slog.Logger) {

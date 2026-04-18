@@ -164,6 +164,25 @@
 
 ---
 
+### ~~9. Котировки акций и индексов (`stocks` tool)~~ ✅ Done
+
+**Зачем:** Актуальные рыночные данные прямо в чате.
+
+**Реализовано:**
+- Инструмент `stocks` — запрос по списку тикеров
+- Американские индексы: S&P 500, Nasdaq, Dow Jones, Russell 2000 через Yahoo Finance v8 API (без ключа)
+- Российские индексы: IMOEX, RTSI через MOEX ISS API (бесплатный, официальный)
+- Акции по тикеру: латинские тикеры → MOEX с fallback на Yahoo
+- Алиасы индексов: `sp500`, `nasdaq`, `dji`, `dow`, `russell2000`
+- Кэш котировок в SQLite с TTL 15 мин
+- Данные: цена, изменение %, объём, диапазон дня
+- Прокси: `http.ProxyFromEnvironment`
+- TDD: все компоненты покрыты тестами с `httptest.NewServer`
+
+**Файлы:** `internal/tools/stocks.go`, `internal/tools/stocks_moex.go`, `internal/tools/stocks_yahoo.go`, `internal/tools/stocks_*_test.go`, `internal/storage/stocks.go`, `internal/storage/stocks_test.go`, `internal/config/config.go`, `cmd/agent/tools.go`, `config.example.yaml`
+
+---
+
 ## 📋 Рекомендуемый порядок реализации
 
 | Очередь | Задача | Сложность | Ожидаемый эффект |
