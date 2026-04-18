@@ -184,3 +184,72 @@ llm:
 		t.Errorf("expected 3 allowed users, got %d", len(cfg.Telegram.AllowedUsers))
 	}
 }
+
+func TestProactiveConfigParsed(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+proactive:
+  enabled: true
+  max_messages_per_day: 5
+  morning_briefing: "08:30"
+  evening_checkin: "22:00"
+  weekly_report: "19:00"
+  goal_reminder_days_idle: 4
+  timezone: "Europe/Moscow"
+  city: "Москва"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	p := cfg.Proactive
+	if !p.Enabled {
+		t.Error("Enabled: want true")
+	}
+	if p.MaxMessagesPerDay != 5 {
+		t.Errorf("MaxMessagesPerDay: got %d, want 5", p.MaxMessagesPerDay)
+	}
+	if p.MorningBriefingTime != "08:30" {
+		t.Errorf("MorningBriefingTime: got %q, want \"08:30\"", p.MorningBriefingTime)
+	}
+	if p.EveningCheckinTime != "22:00" {
+		t.Errorf("EveningCheckinTime: got %q, want \"22:00\"", p.EveningCheckinTime)
+	}
+	if p.WeeklyReportTime != "19:00" {
+		t.Errorf("WeeklyReportTime: got %q, want \"19:00\"", p.WeeklyReportTime)
+	}
+	if p.GoalReminderDaysIdle != 4 {
+		t.Errorf("GoalReminderDaysIdle: got %d, want 4", p.GoalReminderDaysIdle)
+	}
+	if p.Timezone != "Europe/Moscow" {
+		t.Errorf("Timezone: got %q, want \"Europe/Moscow\"", p.Timezone)
+	}
+	if p.City != "Москва" {
+		t.Errorf("City: got %q, want \"Москва\"", p.City)
+	}
+}
+
+func TestProactiveConfigDefaults(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	p := cfg.Proactive
+	if p.Enabled {
+		t.Error("Enabled: want false by default")
+	}
+	if p.MorningBriefingTime != "" {
+		t.Errorf("MorningBriefingTime: want empty by default, got %q", p.MorningBriefingTime)
+	}
+}

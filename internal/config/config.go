@@ -9,6 +9,7 @@ import (
 
 type Config struct {
 	Telegram   TelegramConfig   `yaml:"telegram"`
+	Proactive  ProactiveConfig  `yaml:"proactive"`
 	LLM        LLMConfig        `yaml:"llm"`
 	Database   DatabaseConfig   `yaml:"database"`
 	Shell      ShellConfig      `yaml:"shell"`
@@ -130,6 +131,18 @@ type StocksConfig struct {
 	Enabled         bool `yaml:"enabled"`
 	CacheTTLMinutes int  `yaml:"cache_ttl_minutes"` // default: 15, 0 = no cache
 	TimeoutSeconds  int  `yaml:"timeout_seconds"`   // default: 15
+}
+
+// ProactiveConfig holds settings for the proactive messaging scheduler.
+type ProactiveConfig struct {
+	Enabled              bool   `yaml:"enabled"`
+	MaxMessagesPerDay    int    `yaml:"max_messages_per_day"`    // default: 7
+	MorningBriefingTime  string `yaml:"morning_briefing"`        // "08:00" or "" to disable
+	EveningCheckinTime   string `yaml:"evening_checkin"`         // "21:00" or "" to disable
+	WeeklyReportTime     string `yaml:"weekly_report"`           // "20:00" (Sunday only) or ""
+	GoalReminderDaysIdle int    `yaml:"goal_reminder_days_idle"` // default: 3
+	Timezone             string `yaml:"timezone"`                // e.g. "Europe/Moscow", "" = local
+	City                 string `yaml:"city"`                    // for weather in morning briefing
 }
 
 type LoggingConfig struct {

@@ -58,6 +58,8 @@ func main() {
 	toolRegistry := tools.NewRegistry(logger)
 	toolRegistry.Register(tools.NewNotesTool(db))
 	toolRegistry.Register(tools.NewRemindersTool(db))
+	toolRegistry.Register(tools.NewDisciplineTool(db))
+	toolRegistry.Register(tools.NewGoalsTool(db))
 	registerOptionalTools(cfg, toolRegistry, logger, db)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -77,6 +79,7 @@ func main() {
 	bot.SetStatusInfo(startTime, cfg.Database.Path, db)
 
 	go runReminderScheduler(ctx, db, bot.GetNotifier(), logger)
+	go runProactiveScheduler(ctx, cfg.Proactive, ag, bot.GetNotifier(), cfg.Telegram.AllowedUsers, logger)
 
 	if cfg.News.Enabled {
 		if _, nm := setupNews(ctx, cfg, db, toolRegistry, logger); nm != nil {

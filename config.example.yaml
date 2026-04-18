@@ -6,6 +6,16 @@ telegram:
     - 0
   proxy: ""             # прокси только для Telegram, e.g. "http://127.0.0.1:2080"
 
+proactive:
+  enabled: false                   # включить для проактивных сообщений
+  max_messages_per_day: 7         # максимум сообщений в день от агента
+  morning_briefing: "08:00"       # время утреннего брифинга ("" = выключено)
+  evening_checkin: "21:00"        # время вечернего чек-ина ("" = выключено)
+  weekly_report: "20:00"          # время воскресного отчёта ("" = выключено)
+  goal_reminder_days_idle: 3      # напоминать о цели если нет прогресса N дней
+  timezone: "Europe/Moscow"       # часовой пояс ("" = локальное время сервера)
+  city: "Москва"                  # город для погоды в утреннем брифинге ("" = без погоды)
+
 llm:
   provider: "glm"
   models:
@@ -172,6 +182,89 @@ news:
     - url: "https://go.dev/blog/feed.atom"
       title: "Go Blog"
       category: "programming"
+      language: "en"
+      enabled: false
+      proxy: ""
+    # Football / Manchester United
+    - url: "https://feeds.bbci.co.uk/sport/football/teams/manchester-united/rss.xml"
+      title: "BBC Sport — Manchester United"
+      category: "football"
+      language: "en"
+      enabled: false
+      proxy: ""
+    - url: "https://news.google.com/rss/search?q=%22Manchester%20United%22&hl=en-US&gl=US&ceid=US:en"
+      title: "Google News — Manchester United"
+      category: "football"
+      language: "en"
+      enabled: false
+      proxy: ""
+    # Motorsport / Formula 1
+    - url: "https://feeds.bbci.co.uk/sport/formula1/rss.xml"
+      title: "BBC Sport — Formula 1"
+      category: "formula1"
+      language: "en"
+      enabled: false
+      proxy: ""
+    - url: "https://www.autosport.com/rss/f1/news/"
+      title: "Autosport — F1"
+      category: "formula1"
+      language: "en"
+      enabled: false
+      proxy: ""
+    - url: "https://www.racefans.net/feed/"
+      title: "RaceFans"
+      category: "formula1"
+      language: "en"
+      enabled: false
+      proxy: ""
+    # Motorsport / NASCAR
+    - url: "https://www.motorsport.com/rss/nascar/news/"
+      title: "Motorsport.com — NASCAR"
+      category: "nascar"
+      language: "en"
+      enabled: false
+      proxy: ""
+    - url: "https://frontstretch.com/feed/"
+      title: "Frontstretch"
+      category: "nascar"
+      language: "en"
+      enabled: false
+      proxy: ""
+    # Finance / Markets
+    - url: "https://feeds.bloomberg.com/markets/news.rss"
+      title: "Bloomberg Markets"
+      category: "finance"
+      language: "en"
+      enabled: false
+      proxy: ""
+    - url: "https://www.ft.com/global-economy?format=rss"
+      title: "Financial Times — Global Economy"
+      category: "finance"
+      language: "en"
+      enabled: false
+      proxy: ""
+    - url: "https://finance.yahoo.com/news/rssindex"
+      title: "Yahoo Finance News"
+      category: "finance"
+      language: "en"
+      enabled: false
+      proxy: ""
+    - url: "https://www.moex.com/export/news.aspx"
+      title: "MOEX News"
+      category: "finance"
+      language: "ru"
+      enabled: false
+      proxy: ""
+    # Suggested extras
+    - url: "https://hnrss.org/frontpage"
+      title: "Hacker News Frontpage"
+      category: "technology"
+      language: "en"
+      enabled: false
+      proxy: ""
+    - url: "https://krebsonsecurity.com/feed/"
+      title: "Krebs on Security"
+      category: "security"
       language: "en"
       enabled: false
       proxy: ""

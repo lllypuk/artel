@@ -172,6 +172,63 @@ func (s *DB) migrate(ctx context.Context) error {
 			fetched_at DATETIME NOT NULL,
 			PRIMARY KEY (ticker, source)
 		)`,
+		// Day reviews table (discipline tool)
+		`CREATE TABLE IF NOT EXISTS day_reviews (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			chat_id INTEGER NOT NULL,
+			date TEXT NOT NULL,
+			planned TEXT DEFAULT '',
+			done TEXT DEFAULT '',
+			not_done TEXT DEFAULT '',
+			reason TEXT DEFAULT '',
+			score INTEGER DEFAULT 0,
+			mood TEXT DEFAULT '',
+			note TEXT DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(chat_id, date)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_day_reviews_chat_date ON day_reviews(chat_id, date DESC)`,
+		// Week reviews table (discipline tool)
+		`CREATE TABLE IF NOT EXISTS week_reviews (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			chat_id INTEGER NOT NULL,
+			week TEXT NOT NULL,
+			wins TEXT DEFAULT '',
+			fails TEXT DEFAULT '',
+			pattern TEXT DEFAULT '',
+			next_week_plan TEXT DEFAULT '',
+			score INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(chat_id, week)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_week_reviews_chat ON week_reviews(chat_id, week DESC)`,
+		// Objectives table (goals tool)
+		`CREATE TABLE IF NOT EXISTS objectives (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			chat_id INTEGER NOT NULL,
+			title TEXT NOT NULL,
+			description TEXT DEFAULT '',
+			horizon TEXT DEFAULT 'quarter',
+			period TEXT DEFAULT '',
+			status TEXT DEFAULT 'active' CHECK(status IN ('active','paused','done','archived')),
+			progress INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_objectives_chat ON objectives(chat_id, status)`,
+		// Key results table (goals tool)
+		`CREATE TABLE IF NOT EXISTS key_results (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			objective_id INTEGER NOT NULL REFERENCES objectives(id) ON DELETE CASCADE,
+			title TEXT NOT NULL,
+			progress INTEGER DEFAULT 0,
+			deadline TEXT DEFAULT '',
+			note TEXT DEFAULT '',
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_key_results_objective ON key_results(objective_id)`,
 		// Usage statistics table
 		`CREATE TABLE IF NOT EXISTS usage_stats (
 			date TEXT PRIMARY KEY,
