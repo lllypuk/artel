@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -26,12 +25,9 @@ import (
 type Bot struct {
 	api          *tgbotapi.BotAPI
 	agent        *agent.Agent
-	newsTool     *tools.NewsTool
 	filesTool    *tools.FilesTool
 	allowedUsers map[int64]bool
-	newsOffsets  map[int64]int // chatID -> last offset for news pagination
 	logger       *slog.Logger
-	browserTool  *tools.BrowserTool
 	// files config
 	maxFileSizeKB     int
 	allowedExtensions map[string]bool
@@ -59,7 +55,7 @@ func newHTTPClient(proxyURL string) (*http.Client, error) {
 }
 
 // New creates a new Telegram bot.
-func New(token, proxyURL string, allowedUsers []int64, ag *agent.Agent, newsTool *tools.NewsTool, logger *slog.Logger) (*Bot, error) {
+func New(token, proxyURL string, allowedUsers []int64, ag *agent.Agent, logger *slog.Logger) (*Bot, error) {
 	httpClient, err := newHTTPClient(proxyURL)
 	if err != nil {
 		return nil, fmt.Errorf("create http client: %w", err)
@@ -79,9 +75,7 @@ func New(token, proxyURL string, allowedUsers []int64, ag *agent.Agent, newsTool
 	return &Bot{
 		api:          api,
 		agent:        ag,
-		newsTool:     newsTool,
 		allowedUsers: allowed,
-		newsOffsets:  make(map[int64]int),
 		logger:       logger,
 	}, nil
 }
@@ -95,11 +89,6 @@ func (b *Bot) SetFilesTool(ft *tools.FilesTool, cfg config.FilesConfig) {
 	for _, ext := range cfg.AllowedExtensions {
 		b.allowedExtensions[strings.ToLower(ext)] = true
 	}
-}
-
-// SetBrowserTool sets the browser tool for the bot (used for /screenshot command).
-func (b *Bot) SetBrowserTool(tool *tools.BrowserTool) {
-	b.browserTool = tool
 }
 
 // SetNotificationHandler sets up the agent to send notifications through this bot.
@@ -119,11 +108,6 @@ func (b *Bot) GetNotifier() tools.Notifier {
 			b.sendText(chatID, message)
 		}
 	}
-}
-
-// SetNewsTool updates the news tool reference after bot creation.
-func (b *Bot) SetNewsTool(nt *tools.NewsTool) {
-	b.newsTool = nt
 }
 
 // SetStatusInfo configures the data needed for the /status command.
@@ -222,37 +206,24 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 
 const helpText = "\U0001F916 **Agent Shatrov**\n\n" +
 	"Просто напиши что нужно — агент сам выберет инструмент.\n\n" +
-	"**Диалог:**\n" +
+	"**Команды:**\n" +
 	"/new — начать новый диалог (сброс контекста)\n" +
 	"/model — показать / сменить модель LLM\n" +
 	"/provider — показать / сменить LLM-провайдер\n" +
 	"/context — размер и статистика текущего контекста\n" +
 	"/status — аптайм, статистика БД и токенов\n" +
 	"/help — эта справка\n\n" +
-	"**Напоминания:**\n" +
-	"/reminders — список активных напоминаний\n" +
-	"Через агента: 'напомни через 2 часа сделать X', 'напомни каждый день в 9:00'\n\n" +
-	"**Файлы:**\n" +
-	"/files — список загруженных файлов\n" +
-	"/getfile <имя> — скачать сохранённый файл\n" +
-	"Отправь документ или фото прямо в чат — агент прочитает и обсудит\n\n" +
-	"**Скриншоты:**\n" +
-	"/screenshot <URL> — сделать скриншот страницы\n" +
-	"/open <URL> — открыть страницу и сделать скриншот\n\n" +
-	"**Новости:**\n" +
-	"/news [запрос] — последние новости (или поиск по запросу)\n" +
-	"/news_more [N] — следующие N новостей (по умолчанию 10)\n" +
-	"/unread — непрочитанные новости\n" +
-	"/saved — сохранённые новости\n\n" +
-	"**Что умеет агент (через чат):**\n" +
+	"**Что умеет агент:**\n" +
 	"\U0001F4DD Заметки — создать, найти, прочитать, редактировать, удалить\n" +
 	"⏰ Напоминания — создать, список, отменить (разовые и повторяющиеся)\n" +
 	"\U0001F50D Поиск в интернете (Brave / Serper / DuckDuckGo)\n" +
 	"\U0001F310 Чтение веб-страниц\n" +
-	"\U0001F6E0 Изменение собственного кода через pi_coder\n" +
-	"\U0001F4C3 Новости — чтение, поиск, избранное\n" +
-	"\U0001F4F8 Скриншоты веб-страниц\n" +
-	"\U0001F4CE Файлы — отправь документ или фото в чат"
+	"\U0001F324 Погода — текущие условия и прогноз для любого города\n" +
+	"\U0001F5A5 Браузер — скриншоты, навигация, автоматизация\n" +
+	"\U0001F4F0 Новости — RSS/Atom-фиды, поиск, избранное\n" +
+	"\U0001F4CE Файлы — отправь документ или фото в чат\n" +
+	"\U0001F4BB Запуск кода — Python, Go, Bash (изолированное окружение)\n" +
+	"\U0001F6E0 Самообновление кода через pi_coder"
 
 func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 	parts := strings.Fields(text)
@@ -263,8 +234,7 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 		b.sendText(chatID, "👋 Привет! Я твой персональный AI-агент.\n\n"+
 			"Просто напиши что нужно — найду, запомню, выполню.\n\n"+
 			"/help — полная справка\n"+
-			"/new — начать новый диалог\n"+
-			"/news — последние новости")
+			"/new — начать новый диалог")
 	case "/new":
 		if err := b.agent.NewConversation(ctx, chatID); err != nil {
 			b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
@@ -277,28 +247,10 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 		b.handleProviderCommand(chatID, parts)
 	case "/context":
 		b.handleContextCommand(ctx, chatID)
-	case "/reminders":
-		b.handleRemindersCommand(ctx, chatID)
 	case "/status":
 		b.handleStatusCommand(ctx, chatID)
 	case "/help":
 		b.sendText(chatID, helpText)
-
-	// --- Files commands ---
-	case "/files":
-		b.handleFilesCommand(ctx, chatID)
-	case "/getfile":
-		b.handleGetFileCommand(ctx, chatID, parts)
-
-	// --- Screenshot commands ---
-	case "/screenshot", "/open":
-		b.handleScreenshotCommand(ctx, chatID, cmd, parts)
-
-	// --- News commands ---
-	case "/news", "/unread", "/saved":
-		b.handleNewsCommand(ctx, chatID, cmd, parts)
-	case "/news_more":
-		b.handleNewsMoreCommand(ctx, chatID, parts)
 
 	default:
 		b.sendText(chatID, "Неизвестная команда. /help для справки.")
@@ -437,23 +389,6 @@ func (b *Bot) handleContextCommand(ctx context.Context, chatID int64) {
 	b.sendText(chatID, sb.String())
 }
 
-func (b *Bot) handleRemindersCommand(ctx context.Context, chatID int64) {
-	// Proxy to the reminders tool directly for a quick list.
-	tool, ok := b.agent.ToolRegistry().Get("reminders")
-	if !ok {
-		b.sendText(chatID, "❌ Инструмент reminders недоступен.")
-		return
-	}
-	args, _ := json.Marshal(map[string]any{"action": "list"})
-	ctxWithID := context.WithValue(ctx, tools.ChatIDKey, chatID)
-	result, err := tool.Execute(ctxWithID, args)
-	if err != nil {
-		b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
-		return
-	}
-	b.sendText(chatID, result)
-}
-
 func (b *Bot) handleStatusCommand(ctx context.Context, chatID int64) {
 	var sb strings.Builder
 	sb.WriteString("📊 **Статус агента**\n\n")
@@ -563,80 +498,6 @@ func formatTokens(n int) string {
 	return fmt.Sprintf("%d,%03d,%03d", n/1_000_000, (n/1000)%1000, n%1000)
 }
 
-func (b *Bot) handleNewsCommand(ctx context.Context, chatID int64, cmd string, parts []string) {
-	if b.newsTool == nil {
-		b.sendText(chatID, "❌ Новости отключены в конфигурации.")
-		return
-	}
-
-	// Reset offset when starting a new news command
-	b.newsOffsets[chatID] = 0
-
-	toolCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	var result string
-	var err error
-
-	switch cmd {
-	case "/news":
-		if len(parts) > 1 {
-			query := strings.Join(parts[1:], " ")
-			result, err = b.newsTool.SearchNews(toolCtx, chatID, query, 10, 0)
-		} else {
-			result, err = b.newsTool.ListNews(toolCtx, chatID, 10, 0)
-		}
-	case "/unread":
-		result, err = b.newsTool.UnreadNews(toolCtx, chatID, 10, 0)
-	case "/saved":
-		result, err = b.newsTool.SavedNews(toolCtx, chatID, 10, 0)
-	}
-
-	if err != nil {
-		b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
-		return
-	}
-	b.sendLongText(chatID, result)
-}
-
-func (b *Bot) handleNewsMoreCommand(ctx context.Context, chatID int64, parts []string) {
-	if b.newsTool == nil {
-		b.sendText(chatID, "❌ Новости отключены в конфигурации.")
-		return
-	}
-
-	// Get limit from argument or default to 10
-	limit := 10
-	if len(parts) > 1 {
-		if l, err := fmt.Sscanf(parts[1], "%d", &limit); l == 1 && err == nil {
-			if limit < 1 {
-				limit = 10
-			}
-			if limit > 50 {
-				limit = 50
-			}
-		}
-	}
-
-	// Get current offset (default to 0)
-	offset := b.newsOffsets[chatID]
-
-	toolCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	result, err := b.newsTool.ListNews(toolCtx, chatID, limit, offset)
-
-	if err != nil {
-		b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
-		return
-	}
-
-	// Update offset for next page
-	b.newsOffsets[chatID] = offset + limit
-
-	b.sendLongText(chatID, result)
-}
-
 // sendReaction sets an emoji reaction on a message using the Telegram Bot API directly
 // (setMessageReaction was added in Bot API 7.0 and is not yet supported by the v5 library).
 func (b *Bot) sendReaction(chatID int64, messageID int, emoji string) {
@@ -721,88 +582,6 @@ func truncateLog(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
-}
-
-func (b *Bot) handleScreenshotCommand(ctx context.Context, chatID int64, cmd string, parts []string) {
-	if b.browserTool == nil {
-		b.sendText(chatID, "❌ Браузер отключён в конфигурации.")
-		return
-	}
-
-	if len(parts) < 2 {
-		b.sendText(chatID, "❌ Укажите URL. Например: /screenshot https://example.com")
-		return
-	}
-
-	targetURL := parts[1]
-
-	// Show typing action while processing
-	typing := tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)
-	_, _ = b.api.Send(typing)
-
-	toolCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-
-	// Get browser tool from agent registry
-	tool, ok := b.agent.ToolRegistry().Get("browser")
-	if !ok {
-		b.sendText(chatID, "❌ Инструмент browser недоступен.")
-		return
-	}
-
-	// Step 1: open the page
-	openArgs, _ := json.Marshal(map[string]any{"command": "open", "url": targetURL})
-	ctxWithChatID := context.WithValue(toolCtx, tools.ChatIDKey, chatID)
-	if _, err := tool.Execute(ctxWithChatID, openArgs); err != nil {
-		b.sendText(chatID, fmt.Sprintf("❌ Ошибка открытия страницы: %s", err.Error()))
-		return
-	}
-
-	// Step 2: wait for page to settle
-	waitArgs, _ := json.Marshal(map[string]any{"command": "wait", "wait_ms": 2000})
-	_, _ = tool.Execute(ctxWithChatID, waitArgs)
-
-	// Step 3: take screenshot
-	screenshotArgs, _ := json.Marshal(map[string]any{"command": "screenshot", "full_page": false})
-	result, err := tool.Execute(ctxWithChatID, screenshotArgs)
-	if err != nil {
-		b.sendText(chatID, fmt.Sprintf("❌ Ошибка создания скриншота: %s", err.Error()))
-		return
-	}
-
-	// Extract screenshot path from result
-	// Result format: "screenshot_path: /path/to/screenshot-xxx.png\n..."
-	var screenshotPath string
-	for line := range strings.SplitSeq(result, "\n") {
-		if after, ok0 := strings.CutPrefix(line, "screenshot_path: "); ok0 {
-			screenshotPath = after
-			break
-		}
-	}
-
-	if screenshotPath == "" {
-		b.sendText(chatID, fmt.Sprintf("❌ Не удалось определить путь к скриншоту.\n\n%s", result))
-		return
-	}
-
-	if _, err := os.Stat(screenshotPath); os.IsNotExist(err) {
-		b.sendText(chatID, fmt.Sprintf("❌ Файл скриншота не найден: %s", screenshotPath))
-		return
-	}
-
-	b.sendPhoto(chatID, screenshotPath, targetURL)
-}
-
-func (b *Bot) sendPhoto(chatID int64, filePath, caption string) {
-	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
-	if caption != "" {
-		photo.Caption = fmt.Sprintf("📸 %s", caption)
-	}
-
-	if _, err := b.api.Send(photo); err != nil {
-		b.logger.Error("send photo", "error", err, "file", filePath)
-		b.sendText(chatID, fmt.Sprintf("❌ Не удалось отправить скриншот: %s\n\nФайл: %s", err.Error(), filePath))
-	}
 }
 
 // ── File-upload handlers ─────────────────────────────────────────────────────
@@ -933,39 +712,6 @@ func (b *Bot) handlePhotoMessage(ctx context.Context, chatID int64, msg *tgbotap
 	b.sendLongText(chatID, resp.Text)
 }
 
-// handleFilesCommand shows the list of saved files.
-func (b *Bot) handleFilesCommand(_ context.Context, chatID int64) {
-	if b.filesTool == nil {
-		b.sendText(chatID, "📁 Обработка файлов отключена в конфигурации.")
-		return
-	}
-	result, err := b.filesTool.Execute(context.Background(), mustMarshal(map[string]any{"action": "list"}))
-	if err != nil {
-		b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
-		return
-	}
-	b.sendText(chatID, "📁 Сохранённые файлы:\n\n"+result+"\n\nДля скачивания: /getfile <имя>")
-}
-
-// handleGetFileCommand sends a stored file back to the user.
-func (b *Bot) handleGetFileCommand(_ context.Context, chatID int64, parts []string) {
-	if b.filesTool == nil {
-		b.sendText(chatID, "📁 Обработка файлов отключена в конфигурации.")
-		return
-	}
-	if len(parts) < 2 {
-		b.sendText(chatID, "❌ Укажите имя файла. Например: /getfile 20260402_120000_report.txt")
-		return
-	}
-	filename := strings.Join(parts[1:], " ")
-	filePath := filepath.Join(b.filesTool.StorageDir(), filepath.Base(filename))
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		b.sendText(chatID, fmt.Sprintf("❌ Файл не найден: %s", filename))
-		return
-	}
-	b.sendDocument(chatID, filePath, "")
-}
-
 // downloadTelegramFile downloads a file from Telegram servers by fileID.
 func (b *Bot) downloadTelegramFile(ctx context.Context, fileID string) ([]byte, error) {
 	fileURL, err := b.api.GetFileDirectURL(fileID)
@@ -985,27 +731,6 @@ func (b *Bot) downloadTelegramFile(ctx context.Context, fileID string) ([]byte, 
 		return nil, fmt.Errorf("HTTP %d when downloading file", resp.StatusCode)
 	}
 	return io.ReadAll(resp.Body)
-}
-
-// sendDocument sends a file from disk to the user.
-func (b *Bot) sendDocument(chatID int64, filePath, caption string) {
-	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
-	if caption != "" {
-		doc.Caption = caption
-	}
-	if _, err := b.api.Send(doc); err != nil {
-		b.logger.Error("send document", "error", err, "file", filePath)
-		b.sendText(chatID, fmt.Sprintf("❌ Не удалось отправить файл: %s", err.Error()))
-	}
-}
-
-// mustMarshal marshals v to JSON, panicking on error (only for static maps).
-func mustMarshal(v any) []byte {
-	b, err := json.Marshal(v)
-	if err != nil {
-		panic(err)
-	}
-	return b
 }
 
 // formatDocSize returns a compact human-readable file size string.

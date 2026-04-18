@@ -66,7 +66,7 @@ func main() {
 	ag := agent.New(llmProvider, cfg.LLM.Models.Default, cfg.LLM.MaxIterations, toolRegistry, db, logger)
 	setupAgent(ag, cfg)
 
-	bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.Proxy, cfg.Telegram.AllowedUsers, ag, nil, logger)
+	bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.Proxy, cfg.Telegram.AllowedUsers, ag, logger)
 	if err != nil {
 		logger.Error("create telegram bot", "error", err)
 		os.Exit(1)
@@ -78,16 +78,10 @@ func main() {
 
 	go runReminderScheduler(ctx, db, bot.GetNotifier(), logger)
 
-	var newsTool *tools.NewsTool
 	if cfg.News.Enabled {
-		nt, nm := setupNews(ctx, cfg, db, toolRegistry, logger)
-		if nt != nil {
-			newsTool = nt
+		if _, nm := setupNews(ctx, cfg, db, toolRegistry, logger); nm != nil {
 			go fetchNewsLoop(ctx, nm, logger)
 		}
-	}
-	if newsTool != nil {
-		bot.SetNewsTool(newsTool)
 	}
 
 	sigCh := make(chan os.Signal, 1)
@@ -138,13 +132,6 @@ func setupAgent(ag *agent.Agent, cfg *config.Config) {
 
 // setupBot wires optional tools to the bot after creation.
 func setupBot(bot *telegram.Bot, cfg *config.Config, registry *tools.Registry) {
-	if cfg.Browser.Enabled {
-		if tool, ok := registry.Get("browser"); ok {
-			if bt, ok := tool.(*tools.BrowserTool); ok {
-				bot.SetBrowserTool(bt)
-			}
-		}
-	}
 	if cfg.Files.Enabled {
 		if tool, ok := registry.Get("files"); ok {
 			if ft, ok := tool.(*tools.FilesTool); ok {
