@@ -82,7 +82,10 @@ func (t *StocksTool) Description() string {
 - Американские индексы: sp500, nasdaq, dji (dow jones), russell2000 или ^GSPC, ^IXIC, ^DJI, ^RUT
 - Российские индексы: IMOEX, RTSI
 - Акции: AAPL, MSFT, TSLA (US), SBER, GAZP, LKOH (RU) и любые другие по тикеру
-Данные: цена, изменение %, объём, диапазон дня (high/low).`
+Данные: цена, изменение %, объём, диапазон дня (high/low).
+
+Если тикер неизвестен — сначала найди его через web_search.
+Примеры запросов: "Apple stock ticker symbol", "Лукойл тикер MOEX", "Nvidia ticker NASDAQ".`
 }
 
 // Parameters returns the JSON Schema for the tool arguments.
