@@ -15,6 +15,11 @@ proactive:
   goal_reminder_days_idle: 3      # напоминать о цели если нет прогресса N дней
   timezone: "Europe/Moscow"       # часовой пояс ("" = локальное время сервера)
   city: "Москва"                  # город для погоды в утреннем брифинге ("" = без погоды)
+  financial_tickers:               # тикеры для финансовой сводки (утро + вечер)
+    - "IMOEX"                      # Индекс МосБиржи
+    - "RTSI"                       # Индекс РТС
+    - "sp500"                      # S&P 500
+    - "nasdaq"                     # Nasdaq Composite
 
 llm:
   provider: "glm"
@@ -306,6 +311,7 @@ stocks:
   enabled: true            # включить для получения котировок акций и индексов
   cache_ttl_minutes: 15    # TTL кэша котировок в SQLite (0 = без кэша)
   timeout_seconds: 15      # таймаут HTTP-запросов (секунды)
+  proxy: ""                # прокси для Yahoo Finance / MOEX ISS ("" = использует HTTPS_PROXY из env)
                            # Источники: Yahoo Finance (US) + MOEX ISS API (RU), без API-ключей
 
 logging:

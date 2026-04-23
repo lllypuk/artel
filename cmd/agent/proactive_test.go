@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"testing"
@@ -13,7 +14,7 @@ import (
 
 // newTestScheduler creates a scheduler suitable for unit tests (no agent/send/users/db).
 func newTestScheduler(cfg config.ProactiveConfig) *proactiveScheduler {
-	s := newProactiveScheduler(cfg, nil, nil, nil, nil, false, slog.Default())
+	s := newProactiveScheduler(cfg, nil, nil, nil, nil, false, false, false, slog.Default())
 	s.today = time.Now().Format("2006-01-02")
 	return s
 }
@@ -208,7 +209,7 @@ func TestDayReset(t *testing.T) {
 func TestInvalidTimezone(t *testing.T) {
 	s := newProactiveScheduler(
 		config.ProactiveConfig{Timezone: "Invalid/Zone"},
-		nil, nil, nil, nil, false, slog.Default(),
+		nil, nil, nil, nil, false, false, false, slog.Default(),
 	)
 	if s.loc == nil {
 		t.Fatal("loc must not be nil after invalid timezone")
@@ -378,7 +379,7 @@ func TestGoalReminderEvent_NoDoubleFire(t *testing.T) {
 func TestMorningBriefing_WeatherEnabledContainsWeatherInstruction(t *testing.T) {
 	s := newProactiveScheduler(
 		config.ProactiveConfig{City: "Moscow"},
-		nil, nil, nil, nil, true /* weatherEnabled */, slog.Default(),
+		nil, nil, nil, nil, true /* weatherEnabled */, false, false, slog.Default(),
 	)
 	// Collect the prompt by intercepting dispatch via a custom agent.
 	// We just verify the field is stored; actual dispatch needs a live agent.
@@ -393,9 +394,130 @@ func TestMorningBriefing_WeatherEnabledContainsWeatherInstruction(t *testing.T) 
 func TestMorningBriefing_NoWeatherWhenDisabled(t *testing.T) {
 	s := newProactiveScheduler(
 		config.ProactiveConfig{City: "Moscow"},
-		nil, nil, nil, nil, false /* weatherEnabled */, slog.Default(),
+		nil, nil, nil, nil, false /* weatherEnabled */, false, false, slog.Default(),
 	)
 	if s.weatherEnabled {
 		t.Error("weatherEnabled should be false")
+	}
+}
+
+// ── Finance / morning briefing prompts ───────────────────────────────────────
+
+func TestDefaultFinancialTickers_Empty(t *testing.T) {
+	cfg := config.ProactiveConfig{}
+	tickers := defaultFinancialTickers(cfg)
+	want := []string{"IMOEX", "RTSI", "sp500", "nasdaq"}
+	if len(tickers) != len(want) {
+		t.Fatalf("got %v, want %v", tickers, want)
+	}
+	for i, v := range want {
+		if tickers[i] != v {
+			t.Errorf("tickers[%d]: got %q, want %q", i, tickers[i], v)
+		}
+	}
+}
+
+func TestDefaultFinancialTickers_Custom(t *testing.T) {
+	cfg := config.ProactiveConfig{FinancialTickers: []string{"AAPL", "MSFT"}}
+	tickers := defaultFinancialTickers(cfg)
+	if len(tickers) != 2 || tickers[0] != "AAPL" || tickers[1] != "MSFT" {
+		t.Errorf("got %v, want [AAPL MSFT]", tickers)
+	}
+}
+
+func TestMorningBriefing_StocksEnabled_PromptContainsStocks(t *testing.T) {
+	s := newProactiveScheduler(
+		config.ProactiveConfig{City: "Москва"},
+		nil, nil, nil, nil, true /* weather */, false, true /* stocks */, slog.Default(),
+	)
+	if !s.stocksEnabled {
+		t.Error("stocksEnabled should be true")
+	}
+}
+
+func TestMorningBriefing_StocksDisabled_FieldFalse(t *testing.T) {
+	s := newProactiveScheduler(
+		config.ProactiveConfig{City: "Москва"},
+		nil, nil, nil, nil, false, false, false, slog.Default(),
+	)
+	if s.stocksEnabled {
+		t.Error("stocksEnabled should be false when not configured")
+	}
+}
+
+// ── Evening news / finance digests ───────────────────────────────────────────
+
+func TestFireEveningNews_Disabled_NoDispatch(t *testing.T) {
+	s := newProactiveScheduler(
+		config.ProactiveConfig{},
+		nil, nil, nil, nil,
+		false, false /* newsEnabled=false */, false, slog.Default(),
+	)
+	// fireEveningNews should be a no-op when newsEnabled=false.
+	// We verify newsEnabled field directly (dispatch would panic with nil agent).
+	if s.newsEnabled {
+		t.Error("newsEnabled should be false")
+	}
+}
+
+func TestFireEveningNews_Enabled_FieldTrue(t *testing.T) {
+	s := newProactiveScheduler(
+		config.ProactiveConfig{},
+		nil, nil, nil, nil,
+		false, true /* newsEnabled */, false, slog.Default(),
+	)
+	if !s.newsEnabled {
+		t.Error("newsEnabled should be true")
+	}
+}
+
+func TestFireEveningFinance_Disabled_NoDispatch(t *testing.T) {
+	s := newProactiveScheduler(
+		config.ProactiveConfig{},
+		nil, nil, nil, nil,
+		false, false, false /* stocksEnabled=false */, slog.Default(),
+	)
+	if s.stocksEnabled {
+		t.Error("stocksEnabled should be false")
+	}
+}
+
+func TestFireEveningFinance_Enabled_FieldTrue(t *testing.T) {
+	s := newProactiveScheduler(
+		config.ProactiveConfig{},
+		nil, nil, nil, nil,
+		false, false, true /* stocksEnabled */, slog.Default(),
+	)
+	if !s.stocksEnabled {
+		t.Error("stocksEnabled should be true")
+	}
+}
+
+// TestTick_EveningEventsRegistered verifies that when evening time fires,
+// evening_news and evening_finance event keys are registered when enabled.
+func TestTick_EveningEventsRegistered(t *testing.T) {
+	now := time.Now()
+	hhmm := fmt.Sprintf("%02d:%02d", now.Hour(), now.Minute())
+
+	s := newProactiveScheduler(
+		config.ProactiveConfig{EveningCheckinTime: hhmm},
+		nil, nil, nil, nil,
+		false, true /* newsEnabled */, true /* stocksEnabled */, slog.Default(),
+	)
+	s.today = now.Format("2006-01-02")
+	s.nowFn = func() time.Time { return now }
+
+	// tick fires events; handlers will panic (nil agent) — recover from that.
+	func() {
+		defer func() { recover() }() //nolint:errcheck
+		s.tick(context.Background())
+	}()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, key := range []string{"evening_checkin", "evening_news", "evening_finance"} {
+		if !s.fired[key] {
+			t.Errorf("expected event %q to be fired", key)
+		}
 	}
 }

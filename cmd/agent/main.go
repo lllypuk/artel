@@ -80,7 +80,7 @@ func main() {
 	bot.SetStatusInfo(startTime, cfg.Database.Path, db)
 
 	go runReminderScheduler(ctx, db, bot.GetNotifier(), logger)
-	go runProactiveScheduler(ctx, cfg.Proactive, ag, bot.GetNotifier(), cfg.Telegram.AllowedUsers, db, cfg.Weather.Enabled, logger)
+	go runProactiveScheduler(ctx, cfg.Proactive, ag, bot.GetNotifier(), cfg.Telegram.AllowedUsers, db, cfg.Weather.Enabled, cfg.News.Enabled, cfg.Stocks.Enabled, logger)
 
 	if cfg.News.Enabled {
 		if _, nm := setupNews(ctx, cfg, db, toolRegistry, logger); nm != nil {

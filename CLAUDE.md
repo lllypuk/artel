@@ -79,35 +79,43 @@ make test     # запуск тестов
 ## Обязательно после каждой доработки
 
 После **любых** изменений в коде необходимо запустить:
+
 ```bash
 make lint test
 ```
-Все найденные ошибки и предупреждения должны быть исправлены до завершения задачи. Коммитить код с ошибками lint или упавшими тестами нельзя.
+
+Все найденные ошибки и предупреждения должны быть исправлены до завершения задачи. Коммитить код с ошибками lint или
+упавшими тестами нельзя.
 
 ## ⚠️ Ключевое правило архитектуры: инструменты, не команды бота
 
-**Новые функции добавляются исключительно через инструменты агента** (`internal/tools/`), а не через slash-команды Telegram-бота.
+**Новые функции добавляются исключительно через инструменты агента** (`internal/tools/`), а не через slash-команды
+Telegram-бота.
 
 Telegram-команды (`/команда`) — только для базовых системных операций, которые нужны **без участия LLM**:
+
 - управление диалогом (`/new`)
 - переключение модели/провайдера (`/model`, `/provider`)
 - системный статус (`/status`, `/context`)
 - справка (`/help`, `/start`)
 
-**Никогда не добавляй новые slash-команды** в `internal/telegram/bot.go` для новых пользовательских функций. Всё новое — инструмент в `internal/tools/`, зарегистрированный в `cmd/agent/tools.go`.
+**Никогда не добавляй новые slash-команды** в `internal/telegram/bot.go` для новых пользовательских функций. Всё новое —
+инструмент в `internal/tools/`, зарегистрированный в `cmd/agent/tools.go`.
 
 ## Конфигурация
 
 Скопировать и заполнить:
+
 ```bash
 cp config.example.yaml config.yaml
 ```
 
 Ключевые параметры:
+
 ```yaml
 telegram:
   token: "<токен от @BotFather>"
-  allowed_users: [<твой chat_id>]  # whitelist — только ты
+  allowed_users: [ <твой chat_id> ]  # whitelist — только ты
   proxy: ""                     # опционально: прокси только для Telegram
 
 llm:
@@ -121,7 +129,7 @@ llm:
   max_context_messages: 50      # лимит сообщений в окне LLM-контекста (0 = без ограничений)
 
   # Мультипровайдер (опционально): при наличии providers — base_url/api_key выше игнорируются
-  providers:                    # список провайдеров с приоритетом (priority: меньше = первым)
+  providers: # список провайдеров с приоритетом (priority: меньше = первым)
     - name: "zai"
       base_url: "..."
       api_key: "..."
@@ -146,8 +154,8 @@ database:
 shell:
   enabled: false                # включать осторожно
   timeout: 30                   # таймаут выполнения (сек)
-  allowed_commands: [...]       # whitelist команд
-  blocked_patterns: [...]       # запрещённые паттерны
+  allowed_commands: [ ... ]       # whitelist команд
+  blocked_patterns: [ ... ]       # запрещённые паттерны
   working_dir: "./sandbox"      # sandbox директория
 
 web:
@@ -206,6 +214,7 @@ logging:
 ```
 
 Либо через переменные окружения:
+
 ```bash
 export TELEGRAM_TOKEN="..."
 export GLM_API_KEY="..."
@@ -214,6 +223,7 @@ export GLM_API_KEY="..."
 ## Архитектура агента
 
 **ReAct loop** в `internal/agent/agent.go`:
+
 1. Загрузить историю диалога из SQLite
 2. Отправить в LLM (messages + system prompt + tool definitions)
 3. Если LLM вернул tool_calls → выполнить инструменты → добавить результаты в messages → повторить (max 10 итераций)
@@ -222,18 +232,22 @@ export GLM_API_KEY="..."
 ## Добавление нового инструмента
 
 1. Создать файл `internal/tools/mytool.go` реализующий интерфейс `Tool`:
+
 ```go
 type Tool interface {
-    Name()        string
-    Description() string
-    Parameters()  map[string]interface{}  // JSON Schema
-    Execute(ctx context.Context, args json.RawMessage) (string, error)
+Name()        string
+Description() string
+Parameters()  map[string]interface{}  // JSON Schema
+Execute(ctx context.Context, args json.RawMessage) (string, error)
 }
 ```
+
 2. Зарегистрировать в `cmd/agent/tools.go` (в `registerOptionalTools` или `registerWeatherTool`-подобную функцию):
+
 ```go
 registry.Register(tools.NewMyTool(cfg, logger))
 ```
+
 3. При необходимости добавить секцию конфига в `internal/config/config.go`.
 
 **Не добавляй slash-команды в `internal/telegram/bot.go`** — только инструменты.
@@ -243,13 +257,14 @@ registry.Register(tools.NewMyTool(cfg, logger))
 Позволяет агенту изменять собственный исходный код через [pi](https://github.com/mariozechner/pi).
 Запускает `pi --print --model glm-4.7 --no-session <task>` в директории проекта.
 
-| Параметр | Тип | Описание |
-|----------|-----|---------|
-| `task` | string | Что нужно изменить в коде (обязательный) |
-| `rebuild` | bool | Пересобрать бинарник после изменений (`make build`) |
-| `restart` | bool | Безопасно перезапустить агента после успешной сборки; автоматически включает `rebuild` |
+| Параметр  | Тип    | Описание                                                                               |
+|-----------|--------|----------------------------------------------------------------------------------------|
+| `task`    | string | Что нужно изменить в коде (обязательный)                                               |
+| `rebuild` | bool   | Пересобрать бинарник после изменений (`make build`)                                    |
+| `restart` | bool   | Безопасно перезапустить агента после успешной сборки; автоматически включает `rebuild` |
 
 **Механизм безопасного перезапуска** (`restart=true`):
+
 1. `Execute()` запускает pi, затем `make build`
 2. Если сборка успешна — запускается goroutine с задержкой 5 секунд
 3. `Execute()` возвращает ответ агенту → Telegram получает сообщение
@@ -257,6 +272,7 @@ registry.Register(tools.NewMyTool(cfg, logger))
 5. Если сборка провалилась — перезапуск отменяется, агент продолжает работу со старым кодом
 
 Типичный сценарий:
+
 1. Пользователь просит добавить функцию через Telegram
 2. Агент вызывает `pi_coder` с `restart=true`
 3. pi редактирует файлы проекта
@@ -266,6 +282,7 @@ registry.Register(tools.NewMyTool(cfg, logger))
 ## Безопасность shell
 
 Shell tool (`internal/tools/shell.go`) имеет многоуровневую защиту:
+
 - **Whitelist команд** — только разрешённые (`ls`, `cat`, `grep`, `find` и др.)
 - **Blocked patterns** — запрещённые паттерны (`rm -rf /`, `mkfs`, `shutdown` и др.)
 - **Запрет `sudo`** и **перенаправления вывода** (`>`)
@@ -277,29 +294,29 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 
 Команды — только системные операции без участия LLM. Новые функции добавляются через инструменты, а не команды.
 
-| Команда | Действие |
-|---------|----------|
-| `/start` | приветствие |
-| `/new` | начать новый диалог (сбросить контекст) |
-| `/model` | показать текущую модель и доступные алиасы |
-| `/model fast` | переключиться на быструю модель |
-| `/model default` | переключиться на основную модель |
-| `/provider` | показать текущий провайдер LLM и статус провайдеров |
-| `/provider <name>` | принудительно выбрать провайдера (без fallback) |
-| `/provider auto` | вернуть автоматический режим (по приоритету с fallback) |
-| `/context` | статистика окна контекста (сообщений, токенов, суммаризация) |
-| `/status` | статус агента: uptime, модель, БД, токены за день, провайдеры |
-| `/help` | справка |
+| Команда            | Действие                                                      |
+|--------------------|---------------------------------------------------------------|
+| `/start`           | приветствие                                                   |
+| `/new`             | начать новый диалог (сбросить контекст)                       |
+| `/model`           | показать текущую модель и доступные алиасы                    |
+| `/model fast`      | переключиться на быструю модель                               |
+| `/model default`   | переключиться на основную модель                              |
+| `/provider`        | показать текущий провайдер LLM и статус провайдеров           |
+| `/provider <name>` | принудительно выбрать провайдера (без fallback)               |
+| `/provider auto`   | вернуть автоматический режим (по приоритету с fallback)       |
+| `/context`         | статистика окна контекста (сообщений, токенов, суммаризация)  |
+| `/status`          | статус агента: uptime, модель, БД, токены за день, провайдеры |
+| `/help`            | справка                                                       |
 
 ## Зависимости
 
-| Пакет | Назначение |
-|-------|-----------|
-| `github.com/go-telegram-bot-api/telegram-bot-api/v5` | Telegram Bot API |
-| `github.com/mattn/go-sqlite3` | SQLite (CGo) |
-| `gopkg.in/yaml.v3` | парсинг конфига |
-| `github.com/stretchr/testify` | assertions в тестах |
-| `github.com/mmcdole/gofeed` | RSS/Atom/JSON Feed парсер |
+| Пакет                                                | Назначение                |
+|------------------------------------------------------|---------------------------|
+| `github.com/go-telegram-bot-api/telegram-bot-api/v5` | Telegram Bot API          |
+| `github.com/mattn/go-sqlite3`                        | SQLite (CGo)              |
+| `gopkg.in/yaml.v3`                                   | парсинг конфига           |
+| `github.com/stretchr/testify`                        | assertions в тестах       |
+| `github.com/mmcdole/gofeed`                          | RSS/Atom/JSON Feed парсер |
 
 ## Реализованные функции
 
@@ -312,22 +329,27 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 - [x] Напоминания — create/list/delete/done, повторяющиеся (daily/weekly/Nm/Nh/Nd), уведомления в Telegram
 - [x] Безопасный shell (whitelist, blocked patterns, sandbox, таймаут)
 - [x] Поиск в интернете (Brave / Serper / DuckDuckGo) + чтение страниц
-- [x] Самообновление через `pi_coder` — агент изменяет, пересобирает и **перезапускает себя** без ручного вмешательства (`restart=true` → `syscall.Exec`)
+- [x] Самообновление через `pi_coder` — агент изменяет, пересобирает и **перезапускает себя** без ручного
+  вмешательства (`restart=true` → `syscall.Exec`)
 - [x] Агрегация новостей (RSS/Atom/JSON Feed) — подписки, чтение, поиск, избранное
 - [x] Универсальная автоматизация браузера (agent-browser) — навигация, клики, формы, скриншоты, JS, snapshot
 - [x] Переключение модели и провайдера через Telegram (`/model fast`, `/provider openrouter`)
 - [x] Прогноз погоды (Open-Meteo) — текущие условия, прогноз на 1–7 дней, геокодирование городов
-- [x] Котировки акций и индексов — US (через Yahoo Finance) + RU (через MOEX ISS); S&P 500, Nasdaq, DJI, Russell, IMOEX, RTSI, любые тикеры; кэш в SQLite
+- [x] Котировки акций и индексов — US (через Yahoo Finance) + RU (через MOEX ISS); S&P 500, Nasdaq, DJI, Russell, IMOEX,
+  RTSI, любые тикеры; кэш в SQLite
 - [x] Мультипровайдер LLM с fallback — OpenRouter, z.ai, любой OpenAI-compatible API; retry с backoff, circuit breaker
 - [x] Файлы — приём файлов и изображений через Telegram, list/read/delete; Vision API для изображений
 - [x] Выполнение кода — Python, Go, bash в изолированной временной директории с таймаутом и лимитом памяти
 - [x] Статистика токенов — учёт prompt/completion токенов по дням, отчёт через `/status`
+- [x] Проактивные дайджесты — финансовая сводка (stocks) в утреннем брифинге; вечерний дайджест новостей (news) и
+  вечерняя финансовая сводка рынков как отдельные большие сообщения; тикеры конфигурируются через `financial_tickers`
 
 ## Инструмент news
 
 Агрегация новостей из RSS/Atom/JSON Feed источников.
 
 **Возможности:**
+
 - Подписка на произвольные RSS/Atom/JSON Feed источники
 - Автоматическое обновление фидов (по расписанию)
 - Поиск новостей по тексту, тегам, источникам
@@ -336,6 +358,7 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 - Чтение статей через агент (web_fetch)
 
 **Конфигурация:**
+
 ```yaml
 news:
   enabled: true
@@ -382,11 +405,11 @@ golangci-lint блокирует функции с цикломатическо�
 ```go
 // Вместо разрастания метода:
 func (t *WorkoutTool) execLog(...) (string, error) {
-    ...
-    insertSets(ctx, id, a.Sets)      // free func, не метод
-    writeLogSets(&sb, a.Sets)        // free func
-    writeNewPRs(&sb, db, ctx, ...)   // free func
-    ...
+...
+insertSets(ctx, id, a.Sets) // free func, не метод
+writeLogSets(&sb, a.Sets) // free func
+writeNewPRs(&sb, db, ctx, ...) // free func
+...
 }
 ```
 
@@ -395,6 +418,7 @@ Free-функции с префиксом `write`/`insert`/`format` — стан
 ### C. Storage: один файл на домен, `sqlite.go` = DDL only
 
 Схема хранилища разделена по доменам:
+
 - `internal/storage/sqlite.go` — **только** DDL-миграции (`CREATE TABLE IF NOT EXISTS`, индексы, additive migrations)
 - `internal/storage/discipline.go` — типы + CRUD для discipline/goals
 - `internal/storage/workout.go` — типы + CRUD для workouts
@@ -409,13 +433,13 @@ Free-функции с префиксом `write`/`insert`/`format` — стан
 ```go
 // ✅ правильно: только MaxMessagesPerDay требует положительного значения
 if cfg.MaxMessagesPerDay <= 0 {
-    cfg.MaxMessagesPerDay = 7
+cfg.MaxMessagesPerDay = 7
 }
 // GoalReminderDaysIdle: НЕ трогаем — 0 означает «фича выключена»
 
 // tick() — единственная точка проверки включённости:
 if s.cfg.GoalReminderDaysIdle > 0 && s.db != nil {
-    s.maybeFireEvent(...)
+s.maybeFireEvent(...)
 }
 ```
 
@@ -429,9 +453,9 @@ if s.cfg.GoalReminderDaysIdle > 0 && s.db != nil {
 ```go
 // ✅ в execLog перед db.CreateWorkout:
 if a.GoalID != nil {
-    if err := t.validateGoalID(ctx, a.ChatID, *a.GoalID); err != nil {
-        return "", err  // нет осиротевших записей
-    }
+if err := t.validateGoalID(ctx, a.ChatID, *a.GoalID); err != nil {
+return "", err // нет осиротевших записей
+}
 }
 ```
 

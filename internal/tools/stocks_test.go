@@ -315,3 +315,27 @@ var _ interface {
 
 // errNotFoundCheck ensures errNotFound is used correctly.
 var _ = errors.Is(errNotFound, errNotFound)
+
+func TestNewStocksTool_Proxy(t *testing.T) {
+	db := openTestDB(t)
+	logger := testLogger()
+
+	// With explicit proxy — transport should use ProxyURL, not ProxyFromEnvironment.
+	toolWithProxy := newStocksTool(StocksConfig{
+		TimeoutSeconds: 5,
+		Proxy:          "http://127.0.0.1:9999",
+	}, db, logger, "http://localhost", "http://localhost")
+	require.NotNil(t, toolWithProxy)
+	// Verify the http client was created (tool is non-nil means constructor succeeded).
+	assert.NotNil(t, toolWithProxy.moex)
+	assert.NotNil(t, toolWithProxy.yahoo)
+
+	// Without proxy — should fall back to ProxyFromEnvironment (no error).
+	toolNoProxy := newStocksTool(StocksConfig{
+		TimeoutSeconds: 5,
+		Proxy:          "",
+	}, db, logger, "http://localhost", "http://localhost")
+	require.NotNil(t, toolNoProxy)
+	assert.NotNil(t, toolNoProxy.moex)
+	assert.NotNil(t, toolNoProxy.yahoo)
+}

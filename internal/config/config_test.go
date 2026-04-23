@@ -253,3 +253,50 @@ llm:
 		t.Errorf("MorningBriefingTime: want empty by default, got %q", p.MorningBriefingTime)
 	}
 }
+
+func TestProactiveConfigFinancialTickers(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+proactive:
+  financial_tickers:
+    - "IMOEX"
+    - "RTSI"
+    - "sp500"
+    - "nasdaq"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tickers := cfg.Proactive.FinancialTickers
+	if len(tickers) != 4 {
+		t.Fatalf("expected 4 tickers, got %d: %v", len(tickers), tickers)
+	}
+	if tickers[0] != "IMOEX" || tickers[1] != "RTSI" || tickers[2] != "sp500" || tickers[3] != "nasdaq" {
+		t.Errorf("unexpected tickers: %v", tickers)
+	}
+}
+
+func TestStocksConfigProxy(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+stocks:
+  enabled: true
+  proxy: "http://127.0.0.1:2080"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Stocks.Proxy != "http://127.0.0.1:2080" {
+		t.Errorf("Stocks.Proxy: got %q, want \"http://127.0.0.1:2080\"", cfg.Stocks.Proxy)
+	}
+}

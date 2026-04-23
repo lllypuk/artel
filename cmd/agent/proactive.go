@@ -30,6 +30,8 @@ type proactiveScheduler struct {
 	logger         *slog.Logger
 	db             *storage.DB      // for P-5 goal reminder queries (may be nil)
 	weatherEnabled bool             // true only when weather tool is registered
+	stocksEnabled  bool             // true only when stocks tool is registered
+	newsEnabled    bool             // true only when news tool is registered
 	nowFn          func() time.Time // injectable for testing; default is time.Now
 
 	mu        sync.Mutex
@@ -48,13 +50,15 @@ func runProactiveScheduler(
 	users []int64,
 	db *storage.DB,
 	weatherEnabled bool,
+	newsEnabled bool,
+	stocksEnabled bool,
 	logger *slog.Logger,
 ) {
 	if !cfg.Enabled {
 		logger.Info("proactive scheduler disabled")
 		return
 	}
-	s := newProactiveScheduler(cfg, ag, send, users, db, weatherEnabled, logger)
+	s := newProactiveScheduler(cfg, ag, send, users, db, weatherEnabled, newsEnabled, stocksEnabled, logger)
 	s.run(ctx)
 }
 
@@ -65,6 +69,8 @@ func newProactiveScheduler(
 	users []int64,
 	db *storage.DB,
 	weatherEnabled bool,
+	newsEnabled bool,
+	stocksEnabled bool,
 	logger *slog.Logger,
 ) *proactiveScheduler {
 	if cfg.MaxMessagesPerDay <= 0 {
@@ -91,6 +97,8 @@ func newProactiveScheduler(
 		logger:         logger,
 		db:             db,
 		weatherEnabled: weatherEnabled,
+		stocksEnabled:  stocksEnabled,
+		newsEnabled:    newsEnabled,
 		sentToday:      make(map[int64]int),
 		fired:          make(map[string]bool),
 	}
@@ -152,6 +160,14 @@ func (s *proactiveScheduler) tick(ctx context.Context) {
 	if s.cfg.EveningCheckinTime != "" {
 		s.maybeFireEvent(ctx, "evening_checkin", s.cfg.EveningCheckinTime, now, s.fireEveningCheckin)
 	}
+	// P-3a: Evening news digest — only when news tool is enabled
+	if s.newsEnabled && s.cfg.EveningCheckinTime != "" {
+		s.maybeFireEvent(ctx, "evening_news", s.cfg.EveningCheckinTime, now, s.fireEveningNews)
+	}
+	// P-3b: Evening finance digest — only when stocks tool is enabled
+	if s.stocksEnabled && s.cfg.EveningCheckinTime != "" {
+		s.maybeFireEvent(ctx, "evening_finance", s.cfg.EveningCheckinTime, now, s.fireEveningFinance)
+	}
 	// P-4: Weekly report — Sundays only
 	if s.cfg.WeeklyReportTime != "" && now.Weekday() == time.Sunday {
 		s.maybeFireEvent(ctx, "weekly_report", s.cfg.WeeklyReportTime, now, s.fireWeeklyReport)
@@ -210,33 +226,57 @@ func (s *proactiveScheduler) canSendToUser(chatID int64) bool {
 
 // --- P-2: Morning briefing ---
 
+// defaultFinancialTickers returns configured tickers or falls back to defaults.
+func defaultFinancialTickers(cfg config.ProactiveConfig) []string {
+	if len(cfg.FinancialTickers) > 0 {
+		return cfg.FinancialTickers
+	}
+	return []string{"IMOEX", "RTSI", "sp500", "nasdaq"}
+}
+
 func (s *proactiveScheduler) fireMorningBriefing(ctx context.Context) {
 	var prompt string
+	financeBlock := ""
+	if s.stocksEnabled {
+		tickers := strings.Join(defaultFinancialTickers(s.cfg), ", ")
+		financeBlock = fmt.Sprintf(
+			"Краткая сводка рынков: %s (используй инструмент stocks) ",
+			tickers,
+		)
+	}
 	switch {
 	case s.cfg.City != "" && s.weatherEnabled:
 		prompt = fmt.Sprintf(
 			"🔔 [АВТО: УТРЕННИЙ БРИФИНГ] Составь краткое утреннее сообщение: "+
 				"1) Приветствие + день недели и дата "+
 				"2) Прогноз погоды в %s на сегодня (используй инструмент weather) "+
-				"3) Одна мотивирующая мысль на день. "+
+				"3) %s"+
+				"4) Одна мотивирующая мысль на день. "+
 				"Всего 5-7 строк.",
 			s.cfg.City,
+			financeBlock,
 		)
 	case s.cfg.City != "":
 		// City is configured but weather tool is disabled — mention city without tool call.
 		prompt = fmt.Sprintf(
 			"🔔 [АВТО: УТРЕННИЙ БРИФИНГ] Составь краткое утреннее сообщение: "+
 				"1) Приветствие + день недели и дата "+
-				"2) Одна мотивирующая мысль на день. "+
+				"2) %s"+
+				"3) Одна мотивирующая мысль на день. "+
 				"Упомяни что пользователь находится в %s. "+
 				"Всего 4-5 строк.",
+			financeBlock,
 			s.cfg.City,
 		)
 	default:
-		prompt = "🔔 [АВТО: УТРЕННИЙ БРИФИНГ] Составь краткое утреннее сообщение: " +
-			"1) Приветствие + день недели и дата " +
-			"2) Одна мотивирующая мысль на день. " +
-			"Всего 3-4 строки."
+		prompt = fmt.Sprintf(
+			"🔔 [АВТО: УТРЕННИЙ БРИФИНГ] Составь краткое утреннее сообщение: "+
+				"1) Приветствие + день недели и дата "+
+				"2) %s"+
+				"3) Одна мотивирующая мысль на день. "+
+				"Всего 3-4 строки.",
+			financeBlock,
+		)
 	}
 	for _, chatID := range s.users {
 		s.dispatch(ctx, chatID, prompt)
@@ -248,6 +288,40 @@ func (s *proactiveScheduler) fireMorningBriefing(ctx context.Context) {
 func (s *proactiveScheduler) fireEveningCheckin(ctx context.Context) {
 	prompt := "🔔 [АВТО: ВЕЧЕРНИЙ ЧЕК-ИН] Напиши короткое вечернее приветствие и предложи " +
 		"сделать ревью дня. Задай один вопрос: как прошёл сегодняшний день? Максимум 3-4 строки."
+	for _, chatID := range s.users {
+		s.dispatch(ctx, chatID, prompt)
+	}
+}
+
+// --- P-3a: Evening news digest ---
+
+func (s *proactiveScheduler) fireEveningNews(ctx context.Context) {
+	if !s.newsEnabled {
+		return
+	}
+	prompt := "🔔 [АВТО: ВЕЧЕРНИЕ НОВОСТИ] Составь подробный дайджест новостей за сегодня. " +
+		"Используй инструмент news (действие: list) для получения свежих новостей из всех подписанных фидов. " +
+		"Для каждой новости: заголовок, источник, краткое содержание 2-3 предложения. " +
+		"Группируй по тематике если можно. Подробно, без ограничений по объёму."
+	for _, chatID := range s.users {
+		s.dispatch(ctx, chatID, prompt)
+	}
+}
+
+// --- P-3b: Evening finance digest ---
+
+func (s *proactiveScheduler) fireEveningFinance(ctx context.Context) {
+	if !s.stocksEnabled {
+		return
+	}
+	tickers := strings.Join(defaultFinancialTickers(s.cfg), ", ")
+	prompt := fmt.Sprintf(
+		"🔔 [АВТО: ВЕЧЕРНИЕ РЫНКИ] Составь подробную финансовую сводку дня. "+
+			"Используй инструмент stocks для получения котировок: %s. "+
+			"Для каждого инструмента: цена, изменение за день в %% и в пунктах, объём. "+
+			"Добавь краткий комментарий о динамике рынков. Подробно.",
+		tickers,
+	)
 	for _, chatID := range s.users {
 		s.dispatch(ctx, chatID, prompt)
 	}

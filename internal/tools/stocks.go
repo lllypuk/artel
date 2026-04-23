@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -27,6 +28,7 @@ type StocksConfig struct {
 	Enabled         bool
 	CacheTTLMinutes int
 	TimeoutSeconds  int
+	Proxy           string // optional proxy URL, e.g. "http://127.0.0.1:2080"; empty = use HTTPS_PROXY env
 }
 
 // StocksTool fetches market quotes for stocks and indices.
@@ -45,8 +47,14 @@ func newStocksTool(cfg StocksConfig, db *storage.DB, logger *slog.Logger, moexBa
 		timeout = 15 * time.Second
 	}
 
-	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+	transport := &http.Transport{}
+	if cfg.Proxy != "" {
+		proxyURL, err := url.Parse(cfg.Proxy)
+		if err == nil {
+			transport.Proxy = http.ProxyURL(proxyURL)
+		}
+	} else {
+		transport.Proxy = http.ProxyFromEnvironment
 	}
 	httpClient := &http.Client{
 		Timeout:   timeout,

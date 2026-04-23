@@ -110,6 +110,7 @@ func registerStocksTool(cfg *config.Config, registry *tools.Registry, logger *sl
 		Enabled:         true,
 		CacheTTLMinutes: cacheTTL,
 		TimeoutSeconds:  timeout,
+		Proxy:           cfg.Stocks.Proxy,
 	}, db, logger))
 	logger.Info("Stocks tool enabled", "cache_ttl_minutes", cacheTTL, "timeout", timeout)
 }
