@@ -41,21 +41,21 @@ func TestRouteToSource(t *testing.T) {
 		{"imoex", "moex_index", "IMOEX"},
 		{"RTSI", "moex_index", "RTSI"},
 		{"rtsi", "moex_index", "RTSI"},
-		{"^GSPC", "yahoo", "^GSPC"},
-		{"^IXIC", "yahoo", "^IXIC"},
-		{"^DJI", "yahoo", "^DJI"},
-		{"^RUT", "yahoo", "^RUT"},
-		{"sp500", "yahoo", "^GSPC"},
-		{"nasdaq", "yahoo", "^IXIC"},
-		{"dow", "yahoo", "^DJI"},
-		{"russell2000", "yahoo", "^RUT"},
+		{"^GSPC", "stooq", "^GSPC"},
+		{"^IXIC", "stooq", "^IXIC"},
+		{"^DJI", "stooq", "^DJI"},
+		{"^RUT", "stooq", "^RUT"},
+		{"sp500", "stooq", "^GSPC"},
+		{"nasdaq", "stooq", "^IXIC"},
+		{"dow", "stooq", "^DJI"},
+		{"russell2000", "stooq", "^RUT"},
 		{"SBER", "moex_stock", "SBER"}, // 4 latin letters → try MOEX first
 		{"GAZP", "moex_stock", "GAZP"},
-		{"AAPL", "moex_stock", "AAPL"}, // 4 letters → try MOEX first (will fallback to Yahoo at fetch time)
+		{"AAPL", "moex_stock", "AAPL"}, // 4 letters → try MOEX first (will fallback to Stooq at fetch time)
 		{"MSFT", "moex_stock", "MSFT"},
 		{"TSLA", "moex_stock", "TSLA"},
-		{"BRK.A", "yahoo", "BRK.A"},     // contains dot → Yahoo
-		{"BTC-USD", "yahoo", "BTC-USD"}, // contains dash → Yahoo
+		{"BRK.A", "stooq", "BRK.A"},     // contains dot → Stooq
+		{"BTC-USD", "stooq", "BTC-USD"}, // contains dash → Stooq
 	}
 
 	tool := &StocksTool{}
@@ -72,20 +72,20 @@ func TestStocksTool_CacheHit(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 
-	// Use "^GSPC" which routes directly to yahoo (no MOEX fallback).
+	// Use "^GSPC" which routes directly to stooq (no MOEX fallback).
 	q := Quote{
 		Ticker: "^GSPC", ShortName: "S&P 500", Price: 5200.5,
-		ChangePct: 0.5, Volume: 0, Currency: "USD", Source: "yahoo",
+		ChangePct: 0.5, Volume: 0, Currency: "USD", Source: "stooq",
 	}
 	data, _ := json.Marshal(q)
-	require.NoError(t, db.SaveQuoteCache(ctx, "^GSPC", "yahoo", string(data)))
+	require.NoError(t, db.SaveQuoteCache(ctx, "^GSPC", "stooq", string(data)))
 
-	// Yahoo server should NOT be called (cache hit).
+	// Stooq server should NOT be called (cache hit).
 	apiCallCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiCallCount++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(yahooIndexResponse()))
+		_, _ = w.Write([]byte(stooqIndexResponse()))
 	}))
 	defer srv.Close()
 
@@ -106,12 +106,12 @@ func TestStocksTool_CacheMiss_FetchAndStore(t *testing.T) {
 
 	apiCallCount := 0
 	// Use a response that returns "^GSPC" as the symbol, matching the cache key.
-	yahooSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	stooqSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiCallCount++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(yahooIndexResponse())) // returns symbol=^GSPC
+		_, _ = w.Write([]byte(stooqIndexResponse()))
 	}))
-	defer yahooSrv.Close()
+	defer stooqSrv.Close()
 
 	moexSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -122,9 +122,9 @@ func TestStocksTool_CacheMiss_FetchAndStore(t *testing.T) {
 	tool := newStocksTool(StocksConfig{
 		CacheTTLMinutes: 15,
 		TimeoutSeconds:  5,
-	}, db, testLogger(), moexSrv.URL, yahooSrv.URL)
+	}, db, testLogger(), moexSrv.URL, stooqSrv.URL)
 
-	// "^GSPC" routes directly to Yahoo.
+	// "^GSPC" routes directly to Stooq.
 	result, err := tool.fetchQuote(ctx, "^GSPC")
 	require.NoError(t, err)
 	assert.Equal(t, 1, apiCallCount)
@@ -136,34 +136,34 @@ func TestStocksTool_CacheMiss_FetchAndStore(t *testing.T) {
 	assert.Equal(t, 1, apiCallCount, "second call should hit cache")
 }
 
-func TestStocksTool_MOEXFallbackToYahoo(t *testing.T) {
+func TestStocksTool_MOEXFallbackToStooq(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 
-	// MOEX returns empty (not found), Yahoo returns data.
+	// MOEX returns empty (not found), Stooq returns data.
 	moexSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(moexEmptyResponse()))
 	}))
 	defer moexSrv.Close()
 
-	yahooCallCount := 0
-	yahooSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		yahooCallCount++
+	stooqCallCount := 0
+	stooqSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stooqCallCount++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(yahooStockResponse()))
+		_, _ = w.Write([]byte(stooqStockResponse()))
 	}))
-	defer yahooSrv.Close()
+	defer stooqSrv.Close()
 
 	tool := newStocksTool(StocksConfig{
 		CacheTTLMinutes: 15,
 		TimeoutSeconds:  5,
-	}, db, testLogger(), moexSrv.URL, yahooSrv.URL)
+	}, db, testLogger(), moexSrv.URL, stooqSrv.URL)
 
-	// "AAPL" routes to moex_stock first, MOEX returns empty → fallback to Yahoo.
+	// "AAPL" routes to moex_stock first, MOEX returns empty → fallback to Stooq.
 	result, err := tool.fetchQuote(ctx, "AAPL")
 	require.NoError(t, err)
-	assert.Equal(t, 1, yahooCallCount, "should fall back to Yahoo")
+	assert.Equal(t, 1, stooqCallCount, "should fall back to Stooq")
 	assert.NotNil(t, result)
 }
 
@@ -179,7 +179,7 @@ func TestFormatQuote_Positive(t *testing.T) {
 		High:      176.1,
 		Low:       172.8,
 		Currency:  "USD",
-		Source:    "yahoo",
+		Source:    "stooq",
 		FetchedAt: time.Now(),
 	}
 
@@ -200,7 +200,7 @@ func TestFormatQuote_Negative(t *testing.T) {
 		ChangePct: -0.29,
 		Volume:    0,
 		Currency:  "USD",
-		Source:    "yahoo",
+		Source:    "stooq",
 		FetchedAt: time.Now(),
 	}
 
@@ -236,10 +236,10 @@ func TestStocksTool_Execute_MultiTicker(t *testing.T) {
 		switch {
 		case strings.Contains(r.URL.Path, "TQBR"):
 			_, _ = w.Write([]byte(moexEmptyResponse()))
-		case strings.Contains(r.URL.Path, "^GSPC") || strings.Contains(r.URL.RawQuery, "GSPC"):
-			_, _ = w.Write([]byte(yahooIndexResponse()))
+		case strings.Contains(r.URL.RawQuery, "SPX") || strings.Contains(r.URL.RawQuery, "GSPC"):
+			_, _ = w.Write([]byte(stooqIndexResponse()))
 		default:
-			_, _ = w.Write([]byte(yahooStockResponse()))
+			_, _ = w.Write([]byte(stooqStockResponse()))
 		}
 	}))
 	defer srv.Close()
@@ -267,17 +267,17 @@ func TestStocksTool_Execute_UnknownTicker(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Second server for Yahoo — also returns not found.
-	yahooSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Second server for Stooq — also returns not found.
+	stooqSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(yahooEmptyResponse()))
+		_, _ = w.Write([]byte(stooqEmptyResponse()))
 	}))
-	defer yahooSrv.Close()
+	defer stooqSrv.Close()
 
 	tool := newStocksTool(StocksConfig{
 		CacheTTLMinutes: 15,
 		TimeoutSeconds:  5,
-	}, db, testLogger(), srv.URL, yahooSrv.URL)
+	}, db, testLogger(), srv.URL, stooqSrv.URL)
 
 	args, _ := json.Marshal(map[string]any{
 		"tickers": []string{"ZZZZZ"},
@@ -328,7 +328,7 @@ func TestNewStocksTool_Proxy(t *testing.T) {
 	require.NotNil(t, toolWithProxy)
 	// Verify the http client was created (tool is non-nil means constructor succeeded).
 	assert.NotNil(t, toolWithProxy.moex)
-	assert.NotNil(t, toolWithProxy.yahoo)
+	assert.NotNil(t, toolWithProxy.stooq)
 
 	// Without proxy — should fall back to ProxyFromEnvironment (no error).
 	toolNoProxy := newStocksTool(StocksConfig{
@@ -337,5 +337,5 @@ func TestNewStocksTool_Proxy(t *testing.T) {
 	}, db, logger, "http://localhost", "http://localhost")
 	require.NotNil(t, toolNoProxy)
 	assert.NotNil(t, toolNoProxy.moex)
-	assert.NotNil(t, toolNoProxy.yahoo)
+	assert.NotNil(t, toolNoProxy.stooq)
 }

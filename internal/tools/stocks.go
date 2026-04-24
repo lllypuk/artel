@@ -34,14 +34,14 @@ type StocksConfig struct {
 // StocksTool fetches market quotes for stocks and indices.
 type StocksTool struct {
 	moex   *moexClient
-	yahoo  *yahooClient
+	stooq  *stooqClient
 	db     *storage.DB
 	ttl    time.Duration
 	logger *slog.Logger
 }
 
 // newStocksTool creates a StocksTool with injectable API base URLs (for testing).
-func newStocksTool(cfg StocksConfig, db *storage.DB, logger *slog.Logger, moexBaseURL, yahooBaseURL string) *StocksTool {
+func newStocksTool(cfg StocksConfig, db *storage.DB, logger *slog.Logger, moexBaseURL, stooqBaseURL string) *StocksTool {
 	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
 	if timeout == 0 {
 		timeout = 15 * time.Second
@@ -65,7 +65,7 @@ func newStocksTool(cfg StocksConfig, db *storage.DB, logger *slog.Logger, moexBa
 
 	return &StocksTool{
 		moex:   newMOEXClient(httpClient, moexBaseURL),
-		yahoo:  newYahooClient(httpClient, yahooBaseURL),
+		stooq:  newStooqClient(httpClient, stooqBaseURL),
 		db:     db,
 		ttl:    ttl,
 		logger: logger,
@@ -76,7 +76,7 @@ func newStocksTool(cfg StocksConfig, db *storage.DB, logger *slog.Logger, moexBa
 func NewStocksTool(cfg StocksConfig, db *storage.DB, logger *slog.Logger) *StocksTool {
 	return newStocksTool(cfg, db, logger,
 		"https://iss.moex.com",
-		"https://query1.finance.yahoo.com",
+		"https://stooq.com",
 	)
 }
 
@@ -159,15 +159,15 @@ func (t *StocksTool) routeToSource(ticker string) (source, resolved string) {
 		return "moex_index", upper
 	}
 
-	// 2. Yahoo alias or explicit ^-prefixed ticker.
+	// 2. Stooq alias or explicit ^-prefixed ticker.
 	yahooResolved := resolveYahooAlias(ticker)
 	if strings.HasPrefix(yahooResolved, "^") || yahooResolved != ticker {
-		return "yahoo", yahooResolved
+		return "stooq", yahooResolved
 	}
 
-	// 3. Tickers with dots or dashes are always Yahoo (e.g. BRK.A, BTC-USD).
+	// 3. Tickers with dots or dashes are always Stooq (e.g. BRK.A, BTC-USD).
 	if strings.ContainsAny(ticker, ".-") {
-		return "yahoo", ticker
+		return "stooq", ticker
 	}
 
 	// 4. Latin-letter-only tickers (2–5 chars): try MOEX first, fallback at fetch time.
@@ -175,8 +175,8 @@ func (t *StocksTool) routeToSource(ticker string) (source, resolved string) {
 		return "moex_stock", upper
 	}
 
-	// 5. Default: Yahoo Finance.
-	return "yahoo", ticker
+	// 5. Default: Stooq.
+	return "stooq", ticker
 }
 
 // fetchQuote returns a Quote, using cache when available.
@@ -229,12 +229,12 @@ func (t *StocksTool) fetchFromSource(ctx context.Context, source, resolved, orig
 		if !errors.Is(err, errNotFound) {
 			return nil, err
 		}
-		// MOEX not found → fallback to Yahoo Finance.
-		t.logger.Debug("MOEX not found, falling back to Yahoo", "ticker", resolved)
-		return t.yahoo.FetchQuote(ctx, original)
+		// MOEX not found → fallback to Stooq.
+		t.logger.Debug("MOEX not found, falling back to Stooq", "ticker", resolved)
+		return t.stooq.FetchQuote(ctx, original)
 
-	default: // "yahoo"
-		return t.yahoo.FetchQuote(ctx, resolved)
+	default: // "stooq"
+		return t.stooq.FetchQuote(ctx, resolved)
 	}
 }
 
