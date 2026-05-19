@@ -1,0 +1,19 @@
+services:
+  agent:
+    build: .
+    image: agent-shatrov:latest
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - agent_data:/app/data
+    restart: unless-stopped
+    # Optionally override secrets via env vars (see supported vars below):
+    # environment:
+    #   - TELEGRAM_TOKEN=your_token
+    #   - TELEGRAM_ALLOWED_USERS=123456789
+    #   - LLM_API_KEY=your_key
+    #   - LLM_BASE_URL=https://api.example.com/v1
+    #   - WEB_API_KEY=your_web_search_key
+    #   - LOG_LEVEL=info
+
+volumes:
+  agent_data:
