@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 // DB wraps the SQLite database.
@@ -19,7 +19,7 @@ type DB struct {
 
 // Open creates or opens the SQLite database and runs migrations.
 func Open(path string) (*DB, error) {
-	db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_foreign_keys=on")
+	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
@@ -302,17 +302,18 @@ func (s *DB) migrate(ctx context.Context) error {
 			VALUES (new.id, new.title, new.content, new.tags);
 		END`,
 		`CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
-			INSERT INTO notes_fts(notes_fts, rowid, title, content, tags)
-			VALUES ('delete', old.id, old.title, old.content, old.tags);
+			DELETE FROM notes_fts WHERE rowid = old.id;
 		END`,
 		`CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
-			INSERT INTO notes_fts(notes_fts, rowid, title, content, tags)
-			VALUES ('delete', old.id, old.title, old.content, old.tags);
+			DELETE FROM notes_fts WHERE rowid = old.id;
 			INSERT INTO notes_fts(rowid, title, content, tags)
 			VALUES (new.id, new.title, new.content, new.tags);
 		END`,
 	}
 	if _, err := s.db.ExecContext(ctx, notesFTS5Table); err == nil {
+		for _, name := range []string{"notes_ai", "notes_ad", "notes_au"} {
+			_, _ = s.db.ExecContext(ctx, "DROP TRIGGER IF EXISTS "+name)
+		}
 		for _, trigger := range notesFTS5Triggers {
 			_, _ = s.db.ExecContext(ctx, trigger)
 		}
@@ -344,12 +345,10 @@ func (s *DB) migrate(ctx context.Context) error {
 			VALUES (new.id, new.title, new.content, new.description);
 		END`,
 		`CREATE TRIGGER IF NOT EXISTS news_items_ad AFTER DELETE ON news_items BEGIN
-			INSERT INTO news_items_fts(news_items_fts, rowid, title, content, description)
-			VALUES ('delete', old.id, old.title, old.content, old.description);
+			DELETE FROM news_items_fts WHERE rowid = old.id;
 		END`,
 		`CREATE TRIGGER IF NOT EXISTS news_items_au AFTER UPDATE ON news_items BEGIN
-			INSERT INTO news_items_fts(news_items_fts, rowid, title, content, description)
-			VALUES ('delete', old.id, old.title, old.content, old.description);
+			DELETE FROM news_items_fts WHERE rowid = old.id;
 			INSERT INTO news_items_fts(rowid, title, content, description)
 			VALUES (new.id, new.title, new.content, new.description);
 		END`,
@@ -358,6 +357,9 @@ func (s *DB) migrate(ctx context.Context) error {
 	// Try to create FTS5 virtual table first.
 	// Only create triggers if the table was created successfully.
 	if _, err := s.db.ExecContext(ctx, fts5Table); err == nil {
+		for _, name := range []string{"news_items_ai", "news_items_ad", "news_items_au"} {
+			_, _ = s.db.ExecContext(ctx, "DROP TRIGGER IF EXISTS "+name)
+		}
 		for _, trigger := range fts5Triggers {
 			_, _ = s.db.ExecContext(ctx, trigger)
 		}
