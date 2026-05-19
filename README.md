@@ -2,6 +2,29 @@
 
 Персональный AI-агент с Telegram-интерфейсом для личного использования на локальном компьютере.
 
+## Docker
+
+Требования: установленный Docker и плагин `docker compose`.
+
+Быстрый старт:
+
+```bash
+cp config.example.yaml config.yaml
+# заполнить telegram.token, telegram.allowed_users, llm.api_key
+
+docker compose up -d
+docker compose logs -f
+```
+
+- `config.yaml` монтируется в контейнер, поэтому правки применяются после перезапуска `docker compose`.
+- Данные агента сохраняются в volume `agent_data`.
+- Для переопределения значений в Docker можно использовать env-переменные: `TELEGRAM_TOKEN`,
+  `TELEGRAM_ALLOWED_USERS`, `LLM_API_KEY`/`GLM_API_KEY`, `LLM_BASE_URL`, `WEB_API_KEY`, `LOG_LEVEL`.
+- В Docker из коробки работают инструменты, не требующие внешних бинарников. `browser` выключен по умолчанию и
+  требует отдельной установки `agent-browser`; `shell` выключен по умолчанию; `pi_coder` требует отдельно установленный `pi`.
+- Если используешь прокси на хосте, например `http://127.0.0.1:2080`, в `config.yaml` для Docker замени адрес на
+  `http://host-gateway:2080`, иначе контейнер не сможет достучаться до loopback-интерфейса хоста.
+
 ## Стек
 
 - **Go 1.26**

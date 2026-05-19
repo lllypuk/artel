@@ -1,4 +1,8 @@
 # Основная конфигурация agent-shatrov
+# Environment variable overrides (удобно для Docker):
+# TELEGRAM_TOKEN, TELEGRAM_ALLOWED_USERS (comma-separated IDs)
+# LLM_API_KEY (или legacy GLM_API_KEY), LLM_BASE_URL
+# WEB_API_KEY, LOG_LEVEL
 
 telegram:
   token: ""              # @BotFather token
@@ -117,7 +121,7 @@ web:
   max_fetch_size_kb: 100
 
 browser:
-  enabled: true           # включить для автоматизации браузера
+  enabled: false          # требует отдельной установки бинарника agent-browser
   # Директория для сохранения скриншотов
   screenshot_dir: "./data/screenshots"
   # Путь к agent-browser (опционально, по умолчанию "agent-browser")

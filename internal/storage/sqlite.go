@@ -50,6 +50,12 @@ func (s *DB) HasNotesFTS() bool {
 	return s.hasNotesFTS
 }
 
+func dropTriggers(ctx context.Context, db *sql.DB, names ...string) {
+	for _, name := range names {
+		_, _ = db.ExecContext(ctx, "DROP TRIGGER IF EXISTS "+name)
+	}
+}
+
 func (s *DB) migrate(ctx context.Context) error {
 	// Core migrations (required)
 	coreMigrations := []string{
@@ -311,9 +317,7 @@ func (s *DB) migrate(ctx context.Context) error {
 		END`,
 	}
 	if _, err := s.db.ExecContext(ctx, notesFTS5Table); err == nil {
-		for _, name := range []string{"notes_ai", "notes_ad", "notes_au"} {
-			_, _ = s.db.ExecContext(ctx, "DROP TRIGGER IF EXISTS "+name)
-		}
+		dropTriggers(ctx, s.db, "notes_ai", "notes_ad", "notes_au")
 		for _, trigger := range notesFTS5Triggers {
 			_, _ = s.db.ExecContext(ctx, trigger)
 		}
@@ -327,9 +331,7 @@ func (s *DB) migrate(ctx context.Context) error {
 		}
 		s.hasNotesFTS = true
 	} else {
-		for _, name := range []string{"notes_ai", "notes_ad", "notes_au"} {
-			_, _ = s.db.ExecContext(ctx, "DROP TRIGGER IF EXISTS "+name)
-		}
+		dropTriggers(ctx, s.db, "notes_ai", "notes_ad", "notes_au")
 	}
 
 	// Execute FTS5 migrations (optional - may fail if FTS5 not compiled in)
@@ -357,9 +359,7 @@ func (s *DB) migrate(ctx context.Context) error {
 	// Try to create FTS5 virtual table first.
 	// Only create triggers if the table was created successfully.
 	if _, err := s.db.ExecContext(ctx, fts5Table); err == nil {
-		for _, name := range []string{"news_items_ai", "news_items_ad", "news_items_au"} {
-			_, _ = s.db.ExecContext(ctx, "DROP TRIGGER IF EXISTS "+name)
-		}
+		dropTriggers(ctx, s.db, "news_items_ai", "news_items_ad", "news_items_au")
 		for _, trigger := range fts5Triggers {
 			_, _ = s.db.ExecContext(ctx, trigger)
 		}
@@ -367,9 +367,7 @@ func (s *DB) migrate(ctx context.Context) error {
 	} else {
 		// FTS5 not available — drop any stale triggers that might reference
 		// a non-existent news_items_fts table (left from a previous run).
-		for _, name := range []string{"news_items_ai", "news_items_ad", "news_items_au"} {
-			_, _ = s.db.ExecContext(ctx, "DROP TRIGGER IF EXISTS "+name)
-		}
+		dropTriggers(ctx, s.db, "news_items_ai", "news_items_ad", "news_items_au")
 	}
 	return nil
 }

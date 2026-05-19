@@ -240,12 +240,16 @@ func (c *Config) applyEnvOverrides() {
 		c.Telegram.Token = v
 	}
 	if v := os.Getenv("TELEGRAM_ALLOWED_USERS"); v != "" {
-		c.Telegram.AllowedUsers = parseAllowedUsersCSV(v)
-	}
-	if v := os.Getenv("GLM_API_KEY"); v != "" {
-		c.LLM.APIKey = v
+		users, err := parseAllowedUsersCSV(v)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "TELEGRAM_ALLOWED_USERS: %v, skipping env override\n", err)
+		} else if len(users) > 0 {
+			c.Telegram.AllowedUsers = users
+		}
 	}
 	if v := os.Getenv("LLM_API_KEY"); v != "" {
+		c.LLM.APIKey = v
+	} else if v := os.Getenv("GLM_API_KEY"); v != "" {
 		c.LLM.APIKey = v
 	}
 	if v := os.Getenv("LLM_BASE_URL"); v != "" {
@@ -259,15 +263,16 @@ func (c *Config) applyEnvOverrides() {
 	}
 }
 
-func parseAllowedUsersCSV(value string) []int64 {
+func parseAllowedUsersCSV(value string) ([]int64, error) {
 	parts := strings.Split(value, ",")
 	users := make([]int64, 0, len(parts))
 	for _, part := range parts {
-		userID, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		trimmed := strings.TrimSpace(part)
+		userID, err := strconv.ParseInt(trimmed, 10, 64)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("invalid value %q", trimmed)
 		}
 		users = append(users, userID)
 	}
-	return users
+	return users, nil
 }

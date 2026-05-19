@@ -1,8 +1,10 @@
 package config_test
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lllypuk/agent-shatrov/internal/config"
@@ -15,6 +17,35 @@ func writeTempConfig(t *testing.T, content string) string {
 		t.Fatalf("write temp config: %v", err)
 	}
 	return path
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+	defer func() {
+		os.Stderr = oldStderr
+	}()
+
+	os.Stderr = w
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close stderr reader: %v", err)
+	}
+
+	return string(output)
 }
 
 func TestLoadValid(t *testing.T) {
@@ -146,6 +177,26 @@ llm:
 	}
 }
 
+func TestEnvOverrideLegacyGLMAPIKey(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "original-token"
+  allowed_users: [1]
+llm:
+  api_key: "original-key"
+`)
+	t.Setenv("GLM_API_KEY", "legacy-env-key")
+	t.Setenv("LLM_API_KEY", "")
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LLM.APIKey != "legacy-env-key" {
+		t.Errorf("expected 'legacy-env-key', got %q", cfg.LLM.APIKey)
+	}
+}
+
 func TestEnvOverridesNotAppliedWhenEmpty(t *testing.T) {
 	t.Setenv("TELEGRAM_TOKEN", "")
 	t.Setenv("TELEGRAM_ALLOWED_USERS", "")
@@ -267,6 +318,33 @@ llm:
 	}
 	if len(cfg.Telegram.AllowedUsers) != 1 || cfg.Telegram.AllowedUsers[0] != 123456789 {
 		t.Errorf("unexpected allowed_users: %v", cfg.Telegram.AllowedUsers)
+	}
+}
+
+func TestEnvOverrideTelegramAllowedUsersInvalidKeepsOriginal(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1, 2]
+llm:
+  api_key: "key"
+`)
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "123,abc")
+
+	var cfg *config.Config
+	stderr := captureStderr(t, func() {
+		var err error
+		cfg, err = config.Load(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if len(cfg.Telegram.AllowedUsers) != 2 || cfg.Telegram.AllowedUsers[0] != 1 || cfg.Telegram.AllowedUsers[1] != 2 {
+		t.Errorf("expected original allowed_users [1 2], got %v", cfg.Telegram.AllowedUsers)
+	}
+	if !strings.Contains(stderr, `TELEGRAM_ALLOWED_USERS: invalid value "abc", skipping env override`) {
+		t.Fatalf("expected warning about invalid TELEGRAM_ALLOWED_USERS, got %q", stderr)
 	}
 }
 
