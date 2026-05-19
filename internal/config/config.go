@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -182,12 +184,12 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
+	// Override with env vars if set.
+	cfg.applyEnvOverrides()
+
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
-
-	// Override with env vars if set
-	cfg.applyEnvOverrides()
 
 	return &cfg, nil
 }
@@ -237,7 +239,35 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("TELEGRAM_TOKEN"); v != "" {
 		c.Telegram.Token = v
 	}
+	if v := os.Getenv("TELEGRAM_ALLOWED_USERS"); v != "" {
+		c.Telegram.AllowedUsers = parseAllowedUsersCSV(v)
+	}
 	if v := os.Getenv("GLM_API_KEY"); v != "" {
 		c.LLM.APIKey = v
 	}
+	if v := os.Getenv("LLM_API_KEY"); v != "" {
+		c.LLM.APIKey = v
+	}
+	if v := os.Getenv("LLM_BASE_URL"); v != "" {
+		c.LLM.BaseURL = v
+	}
+	if v := os.Getenv("WEB_API_KEY"); v != "" {
+		c.Web.APIKey = v
+	}
+	if v := os.Getenv("LOG_LEVEL"); v != "" {
+		c.Logging.Level = v
+	}
+}
+
+func parseAllowedUsersCSV(value string) []int64 {
+	parts := strings.Split(value, ",")
+	users := make([]int64, 0, len(parts))
+	for _, part := range parts {
+		userID, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil {
+			continue
+		}
+		users = append(users, userID)
+	}
+	return users
 }

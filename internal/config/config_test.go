@@ -131,7 +131,8 @@ llm:
   api_key: "original-key"
 `)
 	t.Setenv("TELEGRAM_TOKEN", "env-token")
-	t.Setenv("GLM_API_KEY", "env-key")
+	t.Setenv("GLM_API_KEY", "legacy-env-key")
+	t.Setenv("LLM_API_KEY", "env-key")
 
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -147,7 +148,12 @@ llm:
 
 func TestEnvOverridesNotAppliedWhenEmpty(t *testing.T) {
 	t.Setenv("TELEGRAM_TOKEN", "")
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "")
 	t.Setenv("GLM_API_KEY", "")
+	t.Setenv("LLM_API_KEY", "")
+	t.Setenv("LLM_BASE_URL", "")
+	t.Setenv("WEB_API_KEY", "")
+	t.Setenv("LOG_LEVEL", "")
 
 	path := writeTempConfig(t, `
 telegram:
@@ -155,6 +161,11 @@ telegram:
   allowed_users: [1]
 llm:
   api_key: "yaml-key"
+  base_url: "https://yaml.example.com"
+web:
+  api_key: "yaml-web-key"
+logging:
+  level: "warn"
 `)
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -163,8 +174,20 @@ llm:
 	if cfg.Telegram.Token != "yaml-token" {
 		t.Errorf("expected 'yaml-token', got %q", cfg.Telegram.Token)
 	}
+	if len(cfg.Telegram.AllowedUsers) != 1 || cfg.Telegram.AllowedUsers[0] != 1 {
+		t.Errorf("expected allowed_users [1], got %v", cfg.Telegram.AllowedUsers)
+	}
 	if cfg.LLM.APIKey != "yaml-key" {
 		t.Errorf("expected 'yaml-key', got %q", cfg.LLM.APIKey)
+	}
+	if cfg.LLM.BaseURL != "https://yaml.example.com" {
+		t.Errorf("expected YAML base_url, got %q", cfg.LLM.BaseURL)
+	}
+	if cfg.Web.APIKey != "yaml-web-key" {
+		t.Errorf("expected YAML web api_key, got %q", cfg.Web.APIKey)
+	}
+	if cfg.Logging.Level != "warn" {
+		t.Errorf("expected YAML log level, got %q", cfg.Logging.Level)
 	}
 }
 
@@ -182,6 +205,100 @@ llm:
 	}
 	if len(cfg.Telegram.AllowedUsers) != 3 {
 		t.Errorf("expected 3 allowed users, got %d", len(cfg.Telegram.AllowedUsers))
+	}
+}
+
+func TestEnvOverridesAppliedBeforeValidation(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram: {}
+llm: {}
+`)
+	t.Setenv("TELEGRAM_TOKEN", "env-token")
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "123456789")
+	t.Setenv("LLM_API_KEY", "env-key")
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Telegram.Token != "env-token" {
+		t.Errorf("expected 'env-token', got %q", cfg.Telegram.Token)
+	}
+	if len(cfg.Telegram.AllowedUsers) != 1 || cfg.Telegram.AllowedUsers[0] != 123456789 {
+		t.Errorf("unexpected allowed_users: %v", cfg.Telegram.AllowedUsers)
+	}
+	if cfg.LLM.APIKey != "env-key" {
+		t.Errorf("expected 'env-key', got %q", cfg.LLM.APIKey)
+	}
+}
+
+func TestEnvOverrideTelegramAllowedUsersCSV(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+`)
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "123456789,987654321")
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Telegram.AllowedUsers) != 2 || cfg.Telegram.AllowedUsers[0] != 123456789 || cfg.Telegram.AllowedUsers[1] != 987654321 {
+		t.Errorf("unexpected allowed_users: %v", cfg.Telegram.AllowedUsers)
+	}
+}
+
+func TestEnvOverrideTelegramAllowedUsersSingleValue(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1, 2]
+llm:
+  api_key: "key"
+`)
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "123456789")
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Telegram.AllowedUsers) != 1 || cfg.Telegram.AllowedUsers[0] != 123456789 {
+		t.Errorf("unexpected allowed_users: %v", cfg.Telegram.AllowedUsers)
+	}
+}
+
+func TestEnvOverridesDockerFields(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+  base_url: "https://yaml.example.com"
+web:
+  api_key: "yaml-web-key"
+logging:
+  level: "warn"
+`)
+	t.Setenv("LLM_BASE_URL", "https://env.example.com")
+	t.Setenv("WEB_API_KEY", "env-web-key")
+	t.Setenv("LOG_LEVEL", "debug")
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LLM.BaseURL != "https://env.example.com" {
+		t.Errorf("expected env base_url, got %q", cfg.LLM.BaseURL)
+	}
+	if cfg.Web.APIKey != "env-web-key" {
+		t.Errorf("expected env web api_key, got %q", cfg.Web.APIKey)
+	}
+	if cfg.Logging.Level != "debug" {
+		t.Errorf("expected env log level, got %q", cfg.Logging.Level)
 	}
 }
 
