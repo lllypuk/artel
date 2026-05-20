@@ -1,38 +1,30 @@
-# Основная конфигурация agent-shatrov
-# Environment variable overrides (удобно для Docker):
-# TELEGRAM_TOKEN, TELEGRAM_ALLOWED_USERS (comma-separated IDs)
-# LLM_API_KEY (или legacy GLM_API_KEY), LLM_BASE_URL
-# WEB_API_KEY, LOG_LEVEL
+# Конфигурация agent-shatrov
+#
+# ── ЧТО ОБЯЗАТЕЛЬНО ЗАПОЛНИТЬ ──────────────────────────────────────────────────
+#
+#   telegram.token       — токен от @BotFather
+#   telegram.allowed_users — твой chat_id (узнать: @userinfobot в Telegram)
+#   llm.api_key          — API-ключ LLM-провайдера
+#
+# Или через переменные окружения (удобно для Docker):
+#   TELEGRAM_TOKEN, TELEGRAM_ALLOWED_USERS (comma-separated IDs)
+#   LLM_API_KEY, LLM_BASE_URL, WEB_API_KEY, LOG_LEVEL
+# ───────────────────────────────────────────────────────────────────────────────
 
 telegram:
-  token: ""              # @BotFather token
-  allowed_users:         # whitelist chat_id (только ты)
+  token: ""              # токен от @BotFather
+  allowed_users:         # твой chat_id (узнать: @userinfobot в Telegram)
     - 0
-  proxy: ""             # прокси только для Telegram, e.g. "http://127.0.0.1:2080"
-
-proactive:
-  enabled: false                   # включить для проактивных сообщений
-  max_messages_per_day: 7         # максимум сообщений в день от агента
-  morning_briefing: "08:00"       # время утреннего брифинга ("" = выключено)
-  evening_checkin: "21:00"        # время вечернего чек-ина ("" = выключено)
-  weekly_report: "20:00"          # время воскресного отчёта ("" = выключено)
-  goal_reminder_days_idle: 3      # напоминать о цели если нет прогресса N дней
-  timezone: "Europe/Moscow"       # часовой пояс ("" = локальное время сервера)
-  city: "Москва"                  # город для погоды в утреннем брифинге ("" = без погоды)
-  financial_tickers:               # тикеры для финансовой сводки (утро + вечер)
-    - "IMOEX"                      # Индекс МосБиржи
-    - "RTSI"                       # Индекс РТС
-    - "sp500"                      # S&P 500
-    - "nasdaq"                     # Nasdaq Composite
+  proxy: ""              # прокси только для Telegram (опционально), e.g. "http://127.0.0.1:2080"
 
 llm:
   provider: "glm"
+  base_url: "https://api.z.ai/api/coding/paas/v4"
+  api_key: ""            # ← ЗАПОЛНИ: API-ключ LLM-провайдера
   models:
     default: "glm-4-plus"
     fast: "glm-4-flash"
-  base_url: "https://api.z.ai/api/coding/paas/v4"
-  api_key: ""
-  max_iterations: 10   # лимит шагов ReAct-цикла (tool call → LLM → ...)
+  max_iterations: 10     # лимит шагов ReAct-цикла (tool call → LLM → ...)
   max_context_messages: 50  # лимит сообщений в окне LLM-контекста (0 = без ограничений)
 
   # Мультипровайдер с fallback (опционально).
@@ -54,26 +46,141 @@ llm:
   #     models:
   #       default: "google/gemini-2.5-flash"
   #       fast: "google/gemini-2.5-flash"
-  #     extra_headers:            # рекомендуемые заголовки OpenRouter
+  #     extra_headers:
   #       HTTP-Referer: "https://github.com/lllypuk/agent-shatrov"
   #       X-Title: "agent-shatrov"
-  #     proxy: ""                 # прокси для этого провайдера (опционально)
-  #     timeout_seconds: 120      # таймаут HTTP-клиента (по умолчанию 120)
+  #     proxy: ""
+  #     timeout_seconds: 120
   #
-  # Настройки retry / backoff (при использовании providers):
   # retry:
-  #   max_retries: 2             # повторы на провайдер перед fallback
-  #   initial_backoff_ms: 500    # начальный backoff (мс)
-  #   max_backoff_ms: 5000       # максимальный backoff (мс)
+  #   max_retries: 2
+  #   initial_backoff_ms: 500
+  #   max_backoff_ms: 5000
 
 database:
   path: "./data/agent.db"
 
+logging:
+  level: "info"           # debug, info, warn, error
+  file: "./data/agent.log"
+
+# ── ДОПОЛНИТЕЛЬНЫЕ ВОЗМОЖНОСТИ (по умолчанию работают из коробки) ───────────────
+
+proactive:
+  enabled: false                   # включить для проактивных сообщений
+  max_messages_per_day: 7          # максимум сообщений в день от агента
+  morning_briefing: "08:00"        # время утреннего брифинга ("" = выключено)
+  evening_checkin: "21:00"         # время вечернего чек-ина ("" = выключено)
+  weekly_report: "20:00"           # время воскресного отчёта ("" = выключено)
+  goal_reminder_days_idle: 3       # напоминать о цели если нет прогресса N дней (0 = выключено)
+  timezone: "Europe/Moscow"        # часовой пояс ("" = локальное время сервера)
+  city: "Москва"                   # город для погоды в утреннем брифинге ("" = без погоды)
+  financial_tickers:               # тикеры для финансовой сводки (утро + вечер)
+    - "IMOEX"                      # Индекс МосБиржи
+    - "RTSI"                       # Индекс РТС
+    - "sp500"                      # S&P 500
+    - "nasdaq"                     # Nasdaq Composite
+
+web:
+  enabled: true
+  # Провайдер: brave, serper, duckduckgo
+  # brave      — https://api.search.brave.com  (2000 бесплатных запросов/мес)
+  # serper     — https://serper.dev            (2500 бесплатных запросов)
+  # duckduckgo — без ключа, но может блокировать боты
+  provider: "brave"
+  api_key: ""            # API ключ для brave/serper
+  max_results: 5
+  timeout: 15
+  max_fetch_size_kb: 100
+
+weather:
+  enabled: true          # Open-Meteo, бесплатно, без API-ключа
+  timeout_seconds: 15
+  proxy: ""              # прокси для запросов к Open-Meteo (опционально)
+
+stocks:
+  enabled: true          # котировки акций и индексов (Yahoo Finance + MOEX ISS, без API-ключей)
+  cache_ttl_minutes: 15  # TTL кэша котировок в SQLite (0 = без кэша)
+  timeout_seconds: 15
+  proxy: ""              # "" = использует HTTPS_PROXY из env
+
+# ── ДОПОЛНИТЕЛЬНЫЕ ИНСТРУМЕНТЫ (по умолчанию выключены) ───────────────────────
+
+news:
+  enabled: false                   # включить для агрегации новостей
+  fetch_interval_minutes: 30
+  max_item_age_days: 30
+  max_items_per_feed: 1000
+  fetch_timeout_seconds: 30
+  proxy: ""
+  feeds:
+    # Раскомментировать нужные фиды и поставить enabled: true
+    - url: "https://hnrss.org/frontpage"
+      title: "Hacker News"
+      category: "technology"
+      language: "en"
+      enabled: false
+    - url: "https://go.dev/blog/feed.atom"
+      title: "Go Blog"
+      category: "programming"
+      language: "en"
+      enabled: false
+    - url: "https://techcrunch.com/feed/"
+      title: "TechCrunch"
+      category: "technology"
+      language: "en"
+      enabled: false
+    - url: "https://www.theverge.com/rss/index.xml"
+      title: "The Verge"
+      category: "technology"
+      language: "en"
+      enabled: false
+    - url: "https://feeds.arstechnica.com/arstechnica/index"
+      title: "Ars Technica"
+      category: "technology"
+      language: "en"
+      enabled: false
+    - url: "https://feeds.bloomberg.com/markets/news.rss"
+      title: "Bloomberg Markets"
+      category: "finance"
+      language: "en"
+      enabled: false
+    - url: "https://finance.yahoo.com/news/rssindex"
+      title: "Yahoo Finance News"
+      category: "finance"
+      language: "en"
+      enabled: false
+    - url: "https://www.moex.com/export/news.aspx"
+      title: "MOEX News"
+      category: "finance"
+      language: "ru"
+      enabled: false
+    - url: "https://krebsonsecurity.com/feed/"
+      title: "Krebs on Security"
+      category: "security"
+      language: "en"
+      enabled: false
+    - url: "https://feeds.bbci.co.uk/sport/formula1/rss.xml"
+      title: "BBC Sport — Formula 1"
+      category: "formula1"
+      language: "en"
+      enabled: false
+
+files:
+  enabled: false                   # включить для обработки файлов и изображений
+  storage_dir: "./data/files"
+  max_file_size_kb: 10240          # 10 МБ
+  vision_enabled: false            # передавать изображения в LLM как base64
+
+code_runner:
+  enabled: false                   # включить для выполнения кода (Python / Go / bash)
+  timeout_seconds: 30
+  mem_limit_mb: 0                  # 0 = без ограничений
+
 shell:
-  enabled: false          # включить когда будет готово
-  # Максимальное время выполнения (секунды)
+  enabled: false                   # включать осторожно — даёт агенту доступ к shell
   timeout: 30
-  # Разрешённые команды (whitelist)
+  working_dir: "./sandbox"
   allowed_commands:
     - ls
     - cat
@@ -90,7 +197,6 @@ shell:
     - ps
     - echo
     - pwd
-  # Запрещённые паттерны (даже если команда в whitelist)
   blocked_patterns:
     - "rm -rf /"
     - "mkfs"
@@ -102,222 +208,16 @@ shell:
     - "reboot"
     - "init 0"
     - "init 6"
-  # Рабочая директория (sandbox)
-  working_dir: "./sandbox"
-
-web:
-  enabled: true
-  # Провайдер: brave, serper, duckduckgo
-  # brave  — https://api.search.brave.com  (2000 бесплатных запросов/мес)
-  # serper — https://serper.dev            (2500 бесплатных запросов)
-  # duckduckgo — без ключа, но может блокировать боты
-  provider: "brave"
-  api_key: ""  # API ключ для brave/serper
-  # Количество результатов поиска
-  max_results: 5
-  # Таймаут запросов (секунды)
-  timeout: 15
-  # Максимальный размер скачиваемой страницы (КБ)
-  max_fetch_size_kb: 100
 
 browser:
-  enabled: false          # требует отдельной установки бинарника agent-browser
-  # Директория для сохранения скриншотов
+  enabled: false                   # требует установки бинарника agent-browser
   screenshot_dir: "./data/screenshots"
-  # Путь к agent-browser (опционально, по умолчанию "agent-browser")
   agent_browser_path: "agent-browser"
-  # Таймаут выполнения операций (секунды)
   timeout_seconds: 30
-  # Прокси для браузера (опционально), e.g. "http://127.0.0.1:2080"
   proxy: ""
 
 pi_coder:
-  enabled: false          # включить для доработки агента через pi
-  # Директория проекта (абсолютный или относительный путь)
-  project_dir: "."        # по умолчанию — текущая директория
-  # Модель для pi (должна совпадать с флагом --model)
+  enabled: false                   # включить для доработки агента через pi
+  project_dir: "."
   model: "glm-4.7"
-  # Таймаут выполнения pi (секунды), по умолчанию 300 (5 минут)
   timeout: 300
-
-news:
-  enabled: false          # включить для агрегации новостей
-  # Интервал автоматического обновления фидов (минуты)
-  fetch_interval_minutes: 30
-  # Максимальный возраст новостей для хранения (дни)
-  max_item_age_days: 30
-  # Максимальное количество новостей на фид
-  max_items_per_feed: 1000
-  # HTTP таймаут для получения фидов (секунды)
-  fetch_timeout_seconds: 30
-  # Прокси по умолчанию для всех фидов (опционально), e.g. "http://127.0.0.1:2080"
-  # Можно переопределить на уровне конкретного фида через proxy:
-  proxy: ""
-  # Предустановленные источники новостей
-  feeds:
-    # Tech news
-    - url: "https://techcrunch.com/feed/"
-      title: "TechCrunch"
-      category: "technology"
-      language: "en"
-      enabled: false
-      proxy: ""           # прокси для этого фида (опционально)
-    - url: "https://www.theverge.com/rss/index.xml"
-      title: "The Verge"
-      category: "technology"
-      language: "en"
-      enabled: false
-      proxy: ""
-    - url: "https://feeds.arstechnica.com/arstechnica/index"
-      title: "Ars Technica"
-      category: "technology"
-      language: "en"
-      enabled: false
-      proxy: ""
-    # Open Source / Dev
-    - url: "https://lwn.net/headlines/newrss"
-      title: "LWN.net"
-      category: "programming"
-      language: "en"
-      enabled: false
-      proxy: ""
-    - url: "https://opensource.com/feeds"
-      title: "Opensource.com"
-      category: "programming"
-      language: "en"
-      enabled: false
-      proxy: ""
-    # Go
-    - url: "https://go.dev/blog/feed.atom"
-      title: "Go Blog"
-      category: "programming"
-      language: "en"
-      enabled: false
-      proxy: ""
-    # Football / Manchester United
-    - url: "https://feeds.bbci.co.uk/sport/football/teams/manchester-united/rss.xml"
-      title: "BBC Sport — Manchester United"
-      category: "football"
-      language: "en"
-      enabled: false
-      proxy: ""
-    - url: "https://news.google.com/rss/search?q=%22Manchester%20United%22&hl=en-US&gl=US&ceid=US:en"
-      title: "Google News — Manchester United"
-      category: "football"
-      language: "en"
-      enabled: false
-      proxy: ""
-    # Motorsport / Formula 1
-    - url: "https://feeds.bbci.co.uk/sport/formula1/rss.xml"
-      title: "BBC Sport — Formula 1"
-      category: "formula1"
-      language: "en"
-      enabled: false
-      proxy: ""
-    - url: "https://www.autosport.com/rss/f1/news/"
-      title: "Autosport — F1"
-      category: "formula1"
-      language: "en"
-      enabled: false
-      proxy: ""
-    - url: "https://www.racefans.net/feed/"
-      title: "RaceFans"
-      category: "formula1"
-      language: "en"
-      enabled: false
-      proxy: ""
-    # Motorsport / NASCAR
-    - url: "https://www.motorsport.com/rss/nascar/news/"
-      title: "Motorsport.com — NASCAR"
-      category: "nascar"
-      language: "en"
-      enabled: false
-      proxy: ""
-    - url: "https://frontstretch.com/feed/"
-      title: "Frontstretch"
-      category: "nascar"
-      language: "en"
-      enabled: false
-      proxy: ""
-    # Finance / Markets
-    - url: "https://feeds.bloomberg.com/markets/news.rss"
-      title: "Bloomberg Markets"
-      category: "finance"
-      language: "en"
-      enabled: false
-      proxy: ""
-    - url: "https://www.ft.com/global-economy?format=rss"
-      title: "Financial Times — Global Economy"
-      category: "finance"
-      language: "en"
-      enabled: false
-      proxy: ""
-    - url: "https://finance.yahoo.com/news/rssindex"
-      title: "Yahoo Finance News"
-      category: "finance"
-      language: "en"
-      enabled: false
-      proxy: ""
-    - url: "https://www.moex.com/export/news.aspx"
-      title: "MOEX News"
-      category: "finance"
-      language: "ru"
-      enabled: false
-      proxy: ""
-    # Suggested extras
-    - url: "https://hnrss.org/frontpage"
-      title: "Hacker News Frontpage"
-      category: "technology"
-      language: "en"
-      enabled: false
-      proxy: ""
-    - url: "https://krebsonsecurity.com/feed/"
-      title: "Krebs on Security"
-      category: "security"
-      language: "en"
-      enabled: false
-      proxy: ""
-
-files:
-  enabled: false                 # включить для обработки файлов и изображений
-  storage_dir: "./data/files"    # директория для хранения загруженных файлов
-  max_file_size_kb: 10240        # максимальный размер файла (КБ, по умолчанию 10 МБ)
-  vision_enabled: false          # передавать изображения в LLM как base64 (если модель поддерживает Vision)
-  # Поддерживаемые расширения (по умолчанию: txt md json csv pdf jpg jpeg png gif webp)
-  # allowed_extensions:
-  #   - txt
-  #   - md
-  #   - json
-  #   - csv
-  #   - pdf
-  #   - jpg
-  #   - jpeg
-  #   - png
-  #   - gif
-  #   - webp
-
-code_runner:
-  enabled: false           # включить для выполнения кода (Python / Go / bash)
-  timeout_seconds: 30      # максимальное время выполнения
-  mem_limit_mb: 0          # лимит виртуальной памяти (МБ); 0 = без ограничений
-  # Разрешённые языки (по умолчанию все: python, go, bash)
-  # enabled_langs:
-  #   - python
-  #   - go
-  #   - bash
-
-weather:
-  enabled: true            # включить для получения прогноза погоды (Open-Meteo, бесплатно, без API-ключа)
-  timeout_seconds: 15      # таймаут HTTP-запросов (секунды)
-  proxy: ""                # прокси для запросов к Open-Meteo (опционально)
-
-stocks:
-  enabled: true            # включить для получения котировок акций и индексов
-  cache_ttl_minutes: 15    # TTL кэша котировок в SQLite (0 = без кэша)
-  timeout_seconds: 15      # таймаут HTTP-запросов (секунды)
-  proxy: ""                # прокси для Yahoo Finance / MOEX ISS ("" = использует HTTPS_PROXY из env)
-                           # Источники: Yahoo Finance (US) + MOEX ISS API (RU), без API-ключей
-
-logging:
-  level: "info"           # debug, info, warn, error
-  file: "./data/agent.log"

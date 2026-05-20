@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/lllypuk/agent-shatrov/internal/agent"
@@ -336,5 +337,102 @@ func TestModelsEmptyByDefault(t *testing.T) {
 
 	if len(a.Models()) != 0 {
 		t.Error("expected empty models map before SetModels is called")
+	}
+}
+
+// ── HandleMessageWithAttachments ─────────────────────────────────────────────
+
+func TestHandleMessageWithAttachmentsNil(t *testing.T) {
+	// nil attachments → behaves exactly like HandleMessage.
+	srv := textResponse(t, "Ответ без вложений")
+	a := newAgent(t, srv)
+
+	resp, err := a.HandleMessageWithAttachments(context.Background(), 200, "Привет", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Text != "Ответ без вложений" {
+		t.Errorf("expected 'Ответ без вложений', got %q", resp.Text)
+	}
+	if resp.Usage == nil {
+		t.Error("expected non-nil usage")
+	}
+}
+
+func TestHandleMessageWithAttachmentsEmptySlice(t *testing.T) {
+	// Empty (non-nil) attachment slice → same as HandleMessage.
+	srv := textResponse(t, "Пустые вложения")
+	a := newAgent(t, srv)
+
+	resp, err := a.HandleMessageWithAttachments(context.Background(), 201, "тест", []agent.FileAttachment{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Text != "Пустые вложения" {
+		t.Errorf("expected 'Пустые вложения', got %q", resp.Text)
+	}
+}
+
+func TestHandleMessageWithAttachmentsImage(t *testing.T) {
+	// Image attachment → LLM receives ContentParts (text + image_url).
+	var capturedReq llm.ChatRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&capturedReq) //nolint:errcheck
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(llm.ChatResponse{ //nolint:errcheck
+			Choices: []llm.Choice{{
+				Message: llm.Message{Role: "assistant", Content: "Изображение получено"},
+			}},
+			Usage: llm.Usage{TotalTokens: 20},
+		})
+	}))
+	defer srv.Close()
+
+	a := newAgent(t, srv)
+
+	attachments := []agent.FileAttachment{
+		{Data: []byte{0xFF, 0xD8, 0xFF}, MimeType: "image/jpeg", Filename: "photo.jpg"},
+	}
+
+	resp, err := a.HandleMessageWithAttachments(context.Background(), 202, "Что на картинке?", attachments)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Text != "Изображение получено" {
+		t.Errorf("expected 'Изображение получено', got %q", resp.Text)
+	}
+
+	// Locate the user message in the captured LLM request.
+	var userMsg *llm.Message
+	for i := range capturedReq.Messages {
+		if capturedReq.Messages[i].Role == "user" {
+			userMsg = &capturedReq.Messages[i]
+			break
+		}
+	}
+	if userMsg == nil {
+		t.Fatal("user message not found in captured LLM request")
+	}
+
+	// The user message must be multi-modal (ContentParts), not plain text.
+	if len(userMsg.ContentParts) == 0 {
+		t.Fatal("expected ContentParts in user message, got plain text content")
+	}
+
+	// First part: text.
+	if userMsg.ContentParts[0].Type != "text" || userMsg.ContentParts[0].Text != "Что на картинке?" {
+		t.Errorf("unexpected text ContentPart: %+v", userMsg.ContentParts[0])
+	}
+
+	// Second part: image_url with a base64 data URL.
+	if len(userMsg.ContentParts) < 2 {
+		t.Fatal("expected at least 2 ContentParts (text + image)")
+	}
+	imgPart := userMsg.ContentParts[1]
+	if imgPart.Type != "image_url" {
+		t.Errorf("expected image_url type, got %q", imgPart.Type)
+	}
+	if imgPart.ImageURL == nil || !strings.HasPrefix(imgPart.ImageURL.URL, "data:image/jpeg;base64,") {
+		t.Errorf("unexpected image URL: %+v", imgPart.ImageURL)
 	}
 }

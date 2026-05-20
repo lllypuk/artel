@@ -215,15 +215,19 @@ const helpText = "\U0001F916 **Agent Shatrov**\n\n" +
 	"/help — эта справка\n\n" +
 	"**Что умеет агент:**\n" +
 	"\U0001F4DD Заметки — создать, найти, прочитать, редактировать, удалить\n" +
-	"⏰ Напоминания — создать, список, отменить (разовые и повторяющиеся)\n" +
+	"⏰ Напоминания — разовые и повторяющиеся, уведомления в Telegram\n" +
+	"\U0001F4C5 Дисциплина — ежедневные и недельные ревью, стрик, статистика\n" +
+	"\U0001F3AF Цели (OKR) — цели на год/квартал/месяц с ключевыми результатами\n" +
+	"\U0001F4AA Тренировки — логирование, личные рекорды, история упражнений\n" +
+	"\U0001F4CA Котировки — акции и индексы (MOEX, NYSE/NASDAQ, S&P 500)\n" +
+	"\U0001F324 Погода — текущие условия и прогноз для любого города\n" +
 	"\U0001F50D Поиск в интернете (Brave / Serper / DuckDuckGo)\n" +
 	"\U0001F310 Чтение веб-страниц\n" +
-	"\U0001F324 Погода — текущие условия и прогноз для любого города\n" +
-	"\U0001F5A5 Браузер — скриншоты, навигация, автоматизация\n" +
 	"\U0001F4F0 Новости — RSS/Atom-фиды, поиск, избранное\n" +
+	"\U0001F5A5 Браузер — скриншоты, навигация, автоматизация\n" +
 	"\U0001F4CE Файлы — отправь документ или фото в чат\n" +
-	"\U0001F4BB Запуск кода — Python, Go, Bash (изолированное окружение)\n" +
-	"\U0001F6E0 Самообновление кода через pi_coder"
+	"\U0001F4BB Запуск кода — Python, Go, Bash (изолированное окружение)\n\n" +
+	"Подробнее: USER\\_GUIDE.md в репозитории проекта"
 
 func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 	parts := strings.Fields(text)
@@ -232,8 +236,14 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 	switch cmd {
 	case "/start":
 		b.sendText(chatID, "👋 Привет! Я твой персональный AI-агент.\n\n"+
-			"Просто напиши что нужно — найду, запомню, выполню.\n\n"+
-			"/help — полная справка\n"+
+			"Просто напиши что нужно — я сам выберу нужный инструмент.\n\n"+
+			"**Например:**\n"+
+			"• «Напомни мне завтра в 10:00 про встречу»\n"+
+			"• «Запомни идею: сделать X»\n"+
+			"• «Какая погода в Москве на выходные?»\n"+
+			"• «Запиши тренировку: жим 3×10 по 80 кг»\n"+
+			"• «Найди последние новости про Go 1.24»\n\n"+
+			"/help — полный список возможностей\n"+
 			"/new — начать новый диалог")
 	case "/new":
 		if err := b.agent.NewConversation(ctx, chatID); err != nil {
@@ -726,7 +736,9 @@ func (b *Bot) downloadTelegramFile(ctx context.Context, fileID string) ([]byte, 
 	if err != nil {
 		return nil, fmt.Errorf("download: %w", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d when downloading file", resp.StatusCode)
 	}
