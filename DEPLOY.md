@@ -58,7 +58,28 @@ cp config.example.yaml config.yaml
 
 ## Шаг 4. Запустить контейнер
 
-### Вариант A: через env vars (рекомендуется для нескольких пользователей)
+### Скрипт add-user.sh (рекомендуется)
+
+Самый быстрый способ — использовать готовый скрипт. Все 5 аргументов обязательны:
+
+```bash
+./scripts/add-user.sh <username> <telegram_token> <chat_id> <api_key> <llm_base_url>
+```
+
+Пример:
+
+```bash
+./scripts/add-user.sh alice "1234567890:AAF..." 123456789 "my-api-key" "https://api.z.ai/api/coding/paas/v4"
+```
+
+Скрипт автоматически:
+- Создаёт контейнер с нужными env vars
+- Проверяет, что контейнер продолжает работать через 2 секунды после старта
+- Выводит логи и код ошибки, если контейнер сразу завершился
+
+> **Важно:** `api_key` и `llm_base_url` обязательны — без них контейнер запустится, но сразу завершится с ошибкой валидации конфига.
+
+### Вариант A: вручную через env vars
 
 ```bash
 docker run -d \
@@ -83,12 +104,56 @@ docker run -d \
   ghcr.io/lllypuk/agent-shatrov:latest
 ```
 
-### Вариант C: docker-compose (если нужен прокси или host network)
+### Вариант C: docker-compose
+
+Скопировать `docker-compose.yml` из репозитория и заполнить env vars:
+
+```yaml
+services:
+  agent-username:
+    image: ghcr.io/lllypuk/agent-shatrov:latest
+    container_name: agent-username
+    restart: unless-stopped
+    volumes:
+      - agent-username-data:/app/data
+    environment:
+      - TELEGRAM_TOKEN=1234567890:AAF...
+      - TELEGRAM_ALLOWED_USERS=123456789
+      - LLM_API_KEY=...
+      - LLM_BASE_URL=https://api.z.ai/api/coding/paas/v4
+    # Если нужен доступ к прокси на хосте:
+    extra_hosts:
+      - "host-gateway:host-gateway"
+
+volumes:
+  agent-username-data:
+```
 
 ```bash
-# Скопировать docker-compose.yml, отредактировать переменные
-docker-compose up -d
+docker compose up -d
+docker compose logs -f agent-username
 ```
+
+---
+
+## Переменные окружения
+
+Все переменные окружения переопределяют соответствующие поля `config.yaml`.
+
+| Переменная              | Обязательная | Описание                                                    |
+|-------------------------|:------------:|-------------------------------------------------------------|
+| `TELEGRAM_TOKEN`        | ✅           | Токен бота от @BotFather                                    |
+| `TELEGRAM_ALLOWED_USERS`| ✅           | `chat_id` пользователей через запятую: `123456789,987654321`|
+| `LLM_API_KEY`           | ✅ *         | API-ключ LLM-провайдера (также принимает `GLM_API_KEY`); только для одиночного провайдера |
+| `LLM_BASE_URL`          | ✅ *         | Base URL API, например `https://api.z.ai/api/coding/paas/v4`; только для одиночного провайдера |
+| `WEB_API_KEY`           | —            | API-ключ для поиска (Brave / Serper)                        |
+| `LOG_LEVEL`             | —            | Уровень логирования: `debug`, `info`, `warn`, `error`       |
+| `HTTPS_PROXY`           | —            | HTTP/HTTPS прокси для всех исходящих запросов               |
+
+> \* Обязательны при использовании одиночного провайдера (без `llm.providers` в config.yaml).
+
+> **Конфиг-файл не обязателен.** Если `/app/config.yaml` отсутствует, агент запускается только на переменных окружения.
+> Минимально необходимые переменные для запуска: `TELEGRAM_TOKEN`, `TELEGRAM_ALLOWED_USERS`, `LLM_API_KEY`, `LLM_BASE_URL`.
 
 ---
 

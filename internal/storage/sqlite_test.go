@@ -460,6 +460,24 @@ func TestDeleteNote(t *testing.T) {
 	}
 }
 
+func TestUpdateNote_NotFound(t *testing.T) {
+	db := openTestDB(t)
+
+	err := db.UpdateNote(context.Background(), 99999, 1310, "Title", "Content", "tag")
+	if err == nil {
+		t.Fatal("expected error when updating non-existent note")
+	}
+}
+
+func TestDeleteNote_NotFound(t *testing.T) {
+	db := openTestDB(t)
+
+	err := db.DeleteNote(context.Background(), 99999, 1311)
+	if err == nil {
+		t.Fatal("expected error when deleting non-existent note")
+	}
+}
+
 func TestDeleteNote_WrongChat(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

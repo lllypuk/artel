@@ -1,73 +1,111 @@
+# ============================================================
 # Конфигурация agent-shatrov
+# ============================================================
 #
-# ── ЧТО ОБЯЗАТЕЛЬНО ЗАПОЛНИТЬ ──────────────────────────────────────────────────
-#
-#   telegram.token       — токен от @BotFather
-#   telegram.allowed_users — твой chat_id (узнать: @userinfobot в Telegram)
-#   llm.api_key          — API-ключ LLM-провайдера
-#
-# Или через переменные окружения (удобно для Docker):
-#   TELEGRAM_TOKEN, TELEGRAM_ALLOWED_USERS (comma-separated IDs)
+# Переменные окружения (альтернатива YAML, удобно для Docker):
+#   TELEGRAM_TOKEN, TELEGRAM_ALLOWED_USERS (через запятую)
 #   LLM_API_KEY, LLM_BASE_URL, WEB_API_KEY, LOG_LEVEL
-# ───────────────────────────────────────────────────────────────────────────────
+# ============================================================
+
+
+# ============================================================
+# МИНИМАЛЬНАЯ КОНФИГУРАЦИЯ (обязательно заполнить)
+# ============================================================
 
 telegram:
-  token: ""              # токен от @BotFather
-  allowed_users:         # твой chat_id (узнать: @userinfobot в Telegram)
+  token: ""              # ← ЗАПОЛНИ: токен от @BotFather
+  allowed_users:         # ← ЗАПОЛНИ: твой chat_id (узнать: @userinfobot в Telegram)
     - 0
-  proxy: ""              # прокси только для Telegram (опционально), e.g. "http://127.0.0.1:2080"
 
 llm:
-  provider: "glm"
-  base_url: "https://api.z.ai/api/coding/paas/v4"
   api_key: ""            # ← ЗАПОЛНИ: API-ключ LLM-провайдера
+  base_url: "https://api.z.ai/api/coding/paas/v4"  # URL провайдера
   models:
     default: "glm-4-plus"
     fast: "glm-4-flash"
-  max_iterations: 10     # лимит шагов ReAct-цикла (tool call → LLM → ...)
-  max_context_messages: 50  # лимит сообщений в окне LLM-контекста (0 = без ограничений)
 
-  # Мультипровайдер с fallback (опционально).
-  # Если providers заданы, base_url / api_key выше игнорируются.
-  # Провайдеры пробуются по приоритету (priority: меньше = первым).
-  # providers:
-  #   - name: "zai"
-  #     base_url: "https://api.z.ai/api/coding/paas/v4"
-  #     api_key: ""
-  #     priority: 1
-  #     models:
-  #       default: "glm-4-plus"
-  #       fast: "glm-4-flash"
-  #
-  #   - name: "openrouter"
-  #     base_url: "https://openrouter.ai/api/v1"
-  #     api_key: ""               # ключ из https://openrouter.ai/keys
-  #     priority: 2
-  #     models:
-  #       default: "google/gemini-2.5-flash"
-  #       fast: "google/gemini-2.5-flash"
-  #     extra_headers:
-  #       HTTP-Referer: "https://github.com/lllypuk/agent-shatrov"
-  #       X-Title: "agent-shatrov"
-  #     proxy: ""
-  #     timeout_seconds: 120
-  #
-  # retry:
-  #   max_retries: 2
-  #   initial_backoff_ms: 500
-  #   max_backoff_ms: 5000
 
+# ============================================================
+# РАСШИРЕННАЯ КОНФИГУРАЦИЯ (можно не менять — работает из коробки)
+# ============================================================
+
+# ── Telegram ─────────────────────────────────────────────────────────────────
+# telegram:
+#   proxy: ""            # прокси только для Telegram, e.g. "http://127.0.0.1:2080"
+
+# ── LLM (дополнительные настройки) ───────────────────────────────────────────
+# llm:
+#   provider: "glm"
+#   max_iterations: 10        # лимит шагов ReAct-цикла (tool call → LLM → ...)
+#   max_context_messages: 50  # лимит сообщений в окне контекста (0 = без ограничений)
+
+# Мультипровайдер с fallback (если задан providers — base_url / api_key выше игнорируются).
+# Провайдеры пробуются по приоритету (priority: меньше = первым).
+#
+# llm:
+#   providers:
+#     - name: "zai"
+#       base_url: "https://api.z.ai/api/coding/paas/v4"
+#       api_key: ""
+#       priority: 1
+#       models:
+#         default: "glm-4-plus"
+#         fast: "glm-4-flash"
+#
+#     - name: "openrouter"
+#       base_url: "https://openrouter.ai/api/v1"
+#       api_key: ""           # ключ из https://openrouter.ai/keys
+#       priority: 2
+#       models:
+#         default: "google/gemini-2.5-flash"
+#         fast: "google/gemini-2.5-flash"
+#       extra_headers:
+#         HTTP-Referer: "https://github.com/lllypuk/agent-shatrov"
+#         X-Title: "agent-shatrov"
+#       proxy: ""
+#       timeout_seconds: 120
+#
+#   retry:
+#     max_retries: 2
+#     initial_backoff_ms: 500
+#     max_backoff_ms: 5000
+
+# ── База данных и логирование ─────────────────────────────────────────────────
 database:
   path: "./data/agent.db"
 
 logging:
-  level: "info"           # debug, info, warn, error
+  level: "info"          # debug, info, warn, error
   file: "./data/agent.log"
 
-# ── ДОПОЛНИТЕЛЬНЫЕ ВОЗМОЖНОСТИ (по умолчанию работают из коробки) ───────────────
+# ── Инструменты (включены по умолчанию) ──────────────────────────────────────
 
+web:
+  enabled: true
+  # Провайдеры поиска:
+  #   brave      — https://api.search.brave.com  (2000 бесплатных запросов/мес)
+  #   serper     — https://serper.dev            (2500 бесплатных запросов)
+  #   duckduckgo — без ключа, но может блокировать боты
+  provider: "brave"
+  api_key: ""            # API-ключ для brave/serper (duckduckgo не требует)
+  max_results: 5
+  timeout: 15
+  max_fetch_size_kb: 100
+
+weather:
+  enabled: true          # Open-Meteo, бесплатно, без API-ключа
+  timeout_seconds: 15
+  proxy: ""              # прокси для запросов к Open-Meteo (опционально)
+
+stocks:
+  enabled: true          # Yahoo Finance + MOEX ISS, без API-ключей
+  cache_ttl_minutes: 15  # TTL кэша котировок в SQLite (0 = без кэша)
+  timeout_seconds: 15
+  proxy: ""              # "" = использует HTTPS_PROXY из env
+
+# ── Проактивные сообщения (выключены по умолчанию) ───────────────────────────
 proactive:
-  enabled: false                   # включить для проактивных сообщений
+  enabled: false                   # включить для утреннего/вечернего дайджеста
   max_messages_per_day: 7          # максимум сообщений в день от агента
   morning_briefing: "08:00"        # время утреннего брифинга ("" = выключено)
   evening_checkin: "21:00"         # время вечернего чек-ина ("" = выключено)
@@ -81,33 +119,10 @@ proactive:
     - "sp500"                      # S&P 500
     - "nasdaq"                     # Nasdaq Composite
 
-web:
-  enabled: true
-  # Провайдер: brave, serper, duckduckgo
-  # brave      — https://api.search.brave.com  (2000 бесплатных запросов/мес)
-  # serper     — https://serper.dev            (2500 бесплатных запросов)
-  # duckduckgo — без ключа, но может блокировать боты
-  provider: "brave"
-  api_key: ""            # API ключ для brave/serper
-  max_results: 5
-  timeout: 15
-  max_fetch_size_kb: 100
-
-weather:
-  enabled: true          # Open-Meteo, бесплатно, без API-ключа
-  timeout_seconds: 15
-  proxy: ""              # прокси для запросов к Open-Meteo (опционально)
-
-stocks:
-  enabled: true          # котировки акций и индексов (Yahoo Finance + MOEX ISS, без API-ключей)
-  cache_ttl_minutes: 15  # TTL кэша котировок в SQLite (0 = без кэша)
-  timeout_seconds: 15
-  proxy: ""              # "" = использует HTTPS_PROXY из env
-
-# ── ДОПОЛНИТЕЛЬНЫЕ ИНСТРУМЕНТЫ (по умолчанию выключены) ───────────────────────
+# ── Дополнительные инструменты (выключены по умолчанию) ──────────────────────
 
 news:
-  enabled: false                   # включить для агрегации новостей
+  enabled: false                   # включить для агрегации новостей из RSS/Atom/JSON Feed
   fetch_interval_minutes: 30
   max_item_age_days: 30
   max_items_per_feed: 1000
@@ -167,7 +182,7 @@ news:
       enabled: false
 
 files:
-  enabled: false                   # включить для обработки файлов и изображений
+  enabled: false                   # включить для обработки файлов и изображений из Telegram
   storage_dir: "./data/files"
   max_file_size_kb: 10240          # 10 МБ
   vision_enabled: false            # передавать изображения в LLM как base64

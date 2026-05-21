@@ -11,7 +11,7 @@ import (
 	"github.com/lllypuk/agent-shatrov/internal/tools"
 )
 
-func openDisciplineDB(t *testing.T) *storage.DB {
+func openTestDB(t *testing.T) *storage.DB {
 	t.Helper()
 	db, err := storage.Open(":memory:")
 	if err != nil {
@@ -32,21 +32,21 @@ func disciplineExec(t *testing.T, dt *tools.DisciplineTool, chatID int64, args m
 }
 
 func TestDisciplineToolName(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	if dt.Name() != "discipline" {
 		t.Errorf("expected 'discipline', got %q", dt.Name())
 	}
 }
 
 func TestDisciplineToolDescription(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	if dt.Description() == "" {
 		t.Error("expected non-empty description")
 	}
 }
 
 func TestDisciplineToolParameters(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	params := dt.Parameters()
 	if params["type"] != "object" {
 		t.Errorf("expected type 'object', got %v", params["type"])
@@ -67,7 +67,7 @@ func TestDisciplineToolParameters(t *testing.T) {
 }
 
 func TestDisciplineDaySave(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	result, err := disciplineExec(t, dt, 100, map[string]any{
 		"action":   "day_save",
 		"date":     "2026-04-18",
@@ -85,10 +85,24 @@ func TestDisciplineDaySave(t *testing.T) {
 	if !strings.Contains(result, "сохранено") {
 		t.Errorf("expected 'сохранено' in result, got %q", result)
 	}
+
+	// Verify persistence with day_get
+	got, err := disciplineExec(t, dt, 100, map[string]any{
+		"action": "day_get",
+		"date":   "2026-04-18",
+	})
+	if err != nil {
+		t.Fatalf("day_get after save: %v", err)
+	}
+	for _, want := range []string{"2026-04-18", "8/10", "хорошее", "План", "Сделал", "Не сделал", "Причина", "Заметка"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("day_get: expected %q in result, got %q", want, got)
+		}
+	}
 }
 
 func TestDisciplineDayGet(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	date := "2026-04-18"
 	_, err := disciplineExec(t, dt, 101, map[string]any{
 		"action":   "day_save",
@@ -129,7 +143,7 @@ func TestDisciplineDayGet(t *testing.T) {
 }
 
 func TestDisciplineDayGet_NotFound(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	result, err := disciplineExec(t, dt, 102, map[string]any{
 		"action": "day_get",
 		"date":   "2026-04-18",
@@ -143,7 +157,7 @@ func TestDisciplineDayGet_NotFound(t *testing.T) {
 }
 
 func TestDisciplineDayList(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	for _, tc := range []struct {
 		date string
 		done string
@@ -174,10 +188,15 @@ func TestDisciplineDayList(t *testing.T) {
 			t.Errorf("expected %q in result, got %q", want, result)
 		}
 	}
+	// Verify both entries appear (no more, no fewer)
+	count := strings.Count(result, "2026-04-1")
+	if count != 2 {
+		t.Errorf("expected 2 entries in day_list, got %d (result: %q)", count, result)
+	}
 }
 
 func TestDisciplineDayList_Empty(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	result, err := disciplineExec(t, dt, 104, map[string]any{
 		"action": "day_list",
 	})
@@ -190,7 +209,7 @@ func TestDisciplineDayList_Empty(t *testing.T) {
 }
 
 func TestDisciplineDayStats_Empty(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	result, err := disciplineExec(t, dt, 105, map[string]any{
 		"action": "day_stats",
 	})
@@ -203,14 +222,15 @@ func TestDisciplineDayStats_Empty(t *testing.T) {
 }
 
 func TestDisciplineDayStats_WithData(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	now := time.Now()
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	dates := []struct {
 		date  string
 		score int
 	}{
-		{date: time.Now().Format("2006-01-02"), score: 8},
-		{date: time.Now().AddDate(0, 0, -1).Format("2006-01-02"), score: 7},
-		{date: time.Now().AddDate(0, 0, -2).Format("2006-01-02"), score: 6},
+		{date: now.Format("2006-01-02"), score: 8},
+		{date: now.AddDate(0, 0, -1).Format("2006-01-02"), score: 7},
+		{date: now.AddDate(0, 0, -2).Format("2006-01-02"), score: 6},
 	}
 	for _, tc := range dates {
 		_, err := disciplineExec(t, dt, 106, map[string]any{
@@ -239,7 +259,7 @@ func TestDisciplineDayStats_WithData(t *testing.T) {
 }
 
 func TestDisciplineWeekSave(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	result, err := disciplineExec(t, dt, 107, map[string]any{
 		"action":         "week_save",
 		"week":           "2026-W16",
@@ -255,10 +275,24 @@ func TestDisciplineWeekSave(t *testing.T) {
 	if !strings.Contains(result, "сохранено") {
 		t.Errorf("expected 'сохранено' in result, got %q", result)
 	}
+
+	// Verify persistence with week_get
+	got, err := disciplineExec(t, dt, 107, map[string]any{
+		"action": "week_get",
+		"week":   "2026-W16",
+	})
+	if err != nil {
+		t.Fatalf("week_get after save: %v", err)
+	}
+	for _, want := range []string{"2026-W16", "9/10", "Победы недели", "Провалы недели", "Главный инсайт", "План на следующую неделю"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("week_get: expected %q in result, got %q", want, got)
+		}
+	}
 }
 
 func TestDisciplineWeekGet(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	week := "2026-W16"
 	_, err := disciplineExec(t, dt, 108, map[string]any{
 		"action":         "week_save",
@@ -295,7 +329,7 @@ func TestDisciplineWeekGet(t *testing.T) {
 }
 
 func TestDisciplineWeekGet_NotFound(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	result, err := disciplineExec(t, dt, 109, map[string]any{
 		"action": "week_get",
 		"week":   "2026-W16",
@@ -309,10 +343,11 @@ func TestDisciplineWeekGet_NotFound(t *testing.T) {
 }
 
 func TestDisciplineDashboard(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	now := time.Now()
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	_, err := disciplineExec(t, dt, 110, map[string]any{
 		"action": "day_save",
-		"date":   time.Now().Format("2006-01-02"),
+		"date":   now.Format("2006-01-02"),
 		"score":  8,
 		"done":   "Закрыл день",
 	})
@@ -342,10 +377,14 @@ func TestDisciplineDashboard(t *testing.T) {
 			t.Errorf("expected %q in result, got %q", want, result)
 		}
 	}
+	// Verify streak = 1 (only today saved) and average correctly computed from saved data
+	if !strings.Contains(result, "Стрик ревью: 1") {
+		t.Errorf("expected 'Стрик ревью: 1' in dashboard result, got %q", result)
+	}
 }
 
 func TestDisciplineUnknownAction(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	_, err := disciplineExec(t, dt, 111, map[string]any{
 		"action": "fly",
 	})
@@ -358,7 +397,7 @@ func TestDisciplineUnknownAction(t *testing.T) {
 }
 
 func TestDisciplineChatIsolation(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	date := "2026-04-18"
 	_, err := disciplineExec(t, dt, 100, map[string]any{
 		"action": "day_save",
@@ -383,7 +422,8 @@ func TestDisciplineChatIsolation(t *testing.T) {
 }
 
 func TestDisciplineDaySave_DefaultDate(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	now := time.Now()
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	result, err := disciplineExec(t, dt, 120, map[string]any{
 		"action": "day_save",
 		"done":   "Сделано сегодня",
@@ -392,15 +432,16 @@ func TestDisciplineDaySave_DefaultDate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	today := time.Now().Format("2006-01-02")
+	today := now.Format("2006-01-02")
 	if !strings.Contains(result, today) {
 		t.Errorf("expected today's date %q in result, got %q", today, result)
 	}
 }
 
 func TestDisciplineDayGet_DefaultDate(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
-	today := time.Now().Format("2006-01-02")
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	_, err := disciplineExec(t, dt, 121, map[string]any{
 		"action": "day_save",
 		"date":   today,
@@ -422,7 +463,7 @@ func TestDisciplineDayGet_DefaultDate(t *testing.T) {
 }
 
 func TestDisciplineWeekSave_DefaultWeek(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	result, err := disciplineExec(t, dt, 122, map[string]any{
 		"action": "week_save",
 		"wins":   "Победа",
@@ -437,7 +478,7 @@ func TestDisciplineWeekSave_DefaultWeek(t *testing.T) {
 }
 
 func TestDisciplineWeekGet_DefaultWeek(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	_, err := disciplineExec(t, dt, 123, map[string]any{
 		"action": "week_save",
 		"wins":   "Текущая неделя",
@@ -458,7 +499,7 @@ func TestDisciplineWeekGet_DefaultWeek(t *testing.T) {
 }
 
 func TestDisciplineDashboard_NoReviews(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	result, err := disciplineExec(t, dt, 124, map[string]any{
 		"action": "dashboard",
 	})
@@ -473,7 +514,7 @@ func TestDisciplineDashboard_NoReviews(t *testing.T) {
 }
 
 func TestDisciplineExecute_InvalidJSON(t *testing.T) {
-	dt := tools.NewDisciplineTool(openDisciplineDB(t))
+	dt := tools.NewDisciplineTool(openTestDB(t))
 	ctx := context.WithValue(context.Background(), tools.ChatIDKey, int64(130))
 	_, err := dt.Execute(ctx, json.RawMessage(`{invalid}`))
 	if err == nil {

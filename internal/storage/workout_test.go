@@ -85,8 +85,15 @@ func assertWorkoutCore(t *testing.T, workout *storage.Workout, wantID, wantChatI
 	if workout.Note != wantNote {
 		t.Errorf("expected note %q, got %q", wantNote, workout.Note)
 	}
-	if workout.GoalID == nil || *workout.GoalID != wantGoalID {
-		t.Fatalf("expected goal id %d, got %+v", wantGoalID, workout.GoalID)
+	if wantGoalID != 0 {
+		if workout.GoalID == nil {
+			t.Fatalf("expected goal id %d, got nil", wantGoalID)
+		}
+		if *workout.GoalID != wantGoalID {
+			t.Fatalf("expected goal id %d, got %d", wantGoalID, *workout.GoalID)
+		}
+	} else if workout.GoalID != nil {
+		t.Fatalf("expected nil goal id, got %d", *workout.GoalID)
 	}
 	if workout.CreatedAt.IsZero() {
 		t.Error("expected created_at to be set")
@@ -645,5 +652,350 @@ func TestCountWorkoutsForGoal(t *testing.T) {
 	}
 	if count != 2 {
 		t.Errorf("expected count 2, got %d", count)
+	}
+}
+
+func TestCountWorkoutsForGoal_Zero(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	goalID := mustCreateObjective(t, db, 1, "Empty goal")
+
+	// No workouts linked to this goal.
+	count, err := db.CountWorkoutsForGoal(ctx, 1, goalID)
+	if err != nil {
+		t.Fatalf("CountWorkoutsForGoal returned error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected count 0, got %d", count)
+	}
+}
+
+func TestGetWorkoutStats_DateFilter(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	mustCreateWorkout(t, db, 1, "2026-01-01", "strength", 30, "Jan", nil)
+	mustCreateWorkout(t, db, 1, "2026-02-15", "run", 45, "Feb", nil)
+	mustCreateWorkout(t, db, 1, "2026-03-20", "yoga", 60, "Mar", nil)
+
+	// Filter with fromDate only — exercises the `if fromDate != ""` branch.
+	statsFrom, err := db.GetWorkoutStats(ctx, 1, "2026-02-01", "")
+	if err != nil {
+		t.Fatalf("GetWorkoutStats (fromDate) returned error: %v", err)
+	}
+	if statsFrom.TotalCount != 2 {
+		t.Errorf("expected 2 workouts from Feb, got %d", statsFrom.TotalCount)
+	}
+
+	// Filter with toDate only — exercises the `if toDate != ""` branch.
+	statsTo, err := db.GetWorkoutStats(ctx, 1, "", "2026-02-28")
+	if err != nil {
+		t.Fatalf("GetWorkoutStats (toDate) returned error: %v", err)
+	}
+	if statsTo.TotalCount != 2 {
+		t.Errorf("expected 2 workouts to Feb, got %d", statsTo.TotalCount)
+	}
+
+	// Filter with both fromDate and toDate.
+	statsBoth, err := db.GetWorkoutStats(ctx, 1, "2026-02-01", "2026-02-28")
+	if err != nil {
+		t.Fatalf("GetWorkoutStats (both) returned error: %v", err)
+	}
+	if statsBoth.TotalCount != 1 {
+		t.Errorf("expected 1 workout in Feb range, got %d", statsBoth.TotalCount)
+	}
+	if statsBoth.TotalMinutes != 45 {
+		t.Errorf("expected 45 minutes, got %d", statsBoth.TotalMinutes)
+	}
+	if statsBoth.AvgMinutes != 45 {
+		t.Errorf("expected avg 45, got %d", statsBoth.AvgMinutes)
+	}
+	if statsBoth.TypeBreakdown["run"] != 1 {
+		t.Errorf("expected run breakdown 1, got %d", statsBoth.TypeBreakdown["run"])
+	}
+}
+
+func TestGetWorkoutStats_Empty(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	// No workouts for this chat — TotalCount=0 so AvgMinutes stays 0.
+	stats, err := db.GetWorkoutStats(ctx, 99, "", "")
+	if err != nil {
+		t.Fatalf("GetWorkoutStats returned error: %v", err)
+	}
+	if stats == nil {
+		t.Fatal("expected stats, got nil")
+	}
+	if stats.TotalCount != 0 {
+		t.Errorf("expected total count 0, got %d", stats.TotalCount)
+	}
+	if stats.TotalMinutes != 0 {
+		t.Errorf("expected total minutes 0, got %d", stats.TotalMinutes)
+	}
+	if stats.AvgMinutes != 0 {
+		t.Errorf("expected avg minutes 0, got %d", stats.AvgMinutes)
+	}
+}
+
+func TestListWorkouts_Empty(t *testing.T) {
+	db := openTestDB(t)
+
+	workouts, err := db.ListWorkouts(context.Background(), 99, "", "", "", 0)
+	if err != nil {
+		t.Fatalf("ListWorkouts returned error: %v", err)
+	}
+	if len(workouts) != 0 {
+		t.Errorf("expected 0 workouts, got %d", len(workouts))
+	}
+}
+
+func TestListWorkouts_ChatIsolation(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	mustCreateWorkout(t, db, 1, "2026-01-01", "strength", 30, "Chat 1", nil)
+	mustCreateWorkout(t, db, 2, "2026-01-01", "run", 40, "Chat 2", nil)
+
+	workouts1, err := db.ListWorkouts(ctx, 1, "", "", "", 0)
+	if err != nil {
+		t.Fatalf("ListWorkouts chat 1 returned error: %v", err)
+	}
+	if len(workouts1) != 1 {
+		t.Errorf("expected 1 workout for chat 1, got %d", len(workouts1))
+	}
+	if workouts1[0].ChatID != 1 {
+		t.Errorf("expected chat_id 1, got %d", workouts1[0].ChatID)
+	}
+}
+
+func TestGetPersonalRecords_Empty(t *testing.T) {
+	db := openTestDB(t)
+
+	prs, err := db.GetPersonalRecords(context.Background(), 99, "")
+	if err != nil {
+		t.Fatalf("GetPersonalRecords returned error: %v", err)
+	}
+	if len(prs) != 0 {
+		t.Errorf("expected 0 PRs, got %d", len(prs))
+	}
+}
+
+func TestGetPersonalRecords_ChatIsolation(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	w1 := mustCreateWorkout(t, db, 1, "2026-01-01", "strength", 30, "Chat 1", nil)
+	w2 := mustCreateWorkout(t, db, 2, "2026-01-01", "strength", 30, "Chat 2", nil)
+
+	mustAddWorkoutSet(t, db, storage.WorkoutSet{WorkoutID: w1, Exercise: "Bench Press", Sets: 3, Reps: 5, WeightKg: 80})
+	mustAddWorkoutSet(t, db, storage.WorkoutSet{WorkoutID: w2, Exercise: "Bench Press", Sets: 3, Reps: 5, WeightKg: 120})
+
+	// Chat 1 should only see its own PR (80 kg), not chat 2's (120 kg).
+	prs, err := db.GetPersonalRecords(ctx, 1, "")
+	if err != nil {
+		t.Fatalf("GetPersonalRecords returned error: %v", err)
+	}
+	if len(prs) != 1 {
+		t.Fatalf("expected 1 PR for chat 1, got %d", len(prs))
+	}
+	if prs[0].WeightKg != 80 {
+		t.Errorf("expected weight 80, got %v", prs[0].WeightKg)
+	}
+}
+
+func TestGetExerciseHistory_Empty(t *testing.T) {
+	db := openTestDB(t)
+
+	history, err := db.GetExerciseHistory(context.Background(), 99, "Bench Press")
+	if err != nil {
+		t.Fatalf("GetExerciseHistory returned error: %v", err)
+	}
+	if len(history) != 0 {
+		t.Errorf("expected 0 history entries, got %d", len(history))
+	}
+}
+
+func TestGetExerciseHistory_ChatIsolation(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	w1 := mustCreateWorkout(t, db, 1, "2026-01-01", "strength", 30, "Chat 1", nil)
+	w2 := mustCreateWorkout(t, db, 2, "2026-01-01", "strength", 30, "Chat 2", nil)
+
+	mustAddWorkoutSet(t, db, storage.WorkoutSet{WorkoutID: w1, Exercise: "Squat", Sets: 3, Reps: 5, WeightKg: 100})
+	mustAddWorkoutSet(t, db, storage.WorkoutSet{WorkoutID: w2, Exercise: "Squat", Sets: 3, Reps: 5, WeightKg: 150})
+
+	history, err := db.GetExerciseHistory(ctx, 1, "squat")
+	if err != nil {
+		t.Fatalf("GetExerciseHistory returned error: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry for chat 1, got %d", len(history))
+	}
+	if history[0].WeightKg != 100 {
+		t.Errorf("expected weight 100, got %v", history[0].WeightKg)
+	}
+}
+
+func TestGetNewPRsFromWorkout_FirstEver(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	// First time ever doing the exercise — no prior history → must be reported as a PR.
+	workoutID := mustCreateWorkout(t, db, 1, "2026-01-01", "strength", 30, "First", nil)
+	mustAddWorkoutSet(t, db, storage.WorkoutSet{WorkoutID: workoutID, Exercise: "Deadlift", Sets: 1, Reps: 5, WeightKg: 100})
+
+	prs, err := db.GetNewPRsFromWorkout(ctx, 1, workoutID)
+	if err != nil {
+		t.Fatalf("GetNewPRsFromWorkout returned error: %v", err)
+	}
+	if len(prs) != 1 {
+		t.Fatalf("expected 1 new PR for first-ever lift, got %d", len(prs))
+	}
+	if prs[0].Exercise != "Deadlift" {
+		t.Errorf("expected exercise %q, got %q", "Deadlift", prs[0].Exercise)
+	}
+	if prs[0].WeightKg != 100 {
+		t.Errorf("expected weight 100, got %v", prs[0].WeightKg)
+	}
+}
+
+func TestGetNewPRsFromWorkout_ChatIsolation(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	// Chat 2 has a previous heavy lift that should NOT count as prior history for chat 1.
+	prevChat2 := mustCreateWorkout(t, db, 2, "2026-01-01", "strength", 30, "Chat 2 prev", nil)
+	mustAddWorkoutSet(t, db, storage.WorkoutSet{WorkoutID: prevChat2, Exercise: "OHP", Sets: 3, Reps: 5, WeightKg: 150})
+
+	// Chat 1's first lift: should still be reported as a PR (no prior in chat 1).
+	currentChat1 := mustCreateWorkout(t, db, 1, "2026-01-10", "strength", 40, "Chat 1 new", nil)
+	mustAddWorkoutSet(t, db, storage.WorkoutSet{WorkoutID: currentChat1, Exercise: "OHP", Sets: 3, Reps: 5, WeightKg: 80})
+
+	prs, err := db.GetNewPRsFromWorkout(ctx, 1, currentChat1)
+	if err != nil {
+		t.Fatalf("GetNewPRsFromWorkout returned error: %v", err)
+	}
+	if len(prs) != 1 {
+		t.Fatalf("expected 1 new PR (isolated to chat 1), got %d", len(prs))
+	}
+	if prs[0].WeightKg != 80 {
+		t.Errorf("expected weight 80, got %v", prs[0].WeightKg)
+	}
+}
+
+func TestListWorkoutTemplates_Empty(t *testing.T) {
+	db := openTestDB(t)
+
+	templates, err := db.ListWorkoutTemplates(context.Background(), 99)
+	if err != nil {
+		t.Fatalf("ListWorkoutTemplates returned error: %v", err)
+	}
+	if len(templates) != 0 {
+		t.Errorf("expected 0 templates, got %d", len(templates))
+	}
+}
+
+func TestListWorkoutTemplates_ChatIsolation(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	exercises := []storage.TemplateExercise{{Name: "Bench Press", Sets: 3, Reps: 5, WeightKg: 60}}
+
+	_, err := db.CreateWorkoutTemplate(ctx, 1, "Push Day", exercises)
+	if err != nil {
+		t.Fatalf("CreateWorkoutTemplate returned error: %v", err)
+	}
+
+	templates, err := db.ListWorkoutTemplates(ctx, 2)
+	if err != nil {
+		t.Fatalf("ListWorkoutTemplates for other chat returned error: %v", err)
+	}
+	if len(templates) != 0 {
+		t.Errorf("expected 0 templates for other chat, got %d", len(templates))
+	}
+}
+
+func TestGetWorkoutTemplate_NotFound(t *testing.T) {
+	db := openTestDB(t)
+
+	tmpl, err := db.GetWorkoutTemplate(context.Background(), 1, "NonExistent")
+	if err != nil {
+		t.Fatalf("GetWorkoutTemplate returned error: %v", err)
+	}
+	if tmpl != nil {
+		t.Errorf("expected nil for missing template, got %+v", tmpl)
+	}
+}
+
+func TestDeleteWorkoutTemplate_NotFound(t *testing.T) {
+	db := openTestDB(t)
+
+	err := db.DeleteWorkoutTemplate(context.Background(), 1, 99999)
+	if err == nil {
+		t.Fatal("expected error deleting non-existent template")
+	}
+}
+
+func TestDeleteWorkoutTemplate_ChatIsolation(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	exercises := []storage.TemplateExercise{{Name: "Pull-up", Sets: 3, Reps: 10}}
+
+	templateID, err := db.CreateWorkoutTemplate(ctx, 1, "Pull Day", exercises)
+	if err != nil {
+		t.Fatalf("CreateWorkoutTemplate returned error: %v", err)
+	}
+
+	// Deleting from chat 2 must fail (wrong owner).
+	if err := db.DeleteWorkoutTemplate(ctx, 2, templateID); err == nil {
+		t.Fatal("expected error when deleting template from wrong chat")
+	}
+
+	// Template must still exist for the original owner.
+	tmpl, err := db.GetWorkoutTemplate(ctx, 1, "Pull Day")
+	if err != nil {
+		t.Fatalf("GetWorkoutTemplate returned error: %v", err)
+	}
+	if tmpl == nil {
+		t.Fatal("expected template to still exist after failed cross-chat delete")
+	}
+}
+
+func TestDeleteWorkout_ChatIsolation(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	workoutID := mustCreateWorkout(t, db, 1, "2026-05-01", "strength", 30, "Mine", nil)
+
+	// Deleting from a different chat must fail.
+	if err := db.DeleteWorkout(ctx, 2, workoutID); err == nil {
+		t.Fatal("expected error when deleting workout from wrong chat")
+	}
+
+	// Workout must still be accessible by the original owner.
+	workout, err := db.GetWorkout(ctx, 1, workoutID)
+	if err != nil {
+		t.Fatalf("GetWorkout returned error: %v", err)
+	}
+	if workout == nil {
+		t.Fatal("expected workout to still exist after failed cross-chat delete")
+	}
+}
+
+func TestAddWorkoutSet_OrderedByInsertion(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	workoutID := mustCreateWorkout(t, db, 1, "2026-05-02", "strength", 60, "Order test", nil)
+
+	id1 := mustAddWorkoutSet(t, db, storage.WorkoutSet{WorkoutID: workoutID, Exercise: "Squat", Sets: 3, Reps: 5, WeightKg: 80})
+	id2 := mustAddWorkoutSet(t, db, storage.WorkoutSet{WorkoutID: workoutID, Exercise: "Bench Press", Sets: 3, Reps: 5, WeightKg: 60})
+	id3 := mustAddWorkoutSet(t, db, storage.WorkoutSet{WorkoutID: workoutID, Exercise: "Row", Sets: 3, Reps: 8, WeightKg: 50})
+
+	workout, err := db.GetWorkout(ctx, 1, workoutID)
+	if err != nil {
+		t.Fatalf("GetWorkout returned error: %v", err)
+	}
+	if len(workout.Sets) != 3 {
+		t.Fatalf("expected 3 sets, got %d", len(workout.Sets))
+	}
+	wantOrder := []int64{id1, id2, id3}
+	for i, wantID := range wantOrder {
+		if workout.Sets[i].ID != wantID {
+			t.Errorf("set[%d]: expected id %d, got %d", i, wantID, workout.Sets[i].ID)
+		}
 	}
 }

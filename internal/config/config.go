@@ -174,14 +174,15 @@ type FeedConfig struct {
 }
 
 func Load(path string) (*Config, error) {
+	var cfg Config
 	data, err := os.ReadFile(path)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
-
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
+	if err == nil {
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			return nil, fmt.Errorf("parsing config: %w", err)
+		}
 	}
 
 	// Override with env vars if set.
@@ -201,9 +202,12 @@ func (c *Config) validate() error {
 	if len(c.Telegram.AllowedUsers) == 0 {
 		return fmt.Errorf("telegram.allowed_users must have at least one user")
 	}
-	// api_key is required only when providers are not configured.
+	// api_key and base_url are required only when providers are not configured.
 	if len(c.LLM.Providers) == 0 && c.LLM.APIKey == "" {
 		return fmt.Errorf("llm.api_key is required (or configure llm.providers)")
+	}
+	if len(c.LLM.Providers) == 0 && c.LLM.BaseURL == "" {
+		return fmt.Errorf("llm.base_url is required (or set LLM_BASE_URL env var)")
 	}
 	// Validate provider configs.
 	for i, p := range c.LLM.Providers {
@@ -248,6 +252,9 @@ func (c *Config) applyEnvOverrides() {
 		}
 	}
 	if v := os.Getenv("LLM_API_KEY"); v != "" {
+		if len(c.LLM.Providers) > 0 {
+			fmt.Fprintf(os.Stderr, "Warning: LLM_API_KEY env var has no effect when llm.providers is configured; set API keys per-provider in config file\n")
+		}
 		c.LLM.APIKey = v
 	} else if v := os.Getenv("GLM_API_KEY"); v != "" {
 		c.LLM.APIKey = v

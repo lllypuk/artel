@@ -52,7 +52,7 @@ func (s *DB) HasNotesFTS() bool {
 
 func dropTriggers(ctx context.Context, db *sql.DB, names ...string) {
 	for _, name := range names {
-		_, _ = db.ExecContext(ctx, "DROP TRIGGER IF EXISTS "+name)
+		_, _ = db.ExecContext(ctx, "DROP TRIGGER IF EXISTS ["+name+"]")
 	}
 }
 

@@ -267,6 +267,33 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 	}
 }
 
+const onboardingText = "👋 Это ваш первый запуск! Вот что можно попробовать:\n\n" +
+	"• «Напомни мне завтра в 10 утра позвонить маме»\n" +
+	"• «Какая погода в Москве на выходные?»\n" +
+	"• «Запомни: хорошая идея для проекта — ...»\n" +
+	"• «Найди информацию про Go generics»\n" +
+	"• «Какой курс доллара сегодня?»\n\n" +
+	"Пишите свободно — я пойму любой запрос на русском языке! 🚀"
+
+// maybeSendOnboarding sends the onboarding message if the chat has no conversation history.
+func (b *Bot) maybeSendOnboarding(ctx context.Context, chatID int64) {
+	if b.db == nil {
+		return
+	}
+	conv, err := b.db.GetActiveConversation(ctx, chatID)
+	if err != nil {
+		b.logger.Warn("onboarding: failed to check conversation history", "chat_id", chatID, "error", err)
+		return
+	}
+	if conv == nil {
+		b.sendText(chatID, onboardingText)
+		// Create a conversation so subsequent /start calls don't repeat the onboarding.
+		if err := b.agent.NewConversation(ctx, chatID); err != nil {
+			b.logger.Warn("onboarding: failed to create conversation", "chat_id", chatID, "error", err)
+		}
+	}
+}
+
 func (b *Bot) handleModelCommand(chatID int64, parts []string) {
 	current := b.agent.GetModel()
 	models := b.agent.Models()
