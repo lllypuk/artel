@@ -138,12 +138,12 @@ cmd/agent/
 
 ### Task 2: Инструмент `wiki`
 
-- [ ] Создать `internal/tools/wiki.go` реализующий интерфейс `Tool`
-- [ ] Операции: `create`, `get`, `edit`, `delete`, `list` (дочерние страницы), `tree` (полная структура чата), `rename`, `backlinks`
-- [ ] При `create`/`edit` — парсить `[[path]]` из content и вызывать `UpsertWikiLinks`
-- [ ] При `rename` — вызывать `RenameWikiPage` (каскадное обновление в транзакции)
-- [ ] Зарегистрировать в `cmd/agent/tools.go`
-- [ ] `make lint test` — все проверки зелёные
+- [x] Создать `internal/tools/wiki.go` реализующий интерфейс `Tool`
+- [x] Операции: `create`, `get`, `edit`, `delete`, `list` (дочерние страницы), `tree` (полная структура чата), `rename`, `backlinks`
+- [x] При `create`/`edit` — парсить `[[path]]` из content и вызывать `UpsertWikiLinks`
+- [x] При `rename` — вызывать `RenameWikiPage` (каскадное обновление в транзакции)
+- [x] Зарегистрировать в `cmd/agent/main.go`
+- [x] `make lint test` — все проверки зелёные
 
 ### Task 3: Инструмент `reading_list`
 

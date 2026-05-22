@@ -40,6 +40,11 @@ func NewWebFetchTool(cfg WebFetchConfig) *WebFetchTool {
 	}
 }
 
+// NewDefaultWebFetchTool creates a WebFetchTool with default settings (20s timeout, 100 KB limit).
+func NewDefaultWebFetchTool() *WebFetchTool {
+	return NewWebFetchTool(WebFetchConfig{})
+}
+
 type webFetchArgs struct {
 	URL string `json:"url"`
 }

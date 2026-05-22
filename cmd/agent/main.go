@@ -62,6 +62,7 @@ func main() {
 	toolRegistry.Register(tools.NewGoalsTool(db))
 	toolRegistry.Register(tools.NewWorkoutTool(db))
 	toolRegistry.Register(tools.NewWikiTool(db))
+	toolRegistry.Register(tools.NewReadingListTool(db, tools.NewDefaultWebFetchTool()))
 	registerOptionalTools(cfg, toolRegistry, logger, db)
 
 	ctx, cancel := context.WithCancel(context.Background())
