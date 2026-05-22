@@ -236,3 +236,14 @@ pi_coder:
   project_dir: "."
   model: "glm-4.7"
   timeout: 300
+
+monitor:
+  enabled: false                   # включить для мониторинга доступности сайтов
+  interval_minutes: 5              # интервал проверок
+  timeout_seconds: 10              # таймаут HTTP-запроса
+  proxy: ""                        # прокси (опционально)
+  sites:
+    - url: "https://example.com"
+      name: "Мой сайт"
+    # - url: "https://budget.example.com"
+    #   name: "Финансы"

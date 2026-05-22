@@ -51,6 +51,7 @@ func registerOptionalTools(cfg *config.Config, registry *tools.Registry, logger 
 
 	registerWeatherTool(cfg, registry, logger)
 	registerStocksTool(cfg, registry, logger, db)
+	registerMonitorTool(cfg, registry, logger, db)
 }
 
 func registerWebTools(cfg *config.Config, registry *tools.Registry, logger *slog.Logger) {
@@ -151,6 +152,22 @@ func registerPiCoderTool(cfg *config.Config, registry *tools.Registry, logger *s
 // makeRestartFunc создаёт функцию безопасного перезапуска агента.
 // Использует syscall.Exec: текущий процесс атомарно заменяется новым бинарником без fork.
 // PID остаётся прежним, перенаправления stdin/stdout/stderr сохраняются.
+func registerMonitorTool(cfg *config.Config, registry *tools.Registry, logger *slog.Logger, db *storage.DB) {
+	if !cfg.Monitor.Enabled || len(cfg.Monitor.Sites) == 0 {
+		return
+	}
+	timeout := cfg.Monitor.TimeoutSeconds
+	if timeout == 0 {
+		timeout = 10
+	}
+	registry.Register(tools.NewMonitorTool(tools.MonitorToolConfig{
+		Sites:          cfg.Monitor.Sites,
+		TimeoutSeconds: timeout,
+		Proxy:          cfg.Monitor.Proxy,
+	}, db))
+	logger.Info("Monitor tool enabled", "sites", len(cfg.Monitor.Sites), "interval_min", cfg.Monitor.IntervalMinutes)
+}
+
 func makeRestartFunc(logger *slog.Logger) func() {
 	return func() {
 		executable, err := os.Executable()

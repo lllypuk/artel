@@ -23,6 +23,7 @@ type Config struct {
 	CodeRunner CodeRunnerConfig `yaml:"code_runner"`
 	Weather    WeatherConfig    `yaml:"weather"`
 	Stocks     StocksConfig     `yaml:"stocks"`
+	Monitor    MonitorConfig    `yaml:"monitor"`
 	Logging    LoggingConfig    `yaml:"logging"`
 }
 
@@ -147,6 +148,21 @@ type ProactiveConfig struct {
 	Timezone             string   `yaml:"timezone"`                // e.g. "Europe/Moscow", "" = local
 	City                 string   `yaml:"city"`                    // for weather in morning briefing
 	FinancialTickers     []string `yaml:"financial_tickers"`       // tickers for morning/evening finance digest
+}
+
+// MonitorConfig holds settings for the site monitoring tool.
+type MonitorConfig struct {
+	Enabled         bool          `yaml:"enabled"`
+	IntervalMinutes int           `yaml:"interval_minutes"` // default: 5
+	TimeoutSeconds  int           `yaml:"timeout_seconds"`  // default: 10
+	Proxy           string        `yaml:"proxy"`
+	Sites           []MonitorSite `yaml:"sites"`
+}
+
+// MonitorSite represents a single site to monitor.
+type MonitorSite struct {
+	URL  string `yaml:"url"`
+	Name string `yaml:"name"`
 }
 
 type LoggingConfig struct {

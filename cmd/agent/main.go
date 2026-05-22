@@ -81,6 +81,7 @@ func main() {
 
 	go runReminderScheduler(ctx, db, bot.GetNotifier(), logger)
 	go runProactiveScheduler(ctx, cfg.Proactive, ag, bot.GetNotifier(), cfg.Telegram.AllowedUsers, db, cfg.Weather.Enabled, cfg.News.Enabled, cfg.Stocks.Enabled, logger)
+	startMonitorLoop(ctx, &cfg.Monitor, db, bot.GetNotifier(), cfg.Telegram.AllowedUsers, logger)
 
 	if cfg.News.Enabled {
 		if _, nm := setupNews(ctx, cfg, db, toolRegistry, logger); nm != nil {
