@@ -58,7 +58,8 @@ issues:
   max-issues-per-linter: 50
   max-same-issues: 5
 
-  exclude-rules:
+exclusions:
+  rules:
     # defer Close() errors are intentionally ignored (standard Go pattern)
     - source: "defer .*\\.Close\\(\\)"
       linters:
