@@ -118,6 +118,13 @@ func TestWikiPageRename(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, newPage)
 
+	// Content of /dev/python should now reference the new path.
+	pythonPage, err := db.GetWikiPage(ctx, chatID, "/dev/python")
+	require.NoError(t, err)
+	require.NotNil(t, pythonPage)
+	assert.Contains(t, pythonPage.Content, "[[/programming/golang]]")
+	assert.NotContains(t, pythonPage.Content, "[[/dev/golang]]")
+
 	// Backlinks to /programming/golang from /dev/python should be updated
 	backlinks, err := db.GetBacklinks(ctx, chatID, "/programming/golang")
 	require.NoError(t, err)
@@ -248,17 +255,17 @@ func TestReadingListDigest(t *testing.T) {
 
 	_, _ = db.CreateReadingItem(ctx, chatID, "", "A", "", "", "to-read", "medium", "go,tech")
 	_, _ = db.CreateReadingItem(ctx, chatID, "", "B", "", "", "to-read", "medium", "go")
-	_, _ = db.CreateReadingItem(ctx, chatID, "", "C", "", "", "done", "medium", "go")  // done — не учитывается
-	_, _ = db.CreateReadingItem(ctx, chatID, "", "D", "", "", "to-read", "medium", "") // без тегов
+	_, _ = db.CreateReadingItem(ctx, chatID, "", "C", "", "", "done", "medium", "go")    // done — не учитывается
+	_, _ = db.CreateReadingItem(ctx, chatID, "", "D", "", "", "to-read", "medium", "")   // без тегов
+	_, _ = db.CreateReadingItem(ctx, chatID, "", "E", "", "", "reading", "medium", "go") // reading — должно учитываться
 
 	digest, err := db.ReadingListDigest(ctx, chatID)
 	require.NoError(t, err)
 
-	assert.Equal(t, 2, digest["go"])
-	assert.Equal(t, 1, digest["tech"])
-	assert.Equal(t, 1, digest["(без тегов)"])
-	// done item is not counted
-	assert.NotEqual(t, 3, digest["go"])
+	assert.Equal(t, 3, digest["go"])          // A + B + E
+	assert.Equal(t, 1, digest["tech"])        // A
+	assert.Equal(t, 1, digest["(без тегов)"]) // D
+	assert.NotEqual(t, 4, digest["go"])       // C (done) не входит
 }
 
 func TestParseTagList(t *testing.T) {

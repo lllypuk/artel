@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/lllypuk/agent-shatrov/internal/storage"
 )
@@ -124,8 +126,10 @@ func (r *ReadingListTool) execSave(ctx context.Context, chatID int64, a readingL
 
 	content, fetchErr := r.fetch.Execute(ctx, fetchArgs)
 	if fetchErr != nil {
-		// Save with empty content rather than fail entirely.
 		content = ""
+	} else {
+		// Strip "Content from <url>:\n\n" wrapper added by WebFetchTool.
+		content = stripFetchPrefix(content)
 	}
 
 	title := a.Title
@@ -133,12 +137,9 @@ func (r *ReadingListTool) execSave(ctx context.Context, chatID int64, a readingL
 		title = extractTitleFromContent(content, a.URL)
 	}
 
-	// Store a trimmed version to avoid huge DB entries (keep first 50KB).
+	// Store a trimmed version to avoid huge DB entries (keep first 50KB at a rune boundary).
 	const maxContentBytes = 50 * 1024
-	storedContent := content
-	if len(storedContent) > maxContentBytes {
-		storedContent = storedContent[:maxContentBytes]
-	}
+	storedContent := truncateAtRuneBoundary(content, maxContentBytes)
 
 	id, err := r.db.CreateReadingItem(ctx, chatID, a.URL, title, "", storedContent, "to-read", a.Priority, a.Tags)
 	if err != nil {
@@ -157,7 +158,34 @@ func (r *ReadingListTool) execSave(ctx context.Context, chatID int64, a readingL
 	return sb.String(), nil
 }
 
-// extractTitleFromContent tries to extract a title from fetched HTML/text content.
+// stripFetchPrefix removes the "Content from <url>:\n\n" header added by WebFetchTool.
+func stripFetchPrefix(content string) string {
+	const marker = "Content from "
+	if !strings.HasPrefix(content, marker) {
+		return content
+	}
+	if _, after, ok := strings.Cut(content, "\n\n"); ok {
+		return after
+	}
+	if _, after, ok := strings.Cut(content, "\n"); ok {
+		return after
+	}
+	return content
+}
+
+// truncateAtRuneBoundary truncates s to at most maxBytes bytes, ensuring no
+// multi-byte UTF-8 rune is split.
+func truncateAtRuneBoundary(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	// Walk back from maxBytes until we find the start of a rune.
+	n := maxBytes
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
 func extractTitleFromContent(content, fallbackURL string) string {
 	if content == "" {
 		return fallbackURL
@@ -286,8 +314,14 @@ func (r *ReadingListTool) execDigest(ctx context.Context, chatID int64) (string,
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Unread items: %d total\n", total)
-	for tag, count := range counts {
-		fmt.Fprintf(&sb, "  %s: %d\n", tag, count)
+	// Sort tags for stable, readable output.
+	keys := make([]string, 0, len(counts))
+	for tag := range counts {
+		keys = append(keys, tag)
+	}
+	sort.Strings(keys)
+	for _, tag := range keys {
+		fmt.Fprintf(&sb, "  %s: %d\n", tag, counts[tag])
 	}
 	return sb.String(), nil
 }

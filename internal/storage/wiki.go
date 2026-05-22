@@ -188,6 +188,15 @@ func (s *DB) RenameWikiPage(ctx context.Context, chatID int64, oldPath, newPath 
 		newPath, chatID, oldPath); err != nil {
 		return fmt.Errorf("update wiki_links to_path: %w", err)
 	}
+	// Rewrite [[oldPath]] → [[newPath]] in the content of all pages in this chat.
+	oldLink := "[[" + oldPath + "]]"
+	newLink := "[[" + newPath + "]]"
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE wiki_pages SET content = REPLACE(content, ?, ?), updated_at = CURRENT_TIMESTAMP
+		 WHERE chat_id = ? AND content LIKE ?`,
+		oldLink, newLink, chatID, "%"+oldLink+"%"); err != nil {
+		return fmt.Errorf("rewrite wiki page content: %w", err)
+	}
 	return tx.Commit()
 }
 
@@ -244,15 +253,18 @@ func (s *DB) SearchWikiPages(ctx context.Context, chatID int64, query string) ([
 }
 
 func (s *DB) searchWikiPagesFTS(ctx context.Context, chatID int64, query string) ([]*WikiPage, error) {
+	// Quote each term to prevent FTS5 operator injection from user input.
+	safeQuery := buildFTSQuery(query)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT p.id, p.chat_id, p.path, p.title, p.content, p.tags, p.created_at, p.updated_at
 		 FROM wiki_pages_fts f
 		 JOIN wiki_pages p ON p.id = f.rowid
 		 WHERE p.chat_id = ? AND wiki_pages_fts MATCH ?
-		 ORDER BY rank`,
-		chatID, query)
+		 ORDER BY f.rank`,
+		chatID, safeQuery)
 	if err != nil {
-		return nil, fmt.Errorf("fts search wiki pages: %w", err)
+		// FTS failed (e.g. malformed query) — fall back to LIKE search.
+		return s.searchWikiPagesLike(ctx, chatID, query)
 	}
 	defer rows.Close()
 	return scanWikiPageRows(rows)
@@ -344,12 +356,15 @@ func (s *DB) UpdateReadingItem(ctx context.Context, chatID, id int64, title, sta
 		tags = existing.Tags
 	}
 	var readAt any
-	switch {
-	case markRead || status == "done":
-		readAt = time.Now().UTC().Format("2006-01-02 15:04:05")
-	case existing.ReadAt != nil:
-		readAt = existing.ReadAt.UTC().Format("2006-01-02 15:04:05")
+	if markRead || status == "done" {
+		// Preserve existing read-at timestamp if already done; otherwise record now.
+		if existing.ReadAt != nil {
+			readAt = existing.ReadAt.UTC().Format("2006-01-02 15:04:05")
+		} else {
+			readAt = time.Now().UTC().Format("2006-01-02 15:04:05")
+		}
 	}
+	// else: status != "done" and markRead is false → readAt stays nil → NULL in DB
 	_, err = s.db.ExecContext(ctx,
 		`UPDATE reading_list SET title = ?, status = ?, priority = ?, tags = ?, read_at = ?
 		 WHERE chat_id = ? AND id = ?`,
@@ -433,7 +448,7 @@ func scanReadingItemRows(rows *sql.Rows) ([]*ReadingItem, error) {
 // ReadingListDigest returns a count of to-read items grouped by tag.
 func (s *DB) ReadingListDigest(ctx context.Context, chatID int64) (map[string]int, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT tags FROM reading_list WHERE chat_id = ? AND status = 'to-read'`,
+		`SELECT tags FROM reading_list WHERE chat_id = ? AND status IN ('to-read', 'reading')`,
 		chatID)
 	if err != nil {
 		return nil, fmt.Errorf("reading list digest: %w", err)
@@ -455,7 +470,10 @@ func (s *DB) ReadingListDigest(ctx context.Context, chatID int64) (map[string]in
 			}
 		}
 	}
-	return counts, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return counts, nil
 }
 
 // parseTagList parses a tags string (comma-separated or JSON array) into a slice.

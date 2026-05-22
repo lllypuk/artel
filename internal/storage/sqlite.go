@@ -326,6 +326,7 @@ func (s *DB) migrate(ctx context.Context) error {
 			to_path   TEXT NOT NULL,
 			PRIMARY KEY (chat_id, from_path, to_path)
 		)`,
+		`CREATE INDEX IF NOT EXISTS idx_wiki_links_backlinks ON wiki_links(chat_id, to_path)`,
 		// Reading list table (K-4)
 		`CREATE TABLE IF NOT EXISTS reading_list (
 			id       INTEGER PRIMARY KEY AUTOINCREMENT,
