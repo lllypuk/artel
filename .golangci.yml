@@ -54,27 +54,27 @@ linters:
         - whyNoLint
         - exitAfterDefer  # os.Exit in main after deferred log file close is intentional
 
+  exclusions:
+    rules:
+      # defer Close() errors are intentionally ignored (standard Go pattern)
+      - source: "defer .*\\.Close\\(\\)"
+        linters:
+          - errcheck
+
+      # sqlite.go uses non-context DB methods (context refactor is a separate task)
+      - path: "internal/storage/sqlite\\.go"
+        linters:
+          - noctx
+
+      # Test files — relax security and error-check rules
+      - path: "_test\\.go"
+        linters:
+          - gosec
+          - errcheck
+
 issues:
   max-issues-per-linter: 50
   max-same-issues: 5
-
-exclusions:
-  rules:
-    # defer Close() errors are intentionally ignored (standard Go pattern)
-    - source: "defer .*\\.Close\\(\\)"
-      linters:
-        - errcheck
-
-    # sqlite.go uses non-context DB methods (context refactor is a separate task)
-    - path: "internal/storage/sqlite\\.go"
-      linters:
-        - noctx
-
-    # Test files — relax security and error-check rules
-    - path: "_test\\.go"
-      linters:
-        - gosec
-        - errcheck
 
 formatters:
   enable:
