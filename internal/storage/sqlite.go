@@ -277,6 +277,29 @@ func (s *DB) migrate(ctx context.Context) error {
 			UNIQUE(chat_id, name)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_workout_templates_chat ON workout_templates(chat_id)`,
+		// Monitor checks table (G-1)
+		`CREATE TABLE IF NOT EXISTS monitor_checks (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			site_url TEXT NOT NULL,
+			site_name TEXT NOT NULL,
+			checked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			status_code INTEGER DEFAULT 0,
+			response_ms INTEGER DEFAULT 0,
+			is_up INTEGER NOT NULL DEFAULT 1,
+			error_text TEXT DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_monitor_checks_url ON monitor_checks(site_url, checked_at DESC)`,
+		// Monitor state table: last known state per site (G-1)
+		`CREATE TABLE IF NOT EXISTS monitor_state (
+			site_url TEXT PRIMARY KEY,
+			site_name TEXT NOT NULL DEFAULT '',
+			is_up INTEGER NOT NULL DEFAULT 1,
+			last_checked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			last_status_code INTEGER DEFAULT 0,
+			last_response_ms INTEGER DEFAULT 0,
+			last_error TEXT DEFAULT '',
+			down_since_at DATETIME
+		)`,
 	}
 
 	// Execute core migrations (required)
