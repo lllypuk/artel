@@ -125,10 +125,7 @@ func (m *MonitorTool) execCheck(ctx context.Context, targetURL string) (string, 
 
 	for _, site := range sites {
 		result := m.pingSite(ctx, site)
-		if err := m.saveCheck(ctx, result); err != nil {
-			// non-fatal: log but continue
-			_ = err
-		}
+		_ = m.saveCheck(ctx, result) // non-fatal: DB error doesn't affect check result
 		writeCheckResult(&sb, result)
 	}
 	return sb.String(), nil
