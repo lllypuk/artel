@@ -60,17 +60,21 @@ cp config.example.yaml config.yaml
 
 ### Скрипт add-user.sh (рекомендуется)
 
-Самый быстрый способ — использовать готовый скрипт. Все 5 аргументов обязательны:
+Самый быстрый способ — использовать готовый скрипт. Секреты передаются через переменные окружения:
 
 ```bash
-./scripts/add-user.sh <username> <telegram_token> <chat_id> <api_key> <llm_base_url>
+TELEGRAM_TOKEN=... LLM_API_KEY=... ./scripts/add-user.sh <username> <chat_id> <llm_base_url>
 ```
 
 Пример:
 
 ```bash
-./scripts/add-user.sh alice "1234567890:AAF..." 123456789 "my-api-key" "https://api.z.ai/api/coding/paas/v4"
+export TELEGRAM_TOKEN="1234567890:AAF..."
+export LLM_API_KEY="my-api-key"
+./scripts/add-user.sh alice 123456789 "https://api.z.ai/api/coding/paas/v4"
 ```
+
+> **Важно:** передавай секреты через переменные окружения, а не позиционными аргументами — так они не попадают в shell history и не видны в `ps`.
 
 Скрипт автоматически:
 - Создаёт контейнер с нужными env vars
@@ -82,12 +86,15 @@ cp config.example.yaml config.yaml
 ### Вариант A: вручную через env vars
 
 ```bash
+export TELEGRAM_TOKEN="1234567890:AAF..."
+export LLM_API_KEY="..."
+
 docker run -d \
   --name agent-username \
   --restart unless-stopped \
-  -e TELEGRAM_TOKEN="1234567890:AAF..." \
+  -e TELEGRAM_TOKEN \
   -e TELEGRAM_ALLOWED_USERS="123456789" \
-  -e LLM_API_KEY="..." \
+  -e LLM_API_KEY \
   -e LLM_BASE_URL="https://api.z.ai/api/coding/paas/v4" \
   -v agent-username-data:/app/data \
   ghcr.io/lllypuk/agent-shatrov:latest

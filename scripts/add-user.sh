@@ -1,39 +1,51 @@
 #!/usr/bin/env bash
 # add-user.sh — запускает Docker-контейнер агента для нового пользователя.
-# Использование: ./scripts/add-user.sh <username> <telegram_token> <chat_id> <api_key> <llm_base_url>
+# Использование: TELEGRAM_TOKEN=... LLM_API_KEY=... ./scripts/add-user.sh <username> <chat_id> <llm_base_url>
 #
 # Переменные окружения:
-#   IMAGE        — образ Docker (по умолчанию: ghcr.io/lllypuk/agent-shatrov:latest)
+#   TELEGRAM_TOKEN   — токен бота от @BotFather (обязательный)
+#   LLM_API_KEY      — API-ключ LLM (обязательный)
+#   IMAGE            — образ Docker (по умолчанию: ghcr.io/lllypuk/agent-shatrov:latest)
 
 set -euo pipefail
 
 IMAGE="${IMAGE:-ghcr.io/lllypuk/agent-shatrov:latest}"
 
 usage() {
-    echo "Использование: $0 <username> <telegram_token> <chat_id> <api_key> <llm_base_url>"
+    echo "Использование: TELEGRAM_TOKEN=... LLM_API_KEY=... $0 <username> <chat_id> <llm_base_url>"
     echo ""
     echo "  username        — имя пользователя (латиница, цифры, дефис)"
-    echo "  telegram_token  — токен бота от @BotFather"
     echo "  chat_id         — chat_id пользователя"
-    echo "  api_key         — API-ключ LLM (обязательный)"
-    echo "  llm_base_url    — Base URL LLM API, например https://api.z.ai/api/coding/paas/v4 (обязательный)"
+    echo "  llm_base_url    — Base URL LLM API, например https://api.z.ai/api/coding/paas/v4"
     echo ""
-    echo "Переменные окружения:"
+    echo "Переменные окружения (секреты):"
+    echo "  TELEGRAM_TOKEN  — токен бота от @BotFather (обязательный)"
+    echo "  LLM_API_KEY     — API-ключ LLM (обязательный)"
     echo "  IMAGE           — Docker-образ (по умолчанию: ghcr.io/lllypuk/agent-shatrov:latest)"
     exit 1
 }
 
-if [ $# -lt 5 ]; then
+if [ $# -lt 3 ]; then
     echo "Ошибка: недостаточно аргументов." >&2
     echo "" >&2
     usage
 fi
 
+if [ -z "${TELEGRAM_TOKEN:-}" ]; then
+    echo "Ошибка: переменная окружения TELEGRAM_TOKEN не задана." >&2
+    echo "Пример: TELEGRAM_TOKEN=... LLM_API_KEY=... $0 ..." >&2
+    exit 1
+fi
+
+if [ -z "${LLM_API_KEY:-}" ]; then
+    echo "Ошибка: переменная окружения LLM_API_KEY не задана." >&2
+    echo "Пример: TELEGRAM_TOKEN=... LLM_API_KEY=... $0 ..." >&2
+    exit 1
+fi
+
 USERNAME="$1"
-TELEGRAM_TOKEN="$2"
-CHAT_ID="$3"
-API_KEY="$4"
-LLM_BASE_URL_VAL="$5"
+CHAT_ID="$2"
+LLM_BASE_URL_VAL="$3"
 
 CONTAINER_NAME="agent-${USERNAME}"
 VOLUME_NAME="agent-${USERNAME}-data"
@@ -57,7 +69,7 @@ docker run -d \
     --restart unless-stopped \
     -e "TELEGRAM_TOKEN=${TELEGRAM_TOKEN}" \
     -e "TELEGRAM_ALLOWED_USERS=${CHAT_ID}" \
-    -e "LLM_API_KEY=${API_KEY}" \
+    -e "LLM_API_KEY=${LLM_API_KEY}" \
     -e "LLM_BASE_URL=${LLM_BASE_URL_VAL}" \
     -v "${VOLUME_NAME}:/app/data" \
     "$IMAGE"
