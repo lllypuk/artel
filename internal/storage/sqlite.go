@@ -15,6 +15,7 @@ type DB struct {
 	db          *sql.DB
 	hasFTS      bool // true if FTS5 virtual table for news was created successfully
 	hasNotesFTS bool // true if FTS5 virtual table for notes was created successfully
+	hasWikiFTS  bool // true if FTS5 virtual table for wiki pages was created successfully
 }
 
 // Open creates or opens the SQLite database and runs migrations.
@@ -48,6 +49,11 @@ func (s *DB) HasFTS() bool {
 // HasNotesFTS returns true if FTS5 full-text search for notes is available.
 func (s *DB) HasNotesFTS() bool {
 	return s.hasNotesFTS
+}
+
+// HasWikiFTS returns true if FTS5 full-text search for wiki pages is available.
+func (s *DB) HasWikiFTS() bool {
+	return s.hasWikiFTS
 }
 
 func dropTriggers(ctx context.Context, db *sql.DB, names ...string) {
@@ -300,6 +306,43 @@ func (s *DB) migrate(ctx context.Context) error {
 			last_error TEXT DEFAULT '',
 			down_since_at DATETIME
 		)`,
+		// Wiki pages table (K-1)
+		`CREATE TABLE IF NOT EXISTS wiki_pages (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			chat_id    INTEGER NOT NULL,
+			path       TEXT NOT NULL,
+			title      TEXT NOT NULL,
+			content    TEXT NOT NULL DEFAULT '',
+			tags       TEXT NOT NULL DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(chat_id, path)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_wiki_pages_chat ON wiki_pages(chat_id)`,
+		// Wiki links table (K-2)
+		`CREATE TABLE IF NOT EXISTS wiki_links (
+			chat_id   INTEGER NOT NULL,
+			from_path TEXT NOT NULL,
+			to_path   TEXT NOT NULL,
+			PRIMARY KEY (chat_id, from_path, to_path)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_wiki_links_backlinks ON wiki_links(chat_id, to_path)`,
+		// Reading list table (K-4)
+		`CREATE TABLE IF NOT EXISTS reading_list (
+			id       INTEGER PRIMARY KEY AUTOINCREMENT,
+			chat_id  INTEGER NOT NULL,
+			url      TEXT NOT NULL DEFAULT '',
+			title    TEXT NOT NULL,
+			summary  TEXT NOT NULL DEFAULT '',
+			content  TEXT NOT NULL DEFAULT '',
+			status   TEXT NOT NULL DEFAULT 'to-read',
+			priority TEXT NOT NULL DEFAULT 'medium',
+			tags     TEXT NOT NULL DEFAULT '',
+			saved_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			read_at  DATETIME
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_reading_list_chat ON reading_list(chat_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_reading_list_status ON reading_list(chat_id, status)`,
 	}
 
 	// Execute core migrations (required)
@@ -355,6 +398,43 @@ func (s *DB) migrate(ctx context.Context) error {
 		s.hasNotesFTS = true
 	} else {
 		dropTriggers(ctx, s.db, "notes_ai", "notes_ad", "notes_au")
+	}
+
+	// Wiki pages FTS5 (optional)
+	wikiFTS5Table := `CREATE VIRTUAL TABLE IF NOT EXISTS wiki_pages_fts USING fts5(
+		path, title, content, tags,
+		tokenize='porter unicode61'
+	)`
+	wikiFTS5Triggers := []string{
+		`CREATE TRIGGER IF NOT EXISTS wiki_pages_ai AFTER INSERT ON wiki_pages BEGIN
+			INSERT INTO wiki_pages_fts(rowid, path, title, content, tags)
+			VALUES (new.id, new.path, new.title, new.content, new.tags);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS wiki_pages_ad AFTER DELETE ON wiki_pages BEGIN
+			DELETE FROM wiki_pages_fts WHERE rowid = old.id;
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS wiki_pages_au AFTER UPDATE ON wiki_pages BEGIN
+			DELETE FROM wiki_pages_fts WHERE rowid = old.id;
+			INSERT INTO wiki_pages_fts(rowid, path, title, content, tags)
+			VALUES (new.id, new.path, new.title, new.content, new.tags);
+		END`,
+	}
+	if _, err := s.db.ExecContext(ctx, wikiFTS5Table); err == nil {
+		dropTriggers(ctx, s.db, "wiki_pages_ai", "wiki_pages_ad", "wiki_pages_au")
+		for _, trigger := range wikiFTS5Triggers {
+			_, _ = s.db.ExecContext(ctx, trigger)
+		}
+		// Populate FTS index for pages that existed before FTS was added.
+		var ftsCnt, pagesCnt int
+		_ = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM wiki_pages_fts").Scan(&ftsCnt)
+		_ = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM wiki_pages").Scan(&pagesCnt)
+		if ftsCnt == 0 && pagesCnt > 0 {
+			_, _ = s.db.ExecContext(ctx,
+				"INSERT INTO wiki_pages_fts(rowid, path, title, content, tags) SELECT id, path, title, content, tags FROM wiki_pages")
+		}
+		s.hasWikiFTS = true
+	} else {
+		dropTriggers(ctx, s.db, "wiki_pages_ai", "wiki_pages_ad", "wiki_pages_au")
 	}
 
 	// Execute FTS5 migrations (optional - may fail if FTS5 not compiled in)
