@@ -147,16 +147,16 @@ cmd/agent/
 
 ### Task 3: Инструмент `reading_list`
 
-- [ ] Создать `internal/tools/reading_list.go` реализующий интерфейс `Tool`
-- [ ] Операции:
+- [x] Создать `internal/tools/reading_list.go` реализующий интерфейс `Tool`
+- [x] Операции:
   - `save` — принять URL, вызвать `web_fetch` (через `WebFetchTool.Execute`), сохранить контент; LLM-саммари не делать (агент сам резюмирует при ответе пользователю)
   - `add` — добавить закладку без fetching (URL + title)
   - `list` — список с опциональными фильтрами `status`, `tags`, `priority`
   - `get` — полный контент записи по id
   - `update` — изменить status / tags / priority / title
   - `delete` — удалить запись
-- [ ] Зарегистрировать в `cmd/agent/tools.go`
-- [ ] `make lint test` — все проверки зелёные
+- [x] Зарегистрировать в `cmd/agent/main.go`
+- [x] `make lint test` — все проверки зелёные
 
 ### Task 4: Unified search
 
