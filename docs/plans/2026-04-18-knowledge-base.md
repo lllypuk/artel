@@ -126,15 +126,15 @@ cmd/agent/
 
 ### Task 1: DDL-миграции и storage/wiki.go
 
-- [ ] Добавить DDL в `internal/storage/sqlite.go`: таблицы `wiki_pages`, `wiki_pages_fts` (с триггерами), `wiki_links`, `reading_list` и индексы к ним (в функцию `migrate`, в секцию optional migrations по образцу других таблиц)
-- [ ] Добавить флаги `hasWikiFTS bool` в struct `DB` и метод `HasWikiFTS() bool`
-- [ ] Создать `internal/storage/wiki.go` с типами и CRUD:
+- [x] Добавить DDL в `internal/storage/sqlite.go`: таблицы `wiki_pages`, `wiki_pages_fts` (с триггерами), `wiki_links`, `reading_list` и индексы к ним (в функцию `migrate`, в секцию optional migrations по образцу других таблиц)
+- [x] Добавить флаги `hasWikiFTS bool` в struct `DB` и метод `HasWikiFTS() bool`
+- [x] Создать `internal/storage/wiki.go` с типами и CRUD:
   - Типы: `WikiPage`, `WikiLink`, `ReadingItem`
   - Функции wiki: `CreateWikiPage`, `GetWikiPage`, `UpdateWikiPage`, `DeleteWikiPage`, `ListWikiPages` (дочерние по prefix), `AllWikiPages` (все страницы чата), `RenameWikiPage` (транзакция: UPDATE wiki_pages + UPDATE wiki_links)
   - Функции wiki_links: `UpsertWikiLinks` (replace all links for a page), `GetBacklinks`
   - Функции reading_list: `CreateReadingItem`, `GetReadingItem`, `UpdateReadingItem`, `DeleteReadingItem`, `ListReadingItems` (с фильтрами status/tags)
-- [ ] Написать тесты в `internal/storage/wiki_test.go` (основные операции + rename cascade)
-- [ ] `make lint test` — все проверки зелёные
+- [x] Написать тесты в `internal/storage/wiki_test.go` (основные операции + rename cascade)
+- [x] `make lint test` — все проверки зелёные
 
 ### Task 2: Инструмент `wiki`
 
