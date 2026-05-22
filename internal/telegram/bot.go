@@ -205,25 +205,28 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 }
 
 const helpText = "\U0001F916 **Agent Shatrov**\n\n" +
-	"Просто напиши что нужно — агент сам выберет инструмент.\n\n" +
-	"**Команды:**\n" +
+	"**Что я умею:**\n" +
+	"\U0001F4DD Заметки — сохраняю и ищу по тегам\n" +
+	"⏰ Напоминания — напомню в нужное время\n" +
+	"\U0001F324 Погода — текущая и прогноз\n" +
+	"\U0001F4CA Акции — котировки MOEX и US рынков\n" +
+	"\U0001F50D Поиск — ищу в интернете\n" +
+	"\U0001F310 Веб — читаю страницы по URL\n" +
+	"\U0001F4F0 Новости — RSS/Atom агрегация\n" +
+	"\U0001F4C5 Дисциплина — дневные/недельные ревью\n" +
+	"\U0001F3AF Цели — OKR трекинг\n" +
+	"\U0001F4AA Тренировки — логирование и статистика\n" +
+	"\U0001F5A5 Браузер — скриншоты, навигация, автоматизация _(включить в config.yaml)_\n" +
+	"\U0001F4CE Файлы — отправь документ или фото в чат _(включить в config.yaml)_\n" +
+	"\U0001F4BB Код — запуск Python, Go, Bash _(включить в config.yaml)_\n\n" +
+	"**Системные команды:**\n" +
 	"/new — начать новый диалог (сброс контекста)\n" +
 	"/model — показать / сменить модель LLM\n" +
 	"/provider — показать / сменить LLM-провайдер\n" +
 	"/context — размер и статистика текущего контекста\n" +
 	"/status — аптайм, статистика БД и токенов\n" +
 	"/help — эта справка\n\n" +
-	"**Что умеет агент:**\n" +
-	"\U0001F4DD Заметки — создать, найти, прочитать, редактировать, удалить\n" +
-	"⏰ Напоминания — создать, список, отменить (разовые и повторяющиеся)\n" +
-	"\U0001F50D Поиск в интернете (Brave / Serper / DuckDuckGo)\n" +
-	"\U0001F310 Чтение веб-страниц\n" +
-	"\U0001F324 Погода — текущие условия и прогноз для любого города\n" +
-	"\U0001F5A5 Браузер — скриншоты, навигация, автоматизация\n" +
-	"\U0001F4F0 Новости — RSS/Atom-фиды, поиск, избранное\n" +
-	"\U0001F4CE Файлы — отправь документ или фото в чат\n" +
-	"\U0001F4BB Запуск кода — Python, Go, Bash (изолированное окружение)\n" +
-	"\U0001F6E0 Самообновление кода через pi_coder"
+	"Пишите свободно — не нужно знать специальные команды. Просто опишите что нужно."
 
 func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 	parts := strings.Fields(text)
@@ -232,9 +235,16 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 	switch cmd {
 	case "/start":
 		b.sendText(chatID, "👋 Привет! Я твой персональный AI-агент.\n\n"+
-			"Просто напиши что нужно — найду, запомню, выполню.\n\n"+
-			"/help — полная справка\n"+
+			"Просто напиши что нужно — я сам выберу нужный инструмент.\n\n"+
+			"**Например:**\n"+
+			"• «Напомни мне завтра в 10:00 про встречу»\n"+
+			"• «Запомни идею: сделать X»\n"+
+			"• «Какая погода в Москве на выходные?»\n"+
+			"• «Запиши тренировку: жим 3×10 по 80 кг»\n"+
+			"• «Найди последние новости про Go 1.24»\n\n"+
+			"/help — полный список возможностей\n"+
 			"/new — начать новый диалог")
+		b.maybeSendOnboarding(ctx, chatID)
 	case "/new":
 		if err := b.agent.NewConversation(ctx, chatID); err != nil {
 			b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
@@ -254,6 +264,33 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 
 	default:
 		b.sendText(chatID, "Неизвестная команда. /help для справки.")
+	}
+}
+
+const onboardingText = "👋 Это ваш первый запуск! Вот что можно попробовать:\n\n" +
+	"• «Напомни мне завтра в 10 утра позвонить маме»\n" +
+	"• «Какая погода в Москве на выходные?»\n" +
+	"• «Запомни: хорошая идея для проекта — ...»\n" +
+	"• «Найди информацию про Go generics»\n" +
+	"• «Какой курс доллара сегодня?»\n\n" +
+	"Пишите свободно — я пойму любой запрос на русском языке! 🚀"
+
+// maybeSendOnboarding sends the onboarding message if the chat has no conversation history.
+func (b *Bot) maybeSendOnboarding(ctx context.Context, chatID int64) {
+	if b.db == nil {
+		return
+	}
+	conv, err := b.db.GetActiveConversation(ctx, chatID)
+	if err != nil {
+		b.logger.Warn("onboarding: failed to check conversation history", "chat_id", chatID, "error", err)
+		return
+	}
+	if conv == nil {
+		b.sendText(chatID, onboardingText)
+		// Create a conversation so subsequent /start calls don't repeat the onboarding.
+		if err := b.agent.NewConversation(ctx, chatID); err != nil {
+			b.logger.Warn("onboarding: failed to create conversation", "chat_id", chatID, "error", err)
+		}
 	}
 }
 
@@ -726,7 +763,9 @@ func (b *Bot) downloadTelegramFile(ctx context.Context, fileID string) ([]byte, 
 	if err != nil {
 		return nil, fmt.Errorf("download: %w", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d when downloading file", resp.StatusCode)
 	}

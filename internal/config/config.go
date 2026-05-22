@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -172,22 +174,23 @@ type FeedConfig struct {
 }
 
 func Load(path string) (*Config, error) {
+	var cfg Config
 	data, err := os.ReadFile(path)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
-
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
+	if err == nil {
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			return nil, fmt.Errorf("parsing config: %w", err)
+		}
 	}
+
+	// Override with env vars if set.
+	cfg.applyEnvOverrides()
 
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
-
-	// Override with env vars if set
-	cfg.applyEnvOverrides()
 
 	return &cfg, nil
 }
@@ -199,9 +202,12 @@ func (c *Config) validate() error {
 	if len(c.Telegram.AllowedUsers) == 0 {
 		return fmt.Errorf("telegram.allowed_users must have at least one user")
 	}
-	// api_key is required only when providers are not configured.
+	// api_key and base_url are required only when providers are not configured.
 	if len(c.LLM.Providers) == 0 && c.LLM.APIKey == "" {
 		return fmt.Errorf("llm.api_key is required (or configure llm.providers)")
+	}
+	if len(c.LLM.Providers) == 0 && c.LLM.BaseURL == "" {
+		return fmt.Errorf("llm.base_url is required (or set LLM_BASE_URL env var)")
 	}
 	// Validate provider configs.
 	for i, p := range c.LLM.Providers {
@@ -237,7 +243,43 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("TELEGRAM_TOKEN"); v != "" {
 		c.Telegram.Token = v
 	}
-	if v := os.Getenv("GLM_API_KEY"); v != "" {
+	if v := os.Getenv("TELEGRAM_ALLOWED_USERS"); v != "" {
+		users, err := parseAllowedUsersCSV(v)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "TELEGRAM_ALLOWED_USERS: %v, skipping env override\n", err)
+		} else if len(users) > 0 {
+			c.Telegram.AllowedUsers = users
+		}
+	}
+	if v := os.Getenv("LLM_API_KEY"); v != "" {
+		if len(c.LLM.Providers) > 0 {
+			fmt.Fprintf(os.Stderr, "Warning: LLM_API_KEY env var has no effect when llm.providers is configured; set API keys per-provider in config file\n")
+		}
+		c.LLM.APIKey = v
+	} else if v := os.Getenv("GLM_API_KEY"); v != "" {
 		c.LLM.APIKey = v
 	}
+	if v := os.Getenv("LLM_BASE_URL"); v != "" {
+		c.LLM.BaseURL = v
+	}
+	if v := os.Getenv("WEB_API_KEY"); v != "" {
+		c.Web.APIKey = v
+	}
+	if v := os.Getenv("LOG_LEVEL"); v != "" {
+		c.Logging.Level = v
+	}
+}
+
+func parseAllowedUsersCSV(value string) ([]int64, error) {
+	parts := strings.Split(value, ",")
+	users := make([]int64, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		userID, err := strconv.ParseInt(trimmed, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid value %q", trimmed)
+		}
+		users = append(users, userID)
+	}
+	return users, nil
 }

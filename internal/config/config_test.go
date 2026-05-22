@@ -1,8 +1,10 @@
 package config_test
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lllypuk/agent-shatrov/internal/config"
@@ -15,6 +17,35 @@ func writeTempConfig(t *testing.T, content string) string {
 		t.Fatalf("write temp config: %v", err)
 	}
 	return path
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+	defer func() {
+		os.Stderr = oldStderr
+	}()
+
+	os.Stderr = w
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close stderr reader: %v", err)
+	}
+
+	return string(output)
 }
 
 func TestLoadValid(t *testing.T) {
@@ -53,9 +84,10 @@ database:
 }
 
 func TestLoadMissingFile(t *testing.T) {
+	// A missing config file is tolerated; validation will fail because required fields are absent.
 	_, err := config.Load(filepath.Join(t.TempDir(), "nonexistent.yaml"))
 	if err == nil {
-		t.Fatal("expected error for missing file")
+		t.Fatal("expected validation error when no config and no env vars")
 	}
 }
 
@@ -73,10 +105,14 @@ telegram:
   allowed_users: [123]
 llm:
   api_key: "key"
+  base_url: "https://api.example.com"
 `)
 	_, err := config.Load(path)
 	if err == nil {
 		t.Fatal("expected validation error for missing token")
+	}
+	if !strings.Contains(err.Error(), "token") {
+		t.Errorf("expected error to mention 'token', got: %v", err)
 	}
 }
 
@@ -86,10 +122,14 @@ telegram:
   token: "tok"
 llm:
   api_key: "key"
+  base_url: "https://api.example.com"
 `)
 	_, err := config.Load(path)
 	if err == nil {
 		t.Fatal("expected validation error for empty allowed_users")
+	}
+	if !strings.Contains(err.Error(), "allowed_users") {
+		t.Errorf("expected error to mention 'allowed_users', got: %v", err)
 	}
 }
 
@@ -98,10 +138,15 @@ func TestValidateMissingAPIKey(t *testing.T) {
 telegram:
   token: "tok"
   allowed_users: [1]
+llm:
+  base_url: "https://api.example.com"
 `)
 	_, err := config.Load(path)
 	if err == nil {
 		t.Fatal("expected validation error for missing api_key")
+	}
+	if !strings.Contains(err.Error(), "api_key") {
+		t.Errorf("expected error to mention 'api_key', got: %v", err)
 	}
 }
 
@@ -112,6 +157,7 @@ telegram:
   allowed_users: [1]
 llm:
   api_key: "key"
+  base_url: "https://api.example.com"
 `)
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -129,9 +175,11 @@ telegram:
   allowed_users: [1]
 llm:
   api_key: "original-key"
+  base_url: "https://api.example.com"
 `)
 	t.Setenv("TELEGRAM_TOKEN", "env-token")
-	t.Setenv("GLM_API_KEY", "env-key")
+	t.Setenv("GLM_API_KEY", "legacy-env-key")
+	t.Setenv("LLM_API_KEY", "env-key")
 
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -145,9 +193,35 @@ llm:
 	}
 }
 
+func TestEnvOverrideLegacyGLMAPIKey(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "original-token"
+  allowed_users: [1]
+llm:
+  api_key: "original-key"
+  base_url: "https://api.example.com"
+`)
+	t.Setenv("GLM_API_KEY", "legacy-env-key")
+	t.Setenv("LLM_API_KEY", "")
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LLM.APIKey != "legacy-env-key" {
+		t.Errorf("expected 'legacy-env-key', got %q", cfg.LLM.APIKey)
+	}
+}
+
 func TestEnvOverridesNotAppliedWhenEmpty(t *testing.T) {
 	t.Setenv("TELEGRAM_TOKEN", "")
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "")
 	t.Setenv("GLM_API_KEY", "")
+	t.Setenv("LLM_API_KEY", "")
+	t.Setenv("LLM_BASE_URL", "")
+	t.Setenv("WEB_API_KEY", "")
+	t.Setenv("LOG_LEVEL", "")
 
 	path := writeTempConfig(t, `
 telegram:
@@ -155,6 +229,11 @@ telegram:
   allowed_users: [1]
 llm:
   api_key: "yaml-key"
+  base_url: "https://yaml.example.com"
+web:
+  api_key: "yaml-web-key"
+logging:
+  level: "warn"
 `)
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -163,8 +242,20 @@ llm:
 	if cfg.Telegram.Token != "yaml-token" {
 		t.Errorf("expected 'yaml-token', got %q", cfg.Telegram.Token)
 	}
+	if len(cfg.Telegram.AllowedUsers) != 1 || cfg.Telegram.AllowedUsers[0] != 1 {
+		t.Errorf("expected allowed_users [1], got %v", cfg.Telegram.AllowedUsers)
+	}
 	if cfg.LLM.APIKey != "yaml-key" {
 		t.Errorf("expected 'yaml-key', got %q", cfg.LLM.APIKey)
+	}
+	if cfg.LLM.BaseURL != "https://yaml.example.com" {
+		t.Errorf("expected YAML base_url, got %q", cfg.LLM.BaseURL)
+	}
+	if cfg.Web.APIKey != "yaml-web-key" {
+		t.Errorf("expected YAML web api_key, got %q", cfg.Web.APIKey)
+	}
+	if cfg.Logging.Level != "warn" {
+		t.Errorf("expected YAML log level, got %q", cfg.Logging.Level)
 	}
 }
 
@@ -175,6 +266,7 @@ telegram:
   allowed_users: [111, 222, 333]
 llm:
   api_key: "key"
+  base_url: "https://api.example.com"
 `)
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -185,6 +277,131 @@ llm:
 	}
 }
 
+func TestEnvOverridesAppliedBeforeValidation(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram: {}
+llm: {}
+`)
+	t.Setenv("TELEGRAM_TOKEN", "env-token")
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "123456789")
+	t.Setenv("LLM_API_KEY", "env-key")
+	t.Setenv("LLM_BASE_URL", "https://api.example.com")
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Telegram.Token != "env-token" {
+		t.Errorf("expected 'env-token', got %q", cfg.Telegram.Token)
+	}
+	if len(cfg.Telegram.AllowedUsers) != 1 || cfg.Telegram.AllowedUsers[0] != 123456789 {
+		t.Errorf("unexpected allowed_users: %v", cfg.Telegram.AllowedUsers)
+	}
+	if cfg.LLM.APIKey != "env-key" {
+		t.Errorf("expected 'env-key', got %q", cfg.LLM.APIKey)
+	}
+}
+
+func TestEnvOverrideTelegramAllowedUsersCSV(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+  base_url: "https://api.example.com"
+`)
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "123456789,987654321")
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Telegram.AllowedUsers) != 2 || cfg.Telegram.AllowedUsers[0] != 123456789 || cfg.Telegram.AllowedUsers[1] != 987654321 {
+		t.Errorf("unexpected allowed_users: %v", cfg.Telegram.AllowedUsers)
+	}
+}
+
+func TestEnvOverrideTelegramAllowedUsersSingleValue(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1, 2]
+llm:
+  api_key: "key"
+  base_url: "https://api.example.com"
+`)
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "123456789")
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Telegram.AllowedUsers) != 1 || cfg.Telegram.AllowedUsers[0] != 123456789 {
+		t.Errorf("unexpected allowed_users: %v", cfg.Telegram.AllowedUsers)
+	}
+}
+
+func TestEnvOverrideTelegramAllowedUsersInvalidKeepsOriginal(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1, 2]
+llm:
+  api_key: "key"
+  base_url: "https://api.example.com"
+`)
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "123,abc")
+
+	var cfg *config.Config
+	stderr := captureStderr(t, func() {
+		var err error
+		cfg, err = config.Load(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if len(cfg.Telegram.AllowedUsers) != 2 || cfg.Telegram.AllowedUsers[0] != 1 || cfg.Telegram.AllowedUsers[1] != 2 {
+		t.Errorf("expected original allowed_users [1 2], got %v", cfg.Telegram.AllowedUsers)
+	}
+	if !strings.Contains(stderr, `TELEGRAM_ALLOWED_USERS: invalid value "abc", skipping env override`) {
+		t.Fatalf("expected warning about invalid TELEGRAM_ALLOWED_USERS, got %q", stderr)
+	}
+}
+
+func TestEnvOverridesDockerFields(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+  base_url: "https://yaml.example.com"
+web:
+  api_key: "yaml-web-key"
+logging:
+  level: "warn"
+`)
+	t.Setenv("LLM_BASE_URL", "https://env.example.com")
+	t.Setenv("WEB_API_KEY", "env-web-key")
+	t.Setenv("LOG_LEVEL", "debug")
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LLM.BaseURL != "https://env.example.com" {
+		t.Errorf("expected env base_url, got %q", cfg.LLM.BaseURL)
+	}
+	if cfg.Web.APIKey != "env-web-key" {
+		t.Errorf("expected env web api_key, got %q", cfg.Web.APIKey)
+	}
+	if cfg.Logging.Level != "debug" {
+		t.Errorf("expected env log level, got %q", cfg.Logging.Level)
+	}
+}
+
 func TestProactiveConfigParsed(t *testing.T) {
 	path := writeTempConfig(t, `
 telegram:
@@ -192,6 +409,7 @@ telegram:
   allowed_users: [1]
 llm:
   api_key: "key"
+  base_url: "https://api.example.com"
 proactive:
   enabled: true
   max_messages_per_day: 5
@@ -240,6 +458,7 @@ telegram:
   allowed_users: [1]
 llm:
   api_key: "key"
+  base_url: "https://api.example.com"
 `)
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -261,6 +480,7 @@ telegram:
   allowed_users: [1]
 llm:
   api_key: "key"
+  base_url: "https://api.example.com"
 proactive:
   financial_tickers:
     - "IMOEX"
@@ -288,6 +508,7 @@ telegram:
   allowed_users: [1]
 llm:
   api_key: "key"
+  base_url: "https://api.example.com"
 stocks:
   enabled: true
   proxy: "http://127.0.0.1:2080"
@@ -298,5 +519,71 @@ stocks:
 	}
 	if cfg.Stocks.Proxy != "http://127.0.0.1:2080" {
 		t.Errorf("Stocks.Proxy: got %q, want \"http://127.0.0.1:2080\"", cfg.Stocks.Proxy)
+	}
+}
+
+func TestLoadMissingFileWithEnvVars(t *testing.T) {
+	t.Setenv("TELEGRAM_TOKEN", "env-token")
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "123456789")
+	t.Setenv("LLM_API_KEY", "env-key")
+	t.Setenv("LLM_BASE_URL", "https://api.example.com")
+
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "nonexistent.yaml"))
+	if err != nil {
+		t.Fatalf("env-only startup should succeed when file is missing: %v", err)
+	}
+	if cfg.Telegram.Token != "env-token" {
+		t.Errorf("expected 'env-token', got %q", cfg.Telegram.Token)
+	}
+	if cfg.LLM.BaseURL != "https://api.example.com" {
+		t.Errorf("expected base_url from env, got %q", cfg.LLM.BaseURL)
+	}
+}
+
+func TestValidateMissingBaseURL(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected validation error for missing base_url")
+	}
+	if !strings.Contains(err.Error(), "base_url") {
+		t.Errorf("expected error to mention 'base_url', got: %v", err)
+	}
+}
+
+func TestLLMAPIKeyWarningInMultiProviderMode(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  providers:
+    - name: "prov1"
+      base_url: "https://api.example.com"
+      api_key: "prov-key"
+      priority: 1
+`)
+	t.Setenv("LLM_API_KEY", "top-level-key")
+
+	var cfg *config.Config
+	stderr := captureStderr(t, func() {
+		var err error
+		cfg, err = config.Load(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if cfg == nil {
+		t.Fatal("expected config to be loaded")
+	}
+	if !strings.Contains(stderr, "LLM_API_KEY") {
+		t.Errorf("expected warning about LLM_API_KEY in multi-provider mode, got stderr: %q", stderr)
 	}
 }

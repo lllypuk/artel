@@ -288,6 +288,222 @@ func TestNotesIsolatedByChat(t *testing.T) {
 	}
 }
 
+// ── Notes CRUD ────────────────────────────────────────────────────────────────
+
+func TestGetNote(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	id, err := db.CreateNote(ctx, 1300, "Original Title", "Original Content", "tag1,tag2")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+
+	note, err := db.GetNote(ctx, id, 1300)
+	if err != nil {
+		t.Fatalf("get note: %v", err)
+	}
+	if note == nil {
+		t.Fatal("expected note, got nil")
+	}
+	if note.ID != id {
+		t.Errorf("expected id %d, got %d", id, note.ID)
+	}
+	if note.ChatID != 1300 {
+		t.Errorf("expected chat_id 1300, got %d", note.ChatID)
+	}
+	if note.Title != "Original Title" {
+		t.Errorf("expected title %q, got %q", "Original Title", note.Title)
+	}
+	if note.Content != "Original Content" {
+		t.Errorf("expected content %q, got %q", "Original Content", note.Content)
+	}
+	if note.Tags != "tag1,tag2" {
+		t.Errorf("expected tags %q, got %q", "tag1,tag2", note.Tags)
+	}
+	if note.CreatedAt.IsZero() {
+		t.Error("expected created_at to be set")
+	}
+	if note.UpdatedAt.IsZero() {
+		t.Error("expected updated_at to be set")
+	}
+}
+
+func TestGetNote_NotFound(t *testing.T) {
+	db := openTestDB(t)
+
+	note, err := db.GetNote(context.Background(), 99999, 1301)
+	if err == nil {
+		t.Fatal("expected error for missing note")
+	}
+	if note != nil {
+		t.Errorf("expected nil note, got %+v", note)
+	}
+}
+
+func TestGetNote_ChatIsolation(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	id, err := db.CreateNote(ctx, 1302, "Private", "Secret", "hidden")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+
+	note, err := db.GetNote(ctx, id, 1303)
+	if err == nil {
+		t.Fatal("expected error when accessing note from another chat")
+	}
+	if note != nil {
+		t.Errorf("expected nil note, got %+v", note)
+	}
+
+	ownerNote, err := db.GetNote(ctx, id, 1302)
+	if err != nil {
+		t.Fatalf("get note as owner: %v", err)
+	}
+	if ownerNote == nil || ownerNote.Title != "Private" {
+		t.Errorf("unexpected owner note: %+v", ownerNote)
+	}
+}
+
+func TestUpdateNote(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	id, err := db.CreateNote(ctx, 1304, "Before", "Old content", "old")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+
+	before, err := db.GetNote(ctx, id, 1304)
+	if err != nil {
+		t.Fatalf("get note before update: %v", err)
+	}
+
+	if err := db.UpdateNote(ctx, id, 1304, "After", "New content", "new,updated"); err != nil {
+		t.Fatalf("update note: %v", err)
+	}
+
+	after, err := db.GetNote(ctx, id, 1304)
+	if err != nil {
+		t.Fatalf("get note after update: %v", err)
+	}
+	if after.Title != "After" {
+		t.Errorf("expected title %q, got %q", "After", after.Title)
+	}
+	if after.Content != "New content" {
+		t.Errorf("expected content %q, got %q", "New content", after.Content)
+	}
+	if after.Tags != "new,updated" {
+		t.Errorf("expected tags %q, got %q", "new,updated", after.Tags)
+	}
+	if after.CreatedAt.IsZero() || after.UpdatedAt.IsZero() {
+		t.Errorf("expected timestamps to be set, got created_at=%v updated_at=%v", after.CreatedAt, after.UpdatedAt)
+	}
+	if before.ID != after.ID {
+		t.Errorf("expected id to stay %d, got %d", before.ID, after.ID)
+	}
+	if after.ChatID != 1304 {
+		t.Errorf("expected chat_id 1304, got %d", after.ChatID)
+	}
+}
+
+func TestUpdateNote_WrongChat(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	id, err := db.CreateNote(ctx, 1305, "Before", "Original", "tag")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+
+	err = db.UpdateNote(ctx, id, 1306, "After", "Changed", "new")
+	if err == nil {
+		t.Fatal("expected error when updating note from another chat")
+	}
+
+	note, err := db.GetNote(ctx, id, 1305)
+	if err != nil {
+		t.Fatalf("get note after failed update: %v", err)
+	}
+	if note.Title != "Before" {
+		t.Errorf("expected title %q, got %q", "Before", note.Title)
+	}
+	if note.Content != "Original" {
+		t.Errorf("expected content %q, got %q", "Original", note.Content)
+	}
+	if note.Tags != "tag" {
+		t.Errorf("expected tags %q, got %q", "tag", note.Tags)
+	}
+}
+
+func TestDeleteNote(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	id, err := db.CreateNote(ctx, 1307, "Delete me", "Soon gone", "trash")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+
+	if err := db.DeleteNote(ctx, id, 1307); err != nil {
+		t.Fatalf("delete note: %v", err)
+	}
+
+	note, err := db.GetNote(ctx, id, 1307)
+	if err == nil {
+		t.Fatal("expected error when loading deleted note")
+	}
+	if note != nil {
+		t.Errorf("expected nil note after delete, got %+v", note)
+	}
+}
+
+func TestUpdateNote_NotFound(t *testing.T) {
+	db := openTestDB(t)
+
+	err := db.UpdateNote(context.Background(), 99999, 1310, "Title", "Content", "tag")
+	if err == nil {
+		t.Fatal("expected error when updating non-existent note")
+	}
+}
+
+func TestDeleteNote_NotFound(t *testing.T) {
+	db := openTestDB(t)
+
+	err := db.DeleteNote(context.Background(), 99999, 1311)
+	if err == nil {
+		t.Fatal("expected error when deleting non-existent note")
+	}
+}
+
+func TestDeleteNote_WrongChat(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	id, err := db.CreateNote(ctx, 1308, "Keep me", "Still here", "safe")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+
+	err = db.DeleteNote(ctx, id, 1309)
+	if err == nil {
+		t.Fatal("expected error when deleting note from another chat")
+	}
+
+	note, err := db.GetNote(ctx, id, 1308)
+	if err != nil {
+		t.Fatalf("get note after failed delete: %v", err)
+	}
+	if note == nil {
+		t.Fatal("expected note to remain after failed delete")
+	}
+	if note.Title != "Keep me" {
+		t.Errorf("expected title %q, got %q", "Keep me", note.Title)
+	}
+}
+
 // ── context management ─────────────────────────────────────────────────────────────────────────────────
 
 func TestGetMessagesSince(t *testing.T) {
