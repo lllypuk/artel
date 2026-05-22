@@ -18,6 +18,7 @@ cmd/agent/
   tools.go           — регистрация инструментов (registerOptionalTools)
   news.go            — setup новостей и цикл обновления фидов
   reminders.go       — планировщик напоминаний
+  monitor.go         — фоновый цикл мониторинга сайтов с Telegram-алертами
   logger.go          — настройка логгера
 internal/
   config/config.go   — загрузка config.yaml + override через env
@@ -27,24 +28,30 @@ internal/
     client.go        — HTTP-клиент к OpenAI-compatible API (single provider)
     multi.go         — MultiClient: мультипровайдер с fallback, retry, circuit breaker
   tools/
-    registry.go      — реестр инструментов, интерфейс Tool
-    notes.go         — инструмент: заметки (create/search/list/edit/delete) через SQLite
-    reminders.go     — инструмент: напоминания (create/list/delete/done, повторение)
-    shell.go         — инструмент: безопасный shell (whitelist + sandbox)
-    web_search.go    — инструмент: поиск в интернете (Brave/Serper/DuckDuckGo)
-    web_fetch.go     — инструмент: чтение веб-страниц
-    browser.go       — инструмент: автоматизация браузера (agent-browser)
-    pi_coder.go      — инструмент: доработка агента через pi
-    news.go          — инструмент: агрегация новостей (RSS/Atom/JSON)
-    weather.go       — инструмент: прогноз погоды (Open-Meteo)
-    stocks.go        — инструмент: котировки акций и индексов (Yahoo Finance + MOEX ISS)
-    stocks_moex.go   — клиент MOEX ISS API
-    stocks_yahoo.go  — клиент Yahoo Finance v8 API
-    files.go         — инструмент: управление файлами (list/read/delete)
-    code_runner.go   — инструмент: выполнение кода (Python/Go/bash)
+    registry.go        — реестр инструментов, интерфейс Tool
+    notes.go           — инструмент: заметки (create/search/list/edit/delete) через SQLite
+    reminders.go       — инструмент: напоминания (create/list/delete/done, повторение)
+    shell.go           — инструмент: безопасный shell (whitelist + sandbox)
+    web_search.go      — инструмент: поиск в интернете (Brave/Serper/DuckDuckGo)
+    web_fetch.go       — инструмент: чтение веб-страниц
+    browser.go         — инструмент: автоматизация браузера (agent-browser)
+    pi_coder.go        — инструмент: доработка агента через pi
+    news.go            — инструмент: агрегация новостей (RSS/Atom/JSON)
+    weather.go         — инструмент: прогноз погоды (Open-Meteo)
+    stocks.go          — инструмент: котировки акций и индексов (Yahoo Finance + MOEX ISS)
+    stocks_moex.go     — клиент MOEX ISS API
+    stocks_yahoo.go    — клиент Yahoo Finance v8 API
+    files.go           — инструмент: управление файлами (list/read/delete)
+    code_runner.go     — инструмент: выполнение кода (Python/Go/bash)
+    monitor.go         — инструмент: мониторинг доступности сайтов (check/list/history)
+    wiki.go            — инструмент: личная вики (create/get/edit/delete/list/tree/rename/backlinks)
+    reading_list.go    — инструмент: список для чтения (save/add/list/get/update/delete/digest)
+    knowledge_search.go — инструмент: unified поиск по вики + reading list (FTS5 + LIKE fallback)
   storage/
     sqlite.go        — SQLite: схема БД, migrations, CRUD для conversations/messages/notes
     news.go          — SQLite: новости, фиды, подписки
+    monitor.go       — SQLite: мониторинг сайтов (monitor_checks, monitor_state)
+    wiki.go          — SQLite: wiki (wiki_pages + FTS5, wiki_links); cascade rename в транзакции
   telegram/
     bot.go           — Telegram bot: long polling, auth по chat_id, обработка команд
     markdown.go      — Markdown → HTML конвертация для Telegram
@@ -208,6 +215,15 @@ news:
       category: "tech"
       enabled: false
 
+monitor:
+  enabled: false                # включить для мониторинга доступности сайтов
+  interval_minutes: 5           # интервал проверок
+  timeout_seconds: 10           # таймаут HTTP-запроса
+  proxy: ""
+  sites:
+    - url: "https://example.com"
+      name: "Мой сайт"
+
 logging:
   level: "info"                 # debug | info | warn | error
   file: "./data/agent.log"
@@ -312,11 +328,11 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 
 | Пакет                                                | Назначение                |
 |------------------------------------------------------|---------------------------|
-| `github.com/go-telegram-bot-api/telegram-bot-api/v5` | Telegram Bot API          |
-| `github.com/mattn/go-sqlite3`                        | SQLite (CGo)              |
-| `gopkg.in/yaml.v3`                                   | парсинг конфига           |
-| `github.com/stretchr/testify`                        | assertions в тестах       |
-| `github.com/mmcdole/gofeed`                          | RSS/Atom/JSON Feed парсер |
+| `github.com/go-telegram-bot-api/telegram-bot-api/v5` | Telegram Bot API               |
+| `modernc.org/sqlite`                                 | SQLite (pure Go, без CGO)      |
+| `gopkg.in/yaml.v3`                                   | парсинг конфига                |
+| `github.com/stretchr/testify`                        | assertions в тестах            |
+| `github.com/mmcdole/gofeed`                          | RSS/Atom/JSON Feed парсер      |
 
 ## Реализованные функции
 
@@ -343,6 +359,11 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 - [x] Статистика токенов — учёт prompt/completion токенов по дням, отчёт через `/status`
 - [x] Проактивные дайджесты — финансовая сводка (stocks) в утреннем брифинге; вечерний дайджест новостей (news) и
   вечерняя финансовая сводка рынков как отдельные большие сообщения; тикеры конфигурируются через `financial_tickers`
+- [x] Docker-образ (alpine, pure Go без CGO) и Docker Compose; CI/CD через GitHub Actions (lint + test + docker publish)
+- [x] Мониторинг сайтов — фоновые HTTP-проверки с алертами в Telegram при смене состояния (🔴/✅); ручная проверка через инструмент `monitor`
+- [x] Личная вики — иерархия путей (`/dev/golang`), `[[path]]` ссылки с cascade rename, backlinks; create/get/edit/delete/list/tree
+- [x] Список для чтения — сохранение URL (fetch + контент), list/get/update/delete, дайджест непрочитанных в утреннем брифинге
+- [x] Unified поиск по базе знаний — одновременный поиск по вики и reading list (FTS5 + LIKE fallback)
 
 ## Инструмент news
 
@@ -377,6 +398,50 @@ news:
 ```
 
 Управление новостями — через инструмент `news` в диалоге с агентом (не через slash-команды).
+
+## Инструмент monitor
+
+Мониторинг доступности HTTP/HTTPS сайтов с алертами в Telegram.
+
+**Возможности:**
+
+- Фоновый цикл проверяет сайты с заданным интервалом
+- Алерт при смене состояния: сайт упал 🔴 / восстановился ✅
+- Инструмент `monitor` для ручных проверок и просмотра истории
+
+**Конфигурация:**
+
+```yaml
+monitor:
+  enabled: true
+  interval_minutes: 5
+  timeout_seconds: 10
+  sites:
+    - url: "https://example.com"
+      name: "Мой сайт"
+```
+
+Управление — через инструмент `monitor` в диалоге с агентом (не через slash-команды).
+
+## База знаний (wiki + reading_list + knowledge_search)
+
+Личная база знаний с иерархической вики и списком для чтения.
+
+**wiki** — иерархические заметки с путями как в файловой системе:
+- Пути: `/dev/golang`, `/health/бег`, `/project/ideas`
+- Синтаксис `[[path]]` для ссылок между страницами
+- Cascade rename: при переименовании пути все ссылки обновляются атомарно (транзакция)
+- Операции: create/get/edit/delete/list/tree/rename/backlinks
+
+**reading_list** — список для чтения и сохранённые статьи:
+- `save` — сохранить URL (автоматически fetch контент через web_fetch)
+- `add` — добавить запись вручную (без fetch)
+- list/get/update/delete
+- `digest` — дайджест непрочитанных; включён в утренний брифинг
+
+**knowledge_search** — unified поиск сразу по вики и reading list:
+- FTS5 полнотекстовый поиск, fallback на LIKE
+- Поиск в одном запросе, результаты с указанием источника (wiki/reading_list)
 
 ---
 

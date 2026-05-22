@@ -66,6 +66,7 @@ cmd/agent/
   tools.go           — регистрация инструментов
   news.go            — setup новостей и цикл обновления фидов
   reminders.go       — планировщик напоминаний
+  monitor.go         — фоновый цикл мониторинга сайтов с Telegram-алертами
   logger.go          — настройка логгера
 internal/
   config/config.go   — конфигурация (YAML + env)
@@ -86,9 +87,15 @@ internal/
     weather.go       — прогноз погоды (Open-Meteo)
     files.go         — управление файлами (list/read/delete)
     code_runner.go   — выполнение кода (Python/Go/bash)
+    monitor.go       — мониторинг доступности сайтов (check/list/history)
+    wiki.go          — личная вики (create/get/edit/delete/list/tree/rename/backlinks)
+    reading_list.go  — список для чтения (save/add/list/get/update/delete/digest)
+    knowledge_search.go — unified поиск по вики + reading list (FTS5)
   storage/
     sqlite.go        — SQLite: диалоги, сообщения, заметки, токены
     news.go          — SQLite: новости, фиды, подписки
+    monitor.go       — SQLite: мониторинг сайтов (monitor_checks, monitor_state)
+    wiki.go          — SQLite: wiki (wiki_pages + FTS5, wiki_links), reading_list
   telegram/
     bot.go           — Telegram бот
     markdown.go      — Markdown → HTML конвертация
@@ -117,6 +124,11 @@ Makefile             — управление сервисом
 - [x] Выполнение кода — Python, Go, bash в изолированной директории с таймаутом
 - [x] Статистика токенов — учёт prompt/completion по дням через `/status`
 - [x] Переключение модели и провайдера через Telegram (`/model fast`, `/provider auto`)
+- [x] **Docker** — многоэтапный Dockerfile (alpine, pure Go); Docker Compose с named volume; CI/CD через GitHub Actions
+- [x] **Мониторинг сайтов** — фоновые HTTP-проверки, алерты в Telegram при смене состояния (🔴/✅); ручная проверка через агент
+- [x] **Личная вики** — иерархия путей (`/dev/golang`), `[[path]]` ссылки, cascade rename, backlinks; create/get/edit/delete/list/tree
+- [x] **Список для чтения** — сохранение URL (авто fetch), дайджест непрочитанного в утреннем брифинге
+- [x] **Unified поиск** по базе знаний — одновременный поиск по вики и reading list (FTS5 + LIKE fallback)
 
 ## Инструмент pi_coder
 
@@ -190,3 +202,34 @@ news:
       category: "tech"
       enabled: true
 ```
+
+## Мониторинг сайтов
+
+Агент периодически проверяет доступность HTTP/HTTPS сайтов и присылает алерт в Telegram при смене статуса (🔴 упал / ✅ восстановился). Ручная проверка и просмотр истории — через инструмент `monitor` в диалоге с агентом.
+
+**Конфигурация:**
+
+```yaml
+monitor:
+  enabled: true
+  interval_minutes: 5
+  timeout_seconds: 10
+  sites:
+    - url: "https://example.com"
+      name: "Мой сайт"
+```
+
+## База знаний (wiki + reading_list)
+
+**wiki** — личная вики с иерархией путей (как файловая система):
+- Пути: `/dev/golang`, `/health/бег`, `/project/ideas`
+- Синтаксис `[[path]]` для ссылок между страницами
+- Cascade rename: при переименовании пути все ссылки обновляются атомарно (транзакция)
+- Операции: create/get/edit/delete/list/tree/rename/backlinks
+
+**reading_list** — список для чтения и сохранённые статьи:
+- `save` — сохранить URL (автоматически fetch контент через web_fetch)
+- list/get/update/delete
+- `digest` — дайджест непрочитанных статей; включён в утренний брифинг
+
+**knowledge_search** — единый поиск по вики и reading list одновременно (FTS5 + LIKE fallback).
