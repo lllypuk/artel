@@ -27,6 +27,7 @@ type MonitorState struct {
 	LastStatusCode int
 	LastResponseMS int64
 	LastError      string
+	DownSinceAt    *time.Time // non-nil only while site is down; set on first down check
 }
 
 // InsertMonitorCheck stores one check result.
@@ -42,19 +43,25 @@ func (s *DB) InsertMonitorCheck(ctx context.Context, c MonitorCheck) error {
 
 // UpsertMonitorState creates or updates the last known state for a site.
 func (s *DB) UpsertMonitorState(ctx context.Context, st MonitorState) error {
+	var downSinceVal any
+	if st.DownSinceAt != nil {
+		downSinceVal = st.DownSinceAt.UTC().Format("2006-01-02 15:04:05")
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO monitor_state (site_url, site_name, is_up, last_checked_at, last_status_code, last_response_ms, last_error)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO monitor_state
+		   (site_url, site_name, is_up, last_checked_at, last_status_code, last_response_ms, last_error, down_since_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(site_url) DO UPDATE SET
-		   site_name       = excluded.site_name,
-		   is_up           = excluded.is_up,
-		   last_checked_at = excluded.last_checked_at,
+		   site_name        = excluded.site_name,
+		   is_up            = excluded.is_up,
+		   last_checked_at  = excluded.last_checked_at,
 		   last_status_code = excluded.last_status_code,
 		   last_response_ms = excluded.last_response_ms,
-		   last_error      = excluded.last_error`,
+		   last_error       = excluded.last_error,
+		   down_since_at    = excluded.down_since_at`,
 		st.SiteURL, st.SiteName, boolToInt(st.IsUp),
 		st.LastCheckedAt.UTC().Format("2006-01-02 15:04:05"),
-		st.LastStatusCode, st.LastResponseMS, st.LastError,
+		st.LastStatusCode, st.LastResponseMS, st.LastError, downSinceVal,
 	)
 	return err
 }
@@ -63,7 +70,7 @@ func (s *DB) UpsertMonitorState(ctx context.Context, st MonitorState) error {
 // Returns nil, nil if no state recorded yet.
 func (s *DB) GetMonitorState(ctx context.Context, siteURL string) (*MonitorState, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT site_url, site_name, is_up, last_checked_at, last_status_code, last_response_ms, last_error
+		`SELECT site_url, site_name, is_up, last_checked_at, last_status_code, last_response_ms, last_error, down_since_at
 		 FROM monitor_state WHERE site_url = ?`,
 		siteURL,
 	)
@@ -77,7 +84,7 @@ func (s *DB) GetMonitorState(ctx context.Context, siteURL string) (*MonitorState
 // GetAllMonitorStates returns last known states for all sites.
 func (s *DB) GetAllMonitorStates(ctx context.Context) ([]MonitorState, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT site_url, site_name, is_up, last_checked_at, last_status_code, last_response_ms, last_error
+		`SELECT site_url, site_name, is_up, last_checked_at, last_status_code, last_response_ms, last_error, down_since_at
 		 FROM monitor_state ORDER BY site_url`,
 	)
 	if err != nil {
@@ -137,12 +144,17 @@ type monitorStateScanner interface {
 func scanMonitorState(s monitorStateScanner) (*MonitorState, error) {
 	var st MonitorState
 	var isUpInt int
+	var downSince sql.NullTime
 	if err := s.Scan(
 		&st.SiteURL, &st.SiteName, &isUpInt, &st.LastCheckedAt,
-		&st.LastStatusCode, &st.LastResponseMS, &st.LastError,
+		&st.LastStatusCode, &st.LastResponseMS, &st.LastError, &downSince,
 	); err != nil {
 		return nil, err
 	}
 	st.IsUp = isUpInt == 1
+	if downSince.Valid {
+		t := downSince.Time.UTC()
+		st.DownSinceAt = &t
+	}
 	return &st, nil
 }

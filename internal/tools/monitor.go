@@ -126,6 +126,7 @@ func (m *MonitorTool) execCheck(ctx context.Context, targetURL string) (string, 
 	for _, site := range sites {
 		result := m.pingSite(ctx, site)
 		_ = m.saveCheck(ctx, result) // non-fatal: DB error doesn't affect check result
+		m.upsertStateAfterCheck(ctx, result, site)
 		writeCheckResult(&sb, result)
 	}
 	return sb.String(), nil
@@ -168,6 +169,35 @@ func (m *MonitorTool) pingSite(ctx context.Context, site config.MonitorSite) sto
 
 func (m *MonitorTool) saveCheck(ctx context.Context, c storage.MonitorCheck) error {
 	return m.db.InsertMonitorCheck(ctx, c)
+}
+
+// upsertStateAfterCheck updates monitor_state after a manual check.
+// Preserves down_since_at if site was already down.
+func (m *MonitorTool) upsertStateAfterCheck(ctx context.Context, result storage.MonitorCheck, site config.MonitorSite) {
+	prev, _ := m.db.GetMonitorState(ctx, site.URL)
+	st := storage.MonitorState{
+		SiteURL:        site.URL,
+		SiteName:       site.Name,
+		IsUp:           result.IsUp,
+		LastCheckedAt:  result.CheckedAt,
+		LastStatusCode: result.StatusCode,
+		LastResponseMS: result.ResponseMS,
+		LastError:      result.ErrorText,
+		DownSinceAt:    monitorDownSince(result.IsUp, result.CheckedAt, prev),
+	}
+	_ = m.db.UpsertMonitorState(ctx, st) // non-fatal
+}
+
+// monitorDownSince computes the down_since_at for a new state entry.
+func monitorDownSince(isUp bool, checkedAt time.Time, prev *storage.MonitorState) *time.Time {
+	if isUp {
+		return nil
+	}
+	if prev != nil && !prev.IsUp && prev.DownSinceAt != nil {
+		return prev.DownSinceAt
+	}
+	t := checkedAt
+	return &t
 }
 
 func writeCheckResult(sb *strings.Builder, c storage.MonitorCheck) {

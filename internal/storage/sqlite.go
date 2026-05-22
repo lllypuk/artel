@@ -297,7 +297,8 @@ func (s *DB) migrate(ctx context.Context) error {
 			last_checked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			last_status_code INTEGER DEFAULT 0,
 			last_response_ms INTEGER DEFAULT 0,
-			last_error TEXT DEFAULT ''
+			last_error TEXT DEFAULT '',
+			down_since_at DATETIME
 		)`,
 	}
 

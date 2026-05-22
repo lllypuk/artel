@@ -113,16 +113,33 @@ func checkOneSite(
 		LastStatusCode: result.StatusCode,
 		LastResponseMS: result.ResponseMS,
 		LastError:      result.ErrorText,
+		DownSinceAt:    computeDownSince(result.IsUp, result.CheckedAt, prevState),
 	}
 	if err := db.UpsertMonitorState(ctx, newState); err != nil {
 		logger.Error("monitor: upsert state", "url", site.URL, "error", err)
 	}
 
-	stateChanged := prevState == nil || prevState.IsUp != result.IsUp
-	if stateChanged && notifier != nil {
+	// Alert only on state change; skip first run (prevState == nil) to avoid spam.
+	if prevState != nil && prevState.IsUp != result.IsUp && notifier != nil {
 		msg := buildAlertMessage(site, result, prevState)
 		sendMonitorAlert(notifier, allowedUsers, msg)
 	}
+}
+
+// computeDownSince calculates the down_since_at timestamp for the new state:
+//   - site is UP → nil
+//   - site just went DOWN → checkedAt
+//   - site stays DOWN → keep previous down_since_at
+func computeDownSince(isUp bool, checkedAt time.Time, prev *storage.MonitorState) *time.Time {
+	if isUp {
+		return nil
+	}
+	// Site is down: preserve existing down_since_at if already tracking
+	if prev != nil && !prev.IsUp && prev.DownSinceAt != nil {
+		return prev.DownSinceAt
+	}
+	t := checkedAt
+	return &t
 }
 
 // pingMonitorSite performs a single HTTP GET and returns the result.
@@ -166,19 +183,28 @@ func buildAlertMessage(site config.MonitorSite, result storage.MonitorCheck, pre
 		name = site.URL
 	}
 	if result.IsUp {
-		msg := fmt.Sprintf("✅ Сайт восстановлен: %s\n%s\nHTTP %d • %d мс",
-			name, site.URL, result.StatusCode, result.ResponseMS)
-		if prev != nil && !prev.IsUp {
-			downSince := time.Since(prev.LastCheckedAt).Round(time.Second)
-			msg += fmt.Sprintf("\nНедоступен был: %s", downSince)
-		}
-		return msg
+		return buildUpMessage(name, site.URL, result, prev)
 	}
+	return buildDownMessage(name, site.URL, result)
+}
+
+func buildUpMessage(name, siteURL string, result storage.MonitorCheck, prev *storage.MonitorState) string {
+	msg := fmt.Sprintf("✅ Сайт восстановлен: %s\n%s\nHTTP %d • %d мс",
+		name, siteURL, result.StatusCode, result.ResponseMS)
+	// Use down_since_at from previous state for accurate downtime duration.
+	if prev != nil && prev.DownSinceAt != nil {
+		downDuration := result.CheckedAt.Sub(*prev.DownSinceAt).Round(time.Second)
+		msg += fmt.Sprintf("\nНедоступен был: %s", downDuration)
+	}
+	return msg
+}
+
+func buildDownMessage(name, siteURL string, result storage.MonitorCheck) string {
 	errInfo := result.ErrorText
 	if result.StatusCode > 0 {
 		errInfo = fmt.Sprintf("HTTP %d", result.StatusCode)
 	}
-	return fmt.Sprintf("🔴 Сайт недоступен: %s\n%s\n%s", name, site.URL, errInfo)
+	return fmt.Sprintf("🔴 Сайт недоступен: %s\n%s\n%s", name, siteURL, errInfo)
 }
 
 func sendMonitorAlert(notifier tools.Notifier, allowedUsers []int64, msg string) {

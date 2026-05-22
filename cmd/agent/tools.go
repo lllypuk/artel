@@ -149,9 +149,6 @@ func registerPiCoderTool(cfg *config.Config, registry *tools.Registry, logger *s
 	logger.Info("PiCoder tool enabled", "project_dir", projectDir, "model", model)
 }
 
-// makeRestartFunc создаёт функцию безопасного перезапуска агента.
-// Использует syscall.Exec: текущий процесс атомарно заменяется новым бинарником без fork.
-// PID остаётся прежним, перенаправления stdin/stdout/stderr сохраняются.
 func registerMonitorTool(cfg *config.Config, registry *tools.Registry, logger *slog.Logger, db *storage.DB) {
 	if !cfg.Monitor.Enabled || len(cfg.Monitor.Sites) == 0 {
 		return
@@ -168,6 +165,9 @@ func registerMonitorTool(cfg *config.Config, registry *tools.Registry, logger *s
 	logger.Info("Monitor tool enabled", "sites", len(cfg.Monitor.Sites), "interval_min", cfg.Monitor.IntervalMinutes)
 }
 
+// makeRestartFunc создаёт функцию безопасного перезапуска агента.
+// Использует syscall.Exec: текущий процесс атомарно заменяется новым бинарником без fork.
+// PID остаётся прежним, перенаправления stdin/stdout/stderr сохраняются.
 func makeRestartFunc(logger *slog.Logger) func() {
 	return func() {
 		executable, err := os.Executable()
