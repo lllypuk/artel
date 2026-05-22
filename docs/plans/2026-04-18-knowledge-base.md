@@ -160,12 +160,12 @@ cmd/agent/
 
 ### Task 4: Unified search
 
-- [ ] Создать `internal/tools/knowledge_search.go` реализующий интерфейс `Tool`
-- [ ] Поиск по вики и reading_list одновременно (UNION из двух FTS-запросов)
-- [ ] Если `hasWikiFTS` недоступен — fallback на LIKE-поиск
-- [ ] Результат: список совпадений с указанием источника (`wiki` / `article`) и сниппетом текста
-- [ ] Зарегистрировать в `cmd/agent/tools.go`
-- [ ] `make lint test` — все проверки зелёные
+- [x] Создать `internal/tools/knowledge_search.go` реализующий интерфейс `Tool`
+- [x] Поиск по вики и reading_list одновременно (UNION из двух FTS-запросов)
+- [x] Если `hasWikiFTS` недоступен — fallback на LIKE-поиск
+- [x] Результат: список совпадений с указанием источника (`wiki` / `article`) и сниппетом текста
+- [x] Зарегистрировать в `cmd/agent/main.go`
+- [x] `make lint test` — все проверки зелёные
 
 ### Task 5: Дайджест непрочитанного
 

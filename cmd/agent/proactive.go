@@ -244,6 +244,7 @@ func (s *proactiveScheduler) fireMorningBriefing(ctx context.Context) {
 			tickers,
 		)
 	}
+	readingBlock := "Если есть непрочитанные статьи в reading_list — упомяни кратко (используй инструмент reading_list с action=digest) "
 	switch {
 	case s.cfg.City != "" && s.weatherEnabled:
 		prompt = fmt.Sprintf(
@@ -251,10 +252,12 @@ func (s *proactiveScheduler) fireMorningBriefing(ctx context.Context) {
 				"1) Приветствие + день недели и дата "+
 				"2) Прогноз погоды в %s на сегодня (используй инструмент weather) "+
 				"3) %s"+
-				"4) Одна мотивирующая мысль на день. "+
-				"Всего 5-7 строк.",
+				"4) %s"+
+				"5) Одна мотивирующая мысль на день. "+
+				"Всего 5-8 строк.",
 			s.cfg.City,
 			financeBlock,
+			readingBlock,
 		)
 	case s.cfg.City != "":
 		// City is configured but weather tool is disabled — mention city without tool call.
@@ -262,10 +265,12 @@ func (s *proactiveScheduler) fireMorningBriefing(ctx context.Context) {
 			"🔔 [АВТО: УТРЕННИЙ БРИФИНГ] Составь краткое утреннее сообщение: "+
 				"1) Приветствие + день недели и дата "+
 				"2) %s"+
-				"3) Одна мотивирующая мысль на день. "+
+				"3) %s"+
+				"4) Одна мотивирующая мысль на день. "+
 				"Упомяни что пользователь находится в %s. "+
-				"Всего 4-5 строк.",
+				"Всего 4-6 строк.",
 			financeBlock,
+			readingBlock,
 			s.cfg.City,
 		)
 	default:
@@ -273,9 +278,11 @@ func (s *proactiveScheduler) fireMorningBriefing(ctx context.Context) {
 			"🔔 [АВТО: УТРЕННИЙ БРИФИНГ] Составь краткое утреннее сообщение: "+
 				"1) Приветствие + день недели и дата "+
 				"2) %s"+
-				"3) Одна мотивирующая мысль на день. "+
-				"Всего 3-4 строки.",
+				"3) %s"+
+				"4) Одна мотивирующая мысль на день. "+
+				"Всего 3-5 строк.",
 			financeBlock,
+			readingBlock,
 		)
 	}
 	for _, chatID := range s.users {
