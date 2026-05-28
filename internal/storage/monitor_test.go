@@ -268,3 +268,76 @@ func TestGetAllMonitorStates_Empty(t *testing.T) {
 		t.Fatalf("expected 0, got %d", len(states))
 	}
 }
+
+// ── DownSinceAt scanning (regression for sql.NullTime / modernc.org/sqlite) ──
+//
+// modernc.org/sqlite serialises time.Time values as RFC3339 strings.
+// The original scanMonitorState used sql.NullTime which cannot scan a string,
+// causing GetMonitorState / GetAllMonitorStates to fail whenever DownSinceAt
+// was set.
+
+func TestMonitorState_DownSinceAt_GetAllMonitorStates(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	downSince := time.Date(2025, 6, 1, 9, 0, 0, 0, time.UTC)
+	st := storage.MonitorState{
+		SiteURL:       "https://down-all.example.com",
+		SiteName:      "Down site",
+		IsUp:          false,
+		LastCheckedAt: time.Date(2025, 6, 1, 10, 0, 0, 0, time.UTC),
+		LastError:     "timeout",
+		DownSinceAt:   &downSince,
+	}
+	if err := db.UpsertMonitorState(ctx, st); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	// GetAllMonitorStates also calls scanMonitorState – verify it survives.
+	states, err := db.GetAllMonitorStates(ctx)
+	if err != nil {
+		t.Fatalf("GetAllMonitorStates with DownSinceAt set: %v", err)
+	}
+	if len(states) == 0 {
+		t.Fatal("expected at least one state")
+	}
+	got := states[0]
+	if got.DownSinceAt == nil {
+		t.Fatal("GetAllMonitorStates: expected DownSinceAt to be set, got nil")
+	}
+	if !got.DownSinceAt.Equal(downSince) {
+		t.Errorf("GetAllMonitorStates: DownSinceAt got %v, want %v", got.DownSinceAt, downSince)
+	}
+}
+
+func TestMonitorState_DownSinceAt_NullAfterRecovery(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	downSince := time.Date(2025, 6, 1, 9, 0, 0, 0, time.UTC)
+	// Mark site as down.
+	_ = db.UpsertMonitorState(ctx, storage.MonitorState{
+		SiteURL:     "https://recover.example.com",
+		IsUp:        false,
+		DownSinceAt: &downSince,
+	})
+	// Mark site as recovered – DownSinceAt becomes nil.
+	_ = db.UpsertMonitorState(ctx, storage.MonitorState{
+		SiteURL:        "https://recover.example.com",
+		IsUp:           true,
+		LastStatusCode: 200,
+		DownSinceAt:    nil,
+	})
+
+	// Verify via GetAllMonitorStates (exercises scanMonitorState for NULL column).
+	states, err := db.GetAllMonitorStates(ctx)
+	if err != nil {
+		t.Fatalf("GetAllMonitorStates after recovery: %v", err)
+	}
+	if len(states) == 0 {
+		t.Fatal("expected at least one state")
+	}
+	if states[0].DownSinceAt != nil {
+		t.Errorf("expected DownSinceAt=nil after recovery, got %v", states[0].DownSinceAt)
+	}
+}

@@ -144,7 +144,7 @@ type monitorStateScanner interface {
 func scanMonitorState(s monitorStateScanner) (*MonitorState, error) {
 	var st MonitorState
 	var isUpInt int
-	var downSince sql.NullTime
+	var downSince sql.NullString
 	if err := s.Scan(
 		&st.SiteURL, &st.SiteName, &isUpInt, &st.LastCheckedAt,
 		&st.LastStatusCode, &st.LastResponseMS, &st.LastError, &downSince,
@@ -152,9 +152,11 @@ func scanMonitorState(s monitorStateScanner) (*MonitorState, error) {
 		return nil, err
 	}
 	st.IsUp = isUpInt == 1
-	if downSince.Valid {
-		t := downSince.Time.UTC()
-		st.DownSinceAt = &t
+	if downSince.Valid && downSince.String != "" {
+		if t, err := parseSQLiteTime(downSince.String); err == nil {
+			utc := t.UTC()
+			st.DownSinceAt = &utc
+		}
 	}
 	return &st, nil
 }

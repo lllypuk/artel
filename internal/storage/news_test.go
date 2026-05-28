@@ -862,7 +862,7 @@ func TestNews_DeleteUnreadItemsOlderThan(t *testing.T) {
 	_ = id1
 }
 
-// ── Feed deletion cascades to items and subscriptions ─────────────────────────
+// ── Cascade delete ────────────────────────────────────────────────────────────
 
 func TestNews_DeleteFeed_CascadesToItems(t *testing.T) {
 	repo, _ := openNewsRepo(t)
@@ -877,5 +877,153 @@ func TestNews_DeleteFeed_CascadesToItems(t *testing.T) {
 	item, _ := repo.GetItem(ctx, itemID)
 	if item != nil {
 		t.Errorf("expected item to be cascade-deleted, got %+v", item)
+	}
+}
+
+// ── LastFetched scanning (regression for sql.NullTime / modernc.org/sqlite) ──
+//
+// modernc.org/sqlite serialises time.Time values as RFC3339 strings when they
+// are stored via Go bind parameters.  The original code used sql.NullTime which
+// cannot scan a driver.Value of type string, causing every call to
+// GetEnabledFeeds / ListFeeds to return an error.
+// These tests verify that all four read paths round-trip LastFetched correctly.
+
+func TestNews_GetFeed_LastFetched_RoundTrip(t *testing.T) {
+	repo, _ := openNewsRepo(t)
+	ctx := context.Background()
+
+	id := createFeed(t, repo, "https://lf-get.example.com/", "T", true)
+	f, _ := repo.GetFeed(ctx, id)
+	now := time.Now().UTC().Truncate(time.Second)
+	f.LastFetched = &now
+	if err := repo.UpdateFeed(ctx, f); err != nil {
+		t.Fatalf("update feed: %v", err)
+	}
+
+	got, err := repo.GetFeed(ctx, id)
+	if err != nil {
+		t.Fatalf("GetFeed: %v", err)
+	}
+	if got.LastFetched == nil {
+		t.Fatal("GetFeed: expected LastFetched to be set, got nil")
+	}
+	if !got.LastFetched.Equal(now) {
+		t.Errorf("GetFeed: LastFetched got %v, want %v", got.LastFetched, now)
+	}
+}
+
+func TestNews_GetFeedByURL_LastFetched_RoundTrip(t *testing.T) {
+	repo, _ := openNewsRepo(t)
+	ctx := context.Background()
+
+	const feedURL = "https://lf-byurl.example.com/"
+	id := createFeed(t, repo, feedURL, "T", true)
+	f, _ := repo.GetFeed(ctx, id)
+	now := time.Now().UTC().Truncate(time.Second)
+	f.LastFetched = &now
+	if err := repo.UpdateFeed(ctx, f); err != nil {
+		t.Fatalf("update feed: %v", err)
+	}
+
+	got, err := repo.GetFeedByURL(ctx, feedURL)
+	if err != nil {
+		t.Fatalf("GetFeedByURL: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetFeedByURL: expected feed, got nil")
+	}
+	if got.LastFetched == nil {
+		t.Fatal("GetFeedByURL: expected LastFetched to be set, got nil")
+	}
+	if !got.LastFetched.Equal(now) {
+		t.Errorf("GetFeedByURL: LastFetched got %v, want %v", got.LastFetched, now)
+	}
+}
+
+func TestNews_GetEnabledFeeds_LastFetched_RoundTrip(t *testing.T) {
+	repo, _ := openNewsRepo(t)
+	ctx := context.Background()
+
+	id := createFeed(t, repo, "https://lf-enabled.example.com/", "T", true)
+	f, _ := repo.GetFeed(ctx, id)
+	now := time.Now().UTC().Truncate(time.Second)
+	f.LastFetched = &now
+	if err := repo.UpdateFeed(ctx, f); err != nil {
+		t.Fatalf("update feed: %v", err)
+	}
+
+	feeds, err := repo.GetEnabledFeeds(ctx)
+	if err != nil {
+		t.Fatalf("GetEnabledFeeds: %v", err)
+	}
+	if len(feeds) == 0 {
+		t.Fatal("GetEnabledFeeds: expected at least one feed")
+	}
+	for _, feed := range feeds {
+		if feed.ID != id {
+			continue
+		}
+		if feed.LastFetched == nil {
+			t.Fatal("GetEnabledFeeds: expected LastFetched to be set, got nil")
+		}
+		if !feed.LastFetched.Equal(now) {
+			t.Errorf("GetEnabledFeeds: LastFetched got %v, want %v", feed.LastFetched, now)
+		}
+		return
+	}
+	t.Fatalf("GetEnabledFeeds: feed id=%d not found in results", id)
+}
+
+func TestNews_ListFeeds_LastFetched_RoundTrip(t *testing.T) {
+	repo, _ := openNewsRepo(t)
+	ctx := context.Background()
+
+	id := createFeed(t, repo, "https://lf-list.example.com/", "T", true)
+	f, _ := repo.GetFeed(ctx, id)
+	now := time.Now().UTC().Truncate(time.Second)
+	f.LastFetched = &now
+	if err := repo.UpdateFeed(ctx, f); err != nil {
+		t.Fatalf("update feed: %v", err)
+	}
+
+	feeds, err := repo.ListFeeds(ctx, 100, 0)
+	if err != nil {
+		t.Fatalf("ListFeeds: %v", err)
+	}
+	for _, feed := range feeds {
+		if feed.ID != id {
+			continue
+		}
+		if feed.LastFetched == nil {
+			t.Fatal("ListFeeds: expected LastFetched to be set, got nil")
+		}
+		if !feed.LastFetched.Equal(now) {
+			t.Errorf("ListFeeds: LastFetched got %v, want %v", feed.LastFetched, now)
+		}
+		return
+	}
+	t.Fatalf("ListFeeds: feed id=%d not found in results", id)
+}
+
+// TestNews_GetEnabledFeeds_NullLastFetched verifies that feeds which have never
+// been fetched (last_fetched IS NULL in DB) are returned without error and with
+// LastFetched == nil.
+func TestNews_GetEnabledFeeds_NullLastFetched(t *testing.T) {
+	repo, _ := openNewsRepo(t)
+	ctx := context.Background()
+
+	createFeed(t, repo, "https://lf-null.example.com/", "Never fetched", true)
+
+	feeds, err := repo.GetEnabledFeeds(ctx)
+	if err != nil {
+		t.Fatalf("GetEnabledFeeds with NULL last_fetched: %v", err)
+	}
+	if len(feeds) == 0 {
+		t.Fatal("expected at least one feed")
+	}
+	for _, f := range feeds {
+		if f.LastFetched != nil {
+			t.Errorf("expected LastFetched=nil for fresh feed, got %v", f.LastFetched)
+		}
 	}
 }

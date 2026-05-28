@@ -77,7 +77,7 @@ func (r *NewsRepositoryImpl) CreateFeed(ctx context.Context, feed *news.Feed) (i
 
 func (r *NewsRepositoryImpl) GetFeed(ctx context.Context, id int64) (*news.Feed, error) {
 	var feed news.Feed
-	var lastFetched sql.NullTime
+	var lastFetched sql.NullString
 	var fetchInterval int64
 
 	err := r.db.db.QueryRowContext(ctx,
@@ -96,8 +96,10 @@ func (r *NewsRepositoryImpl) GetFeed(ctx context.Context, id int64) (*news.Feed,
 	if err != nil {
 		return nil, err
 	}
-	if lastFetched.Valid {
-		feed.LastFetched = &lastFetched.Time
+	if lastFetched.Valid && lastFetched.String != "" {
+		if t, err := parseSQLiteTime(lastFetched.String); err == nil {
+			feed.LastFetched = &t
+		}
 	}
 	feed.SetFetchIntervalFromSeconds(fetchInterval)
 	return &feed, nil
@@ -105,7 +107,7 @@ func (r *NewsRepositoryImpl) GetFeed(ctx context.Context, id int64) (*news.Feed,
 
 func (r *NewsRepositoryImpl) GetFeedByURL(ctx context.Context, url string) (*news.Feed, error) {
 	var feed news.Feed
-	var lastFetched sql.NullTime
+	var lastFetched sql.NullString
 	var fetchInterval int64
 
 	err := r.db.db.QueryRowContext(ctx,
@@ -124,8 +126,10 @@ func (r *NewsRepositoryImpl) GetFeedByURL(ctx context.Context, url string) (*new
 	if err != nil {
 		return nil, err
 	}
-	if lastFetched.Valid {
-		feed.LastFetched = &lastFetched.Time
+	if lastFetched.Valid && lastFetched.String != "" {
+		if t, err := parseSQLiteTime(lastFetched.String); err == nil {
+			feed.LastFetched = &t
+		}
 	}
 	feed.SetFetchIntervalFromSeconds(fetchInterval)
 	return &feed, nil
@@ -150,7 +154,7 @@ func (r *NewsRepositoryImpl) GetEnabledFeeds(ctx context.Context) ([]news.Feed, 
 	var feeds []news.Feed
 	for rows.Next() {
 		var feed news.Feed
-		var lastFetched sql.NullTime
+		var lastFetched sql.NullString
 		var fetchInterval int64
 		if err := rows.Scan(
 			&feed.ID, &feed.URL, &feed.Title, &feed.Description, &feed.Type,
@@ -159,8 +163,10 @@ func (r *NewsRepositoryImpl) GetEnabledFeeds(ctx context.Context) ([]news.Feed, 
 		); err != nil {
 			return nil, err
 		}
-		if lastFetched.Valid {
-			feed.LastFetched = &lastFetched.Time
+		if lastFetched.Valid && lastFetched.String != "" {
+			if t, err := parseSQLiteTime(lastFetched.String); err == nil {
+				feed.LastFetched = &t
+			}
 		}
 		feed.SetFetchIntervalFromSeconds(fetchInterval)
 		feeds = append(feeds, feed)
@@ -207,7 +213,7 @@ func (r *NewsRepositoryImpl) ListFeeds(ctx context.Context, limit, offset int) (
 	var feeds []news.Feed
 	for rows.Next() {
 		var feed news.Feed
-		var lastFetched sql.NullTime
+		var lastFetched sql.NullString
 		var fetchInterval int64
 		if err := rows.Scan(
 			&feed.ID, &feed.URL, &feed.Title, &feed.Description, &feed.Type,
@@ -216,8 +222,10 @@ func (r *NewsRepositoryImpl) ListFeeds(ctx context.Context, limit, offset int) (
 		); err != nil {
 			return nil, err
 		}
-		if lastFetched.Valid {
-			feed.LastFetched = &lastFetched.Time
+		if lastFetched.Valid && lastFetched.String != "" {
+			if t, err := parseSQLiteTime(lastFetched.String); err == nil {
+				feed.LastFetched = &t
+			}
 		}
 		feed.SetFetchIntervalFromSeconds(fetchInterval)
 		feeds = append(feeds, feed)
