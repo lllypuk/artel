@@ -7,13 +7,28 @@ import (
 	"github.com/xeipuuv/gojsonschema"
 )
 
-// validateArgs checks raw JSON arguments against the given JSON Schema.
-// Returns nil if valid, or a human-readable error message.
-func validateArgs(schema map[string]any, rawArgs json.RawMessage) error {
-	schemaLoader := gojsonschema.NewGoLoader(schema)
+// compiledSchema wraps a pre-compiled gojsonschema Schema.
+// Storing a compiled schema avoids re-parsing the JSON Schema on every tool invocation.
+type compiledSchema struct {
+	schema *gojsonschema.Schema
+}
+
+// compileSchema parses and compiles a JSON Schema from a raw map.
+// Returns an error if the schema itself is invalid.
+func compileSchema(raw map[string]any) (*compiledSchema, error) {
+	s, err := gojsonschema.NewSchema(gojsonschema.NewGoLoader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("compile JSON Schema: %w", err)
+	}
+	return &compiledSchema{schema: s}, nil
+}
+
+// validateArgs checks raw JSON arguments against the pre-compiled schema.
+// Returns nil if valid, or a human-readable error.
+func validateArgs(cs *compiledSchema, rawArgs json.RawMessage) error {
 	docLoader := gojsonschema.NewBytesLoader(rawArgs)
 
-	result, err := gojsonschema.Validate(schemaLoader, docLoader)
+	result, err := cs.schema.Validate(docLoader)
 	if err != nil {
 		return fmt.Errorf("schema validation internal error: %w", err)
 	}
@@ -22,7 +37,7 @@ func validateArgs(schema map[string]any, rawArgs json.RawMessage) error {
 		return nil
 	}
 
-	// Build a compact error message from the first few validation errors.
+	// Build a compact error message from the validation errors.
 	errs := result.Errors()
 	if len(errs) == 0 {
 		return fmt.Errorf("validation failed (no details)")

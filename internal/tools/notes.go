@@ -123,14 +123,11 @@ func (n *NotesTool) executeCreate(ctx context.Context, a notesArgs) (string, err
 		return "", fmt.Errorf("create note: %w", err)
 	}
 
-	// Generate and store embedding if embedder is configured.
+	// Generate and store embedding if embedder is configured (best-effort, never fails the create).
 	if n.embedder != nil {
 		text := a.Title + "\n" + a.Content
 		if emb, embErr := n.embedder.Embed(ctx, text); embErr == nil {
-			if saveErr := n.db.SaveEmbedding(ctx, id, emb); saveErr != nil {
-				// Embedding is best-effort — note was created successfully.
-				return fmt.Sprintf("Note created (id: %d) — embedding failed: %v", id, saveErr), nil
-			}
+			_ = n.db.SaveEmbedding(ctx, id, emb)
 		}
 	}
 
@@ -265,6 +262,15 @@ func (n *NotesTool) executeEdit(ctx context.Context, a notesArgs) (string, error
 	if err := n.db.UpdateNote(ctx, a.ID, a.ChatID, title, content, tags); err != nil {
 		return "", fmt.Errorf("edit note: %w", err)
 	}
+
+	// Re-generate embedding so vector search stays in sync with new content (best-effort).
+	if n.embedder != nil {
+		text := title + "\n" + content
+		if emb, embErr := n.embedder.Embed(ctx, text); embErr == nil {
+			_ = n.db.SaveEmbedding(ctx, a.ID, emb)
+		}
+	}
+
 	return fmt.Sprintf("Note %d updated.", a.ID), nil
 }
 

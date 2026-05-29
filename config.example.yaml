@@ -243,6 +243,10 @@ pi_coder:
   model: "glm-4.7"
   timeout: 300
 
+otel:
+  endpoint: ""                     # OTLP HTTP endpoint для трассировки, напр. "http://localhost:4318"
+  service_name: "agent-shatrov"    # имя сервиса в трейсах
+
 monitor:
   enabled: false                   # включить для мониторинга доступности сайтов
   interval_minutes: 5              # интервал проверок

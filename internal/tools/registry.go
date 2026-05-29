@@ -32,7 +32,7 @@ type Notifier func(chatID int64, message string)
 // Registry holds all registered tools.
 type Registry struct {
 	tools      map[string]Tool
-	validators map[string]map[string]any // tool name → JSON Schema
+	validators map[string]*compiledSchema // tool name → pre-compiled JSON Schema
 	notify     Notifier
 	logger     *slog.Logger
 }
@@ -41,7 +41,7 @@ type Registry struct {
 func NewRegistry(logger *slog.Logger) *Registry {
 	return &Registry{
 		tools:      make(map[string]Tool),
-		validators: make(map[string]map[string]any),
+		validators: make(map[string]*compiledSchema),
 		logger:     logger,
 	}
 }
@@ -54,10 +54,15 @@ func (r *Registry) SetNotifier(notify Notifier) {
 // Register adds a tool to the registry.
 func (r *Registry) Register(t Tool) {
 	r.tools[t.Name()] = t
-	// Store the JSON Schema for later validation.
+	// Pre-compile the JSON Schema for fast validation on every Execute call.
 	params := t.Parameters()
 	if params != nil {
-		r.validators[t.Name()] = params
+		cs, err := compileSchema(params)
+		if err != nil {
+			r.logger.Warn("failed to compile JSON Schema for tool", "tool", t.Name(), "error", err)
+		} else {
+			r.validators[t.Name()] = cs
+		}
 	}
 }
 
@@ -81,8 +86,8 @@ func (r *Registry) ExecuteWithNotify(ctx context.Context, name string, args json
 	}
 
 	// Validate arguments against JSON Schema if available.
-	if schema, hasSchema := r.validators[name]; hasSchema && len(args) > 0 {
-		if err := validateArgs(schema, args); err != nil {
+	if cs, hasSchema := r.validators[name]; hasSchema && len(args) > 0 {
+		if err := validateArgs(cs, args); err != nil {
 			return "", fmt.Errorf("invalid args for tool %s: %w", name, err)
 		}
 	}
