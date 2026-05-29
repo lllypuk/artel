@@ -25,6 +25,7 @@ type Config struct {
 	Stocks     StocksConfig     `yaml:"stocks"`
 	Monitor    MonitorConfig    `yaml:"monitor"`
 	Notes      NotesConfig      `yaml:"notes"`
+	Otel       OtelConfig       `yaml:"otel"`
 	Logging    LoggingConfig    `yaml:"logging"`
 }
 
@@ -176,6 +177,12 @@ type NotesEmbeddingConfig struct {
 	Enabled   bool   `yaml:"enabled"`
 	Model     string `yaml:"model"`      // e.g. "nomic-embed-text"
 	OllamaURL string `yaml:"ollama_url"` // e.g. "http://localhost:11434"
+}
+
+// OtelConfig holds OpenTelemetry configuration.
+type OtelConfig struct {
+	Endpoint    string `yaml:"endpoint"`     // OTLP HTTP endpoint, e.g. "http://localhost:4318"
+	ServiceName string `yaml:"service_name"` // default: "agent-shatrov"
 }
 
 type LoggingConfig struct {

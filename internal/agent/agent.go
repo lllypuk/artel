@@ -12,7 +12,11 @@ import (
 
 	"github.com/lllypuk/agent-shatrov/internal/llm"
 	"github.com/lllypuk/agent-shatrov/internal/storage"
+	"github.com/lllypuk/agent-shatrov/internal/telemetry"
 	"github.com/lllypuk/agent-shatrov/internal/tools"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const systemPrompt = `Ты — персональный AI-ассистент. Твоё имя — Agent.
@@ -218,6 +222,15 @@ func (a *Agent) HandleMessageWithAttachments(ctx context.Context, chatID int64, 
 
 // handleMessage is the core ReAct-loop implementation used by both public entry points.
 func (a *Agent) handleMessage(ctx context.Context, chatID int64, userMessage string, attachments []FileAttachment) (*Response, error) {
+	tracer := telemetry.Tracer("agent")
+	ctx, span := tracer.Start(ctx, "agent.run",
+		trace.WithAttributes(
+			attribute.Int64("chat_id", chatID),
+			attribute.String("model", a.GetModel()),
+		),
+	)
+	defer span.End()
+
 	// Add chatID to context for notifications
 	ctx = context.WithValue(ctx, tools.ChatIDKey, chatID)
 
@@ -257,6 +270,13 @@ func (a *Agent) handleMessage(ctx context.Context, chatID int64, userMessage str
 	// ReAct loop (max iterations to prevent infinite loops)
 	var totalUsage llm.Usage
 	for i := 0; i < a.maxIterations; i++ {
+		iterCtx, iterSpan := tracer.Start(ctx, "agent.iteration",
+			trace.WithAttributes(
+				attribute.Int("iteration", i+1),
+				attribute.Int64("chat_id", chatID),
+			),
+		)
+
 		a.mu.RLock()
 		currentModel := a.model
 		a.mu.RUnlock()
@@ -271,10 +291,26 @@ func (a *Agent) handleMessage(ctx context.Context, chatID int64, userMessage str
 			req.Tools = toolDefs
 		}
 
-		resp, err := a.llmClient.Chat(ctx, req)
+		_, llmSpan := tracer.Start(iterCtx, "llm.complete",
+			trace.WithAttributes(
+				attribute.String("model", currentModel),
+			),
+		)
+		resp, err := a.llmClient.Chat(iterCtx, req)
 		if err != nil {
+			llmSpan.SetStatus(codes.Error, err.Error())
+			llmSpan.End()
+			iterSpan.SetStatus(codes.Error, err.Error())
+			iterSpan.End()
+			span.SetStatus(codes.Error, err.Error())
 			return nil, fmt.Errorf("LLM call: %w", err)
 		}
+		llmSpan.SetAttributes(
+			attribute.Int("prompt_tokens", resp.Usage.PromptTokens),
+			attribute.Int("completion_tokens", resp.Usage.CompletionTokens),
+			attribute.Int("total_tokens", resp.Usage.TotalTokens),
+		)
+		llmSpan.End()
 
 		totalUsage.PromptTokens += resp.Usage.PromptTokens
 		totalUsage.CompletionTokens += resp.Usage.CompletionTokens
@@ -282,12 +318,14 @@ func (a *Agent) handleMessage(ctx context.Context, chatID int64, userMessage str
 
 		// Persist usage statistics for /status reporting.
 		if resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0 {
-			if err := a.db.RecordUsage(ctx, resp.Usage.PromptTokens, resp.Usage.CompletionTokens); err != nil {
+			if err := a.db.RecordUsage(iterCtx, resp.Usage.PromptTokens, resp.Usage.CompletionTokens); err != nil {
 				a.logger.Warn("record usage", "error", err)
 			}
 		}
 
 		if len(resp.Choices) == 0 {
+			iterSpan.SetStatus(codes.Error, "no choices in LLM response")
+			iterSpan.End()
 			return nil, fmt.Errorf("no choices in LLM response")
 		}
 
@@ -296,27 +334,37 @@ func (a *Agent) handleMessage(ctx context.Context, chatID int64, userMessage str
 		// If no tool calls — return the text response
 		if len(choice.Message.ToolCalls) == 0 {
 			text := choice.Message.Content
-			if err := a.db.AddMessage(ctx, conv.ID, "assistant", text, "", ""); err != nil {
+			if err := a.db.AddMessage(iterCtx, conv.ID, "assistant", text, "", ""); err != nil {
 				a.logger.Error("store assistant message", "error", err)
 			}
+			iterSpan.End()
 			return &Response{Text: text, Usage: &totalUsage}, nil
 		}
 
 		// Store assistant message with tool calls
 		toolCallsJSON, _ := json.Marshal(choice.Message.ToolCalls)
-		if err := a.db.AddMessage(ctx, conv.ID, "assistant", choice.Message.Content, "", string(toolCallsJSON)); err != nil {
+		if err := a.db.AddMessage(iterCtx, conv.ID, "assistant", choice.Message.Content, "", string(toolCallsJSON)); err != nil {
 			a.logger.Error("store assistant tool call message", "error", err)
 		}
 		messages = append(messages, choice.Message)
 
 		// Execute tool calls
 		for _, tc := range choice.Message.ToolCalls {
+			_, toolSpan := tracer.Start(iterCtx, "tool.execute",
+				trace.WithAttributes(
+					attribute.String("tool", tc.Function.Name),
+				),
+			)
 			cleanArgs := sanitizeToolArgs(json.RawMessage(tc.Function.Arguments))
-			result, err := a.tools.ExecuteWithNotify(ctx, tc.Function.Name, cleanArgs)
+			result, err := a.tools.ExecuteWithNotify(iterCtx, tc.Function.Name, cleanArgs)
 			if err != nil {
 				result = fmt.Sprintf("Error: %s", err.Error())
 				a.logger.Error("tool execution error", "tool", tc.Function.Name, "error", err)
+				toolSpan.SetStatus(codes.Error, err.Error())
+			} else {
+				toolSpan.SetStatus(codes.Ok, "ok")
 			}
+			toolSpan.End()
 
 			toolMsg := llm.Message{
 				Role:       "tool",
@@ -324,10 +372,11 @@ func (a *Agent) handleMessage(ctx context.Context, chatID int64, userMessage str
 				ToolCallID: tc.ID,
 			}
 			messages = append(messages, toolMsg)
-			if err := a.db.AddMessage(ctx, conv.ID, "tool", result, tc.ID, ""); err != nil {
+			if err := a.db.AddMessage(iterCtx, conv.ID, "tool", result, tc.ID, ""); err != nil {
 				a.logger.Error("store tool result", "error", err)
 			}
 		}
+		iterSpan.End()
 	}
 
 	return &Response{Text: "Превышен лимит итераций агента. Попробуй упростить запрос.", Usage: &totalUsage}, nil

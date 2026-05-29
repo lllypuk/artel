@@ -203,17 +203,17 @@ go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp
 go.opentelemetry.io/otel/exporters/stdout/stdouttrace
 ```
 
-- [ ] добавить зависимости через `go get` (список выше)
-- [ ] в `main.go` инициализировать `TracerProvider`: если `otel.endpoint` задан в конфиге — OTLP
+- [x] добавить зависимости через `go get` (список выше)
+- [x] в `main.go` инициализировать `TracerProvider`: если `otel.endpoint` задан в конфиге — OTLP
   HTTP экспортер; иначе noop провайдер (чтобы OTel не был обязательным)
-- [ ] добавить `OtelConfig` в `internal/config/config.go` (`Endpoint string`, `ServiceName string`)
-- [ ] в `agent.go` — `tracer.Start(ctx, "agent.run")` → child spans для каждой итерации, LLM call,
+- [x] добавить `OtelConfig` в `internal/config/config.go` (`Endpoint string`, `ServiceName string`)
+- [x] в `agent.go` — `tracer.Start(ctx, "agent.run")` → child spans для каждой итерации, LLM call,
   tool execution
-- [ ] в `client.go` — `tracer.Start(ctx, "llm.complete")` с атрибутами model, provider, token count
-- [ ] в `multi.go` — span на каждый fallback с атрибутом `provider_name`
-- [ ] написать тест: проверить что spans создаются через `tracetest.NewInMemoryExporter` +
+- [x] в `client.go` — `tracer.Start(ctx, "llm.complete")` с атрибутами model, provider, token count
+- [x] в `multi.go` — span на каждый fallback с атрибутом `provider_name`
+- [x] написать тест: проверить что spans создаются через `tracetest.NewInMemoryExporter` +
   `sdktrace.NewSimpleSpanProcessor` (не docker-compose, не Jaeger — только unit test)
-- [ ] запустить `make lint test` — должно пройти
+- [x] запустить `make lint test` — должно пройти
 
 ### Task 5: JSON Schema валидация в Registry
 

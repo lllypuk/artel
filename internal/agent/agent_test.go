@@ -15,6 +15,9 @@ import (
 	"github.com/lllypuk/agent-shatrov/internal/llm"
 	"github.com/lllypuk/agent-shatrov/internal/storage"
 	"github.com/lllypuk/agent-shatrov/internal/tools"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -612,5 +615,63 @@ func TestHandleMessageWithAttachmentsImage(t *testing.T) {
 	}
 	if imgPart.ImageURL == nil || !strings.HasPrefix(imgPart.ImageURL.URL, "data:image/jpeg;base64,") {
 		t.Errorf("unexpected image URL: %+v", imgPart.ImageURL)
+	}
+}
+
+// ── OpenTelemetry tracing ───────────────────────────────────────────────────
+
+func TestHandleMessageWithTracing(t *testing.T) {
+	// Set up in-memory exporter as the global tracer provider.
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp)),
+	)
+
+	// Replace global provider for this test.
+	origTP := otel.GetTracerProvider() //nolint:staticcheck
+	otel.SetTracerProvider(tp)
+	defer func() {
+		otel.SetTracerProvider(origTP)
+		_ = tp.Shutdown(context.Background())
+	}()
+
+	srv := textResponse(t, "Hello with tracing!")
+
+	db := newTestDB(t)
+	logger := silentLogger()
+	registry := tools.NewRegistry(logger)
+
+	a := agent.New(llm.NewClient(srv.URL, "key"), "model", 10, registry, db, logger)
+
+	resp, err := a.HandleMessage(context.Background(), 777, "trace me")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Text != "Hello with tracing!" {
+		t.Errorf("expected 'Hello with tracing!', got %q", resp.Text)
+	}
+
+	// Flush spans.
+	_ = tp.ForceFlush(context.Background())
+
+	spans := exp.GetSpans()
+	if len(spans) == 0 {
+		t.Fatal("expected at least one span")
+	}
+
+	// Check that we have an agent.run span.
+	foundRun := false
+	for _, s := range spans {
+		if s.Name == "agent.run" {
+			foundRun = true
+			break
+		}
+	}
+	if !foundRun {
+		names := make([]string, len(spans))
+		for i, s := range spans {
+			names[i] = s.Name
+		}
+		t.Errorf("expected 'agent.run' span, got spans: %v", names)
 	}
 }
