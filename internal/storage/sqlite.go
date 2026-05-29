@@ -343,6 +343,15 @@ func (s *DB) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_reading_list_chat ON reading_list(chat_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_reading_list_status ON reading_list(chat_id, status)`,
+		// Note embeddings table (RAG)
+		`CREATE TABLE IF NOT EXISTS note_embeddings (
+			id        INTEGER PRIMARY KEY AUTOINCREMENT,
+			note_id   INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+			embedding BLOB NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(note_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_note_embeddings_note ON note_embeddings(note_id)`,
 	}
 
 	// Execute core migrations (required)
@@ -763,7 +772,7 @@ func (s *DB) UpdateConversationSummary(ctx context.Context, convID int64, summar
 	return err
 }
 
-// parseSQLiteTime parses a datetime string as stored by SQLite (UTC, no timezone suffix).
+// parseSQLiteTime parses a datetime string as stored by SQLite (UTC, no timezone suffix). a datetime string as stored by SQLite (UTC, no timezone suffix).
 // modernc.org/sqlite returns datetime columns as plain strings, not time.Time.
 // When time.Time values are inserted by Go, the driver serialises them as RFC3339.
 // CURRENT_TIMESTAMP / strftime produce "2006-01-02 15:04:05" (space, no zone).

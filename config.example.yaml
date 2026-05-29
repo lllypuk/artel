@@ -97,6 +97,12 @@ weather:
   timeout_seconds: 15
   proxy: ""              # прокси для запросов к Open-Meteo (опционально)
 
+notes:
+  embedding:
+    enabled: false          # включить для семантического поиска заметок (RAG)
+    model: "nomic-embed-text"  # модель в Ollama
+    ollama_url: "http://localhost:11434"  # URL Ollama API
+
 stocks:
   enabled: true          # Yahoo Finance + MOEX ISS, без API-ключей
   cache_ttl_minutes: 15  # TTL кэша котировок в SQLite (0 = без кэша)

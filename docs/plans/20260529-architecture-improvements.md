@@ -150,17 +150,17 @@ langchaingo дало бы обратный эффект: лишняя завис
 - Modify: `internal/config/config.go` — добавить `NotesEmbeddingConfig`
 - Modify: `config.example.yaml` — пример секции `notes.embedding`
 
-- [ ] добавить в `sqlite.go` DDL: `CREATE TABLE note_embeddings(...)` + `CREATE INDEX` по `note_id`
-- [ ] в `notes_embeddings.go` реализовать:
+- [x] добавить в `sqlite.go` DDL: `CREATE TABLE note_embeddings(...)` + `CREATE INDEX` по `note_id`
+- [x] в `notes_embeddings.go` реализовать:
     - `SaveEmbedding(ctx, noteID int64, embedding []float32) error` — сериализация `[]float32` в
       `[]byte` через `encoding/binary` (little-endian), хранение в BLOB
     - `SearchSimilar(ctx, queryEmbedding []float32, limit int) ([]int64, error)` — загрузить все
       embeddings из БД в память, посчитать cosine similarity в Go (O(n) scan); при ~1000 заметок
       достаточно быстро, нативный vector search в SQLite не поддерживается
     - `DeleteEmbedding(ctx, noteID int64) error`
-- [ ] добавить `NotesEmbeddingConfig` в `config.go` (Enabled, Model, OllamaURL)
-- [ ] написать тесты для `storage/notes_embeddings.go` через `:memory:` SQLite
-- [ ] запустить `make lint test` — должно пройти
+- [x] добавить `NotesEmbeddingConfig` в `config.go` (Enabled, Model, OllamaURL)
+- [x] написать тесты для `storage/notes_embeddings.go` через `:memory:` SQLite
+- [x] запустить `make lint test` — должно пройти
 
 ### Task 3: RAG — генерация embedding и поисковый инструмент
 
