@@ -249,10 +249,10 @@ go get github.com/xeipuuv/gojsonschema
 - Modify: `CLAUDE.md` — обновить разделы Architecture, Implemented Features
 - Move: `docs/plans/20260529-architecture-improvements.md` → `docs/plans/completed/`
 
-- [ ] обновить `CLAUDE.md`: добавить embedding/RAG в описание notes, добавить OTel в архитектуру,
+- [x] обновить `CLAUDE.md`: добавить embedding/RAG в описание notes, добавить OTel в архитектуру,
   упомянуть middleware валидацию
-- [ ] убедиться что `make lint test` проходит полностью
-- [ ] переместить план в `docs/plans/completed/`
+- [x] убедиться что `make lint test` проходит полностью
+- [x] переместить план в `docs/plans/completed/`
 
 ## Post-Completion
 

@@ -28,8 +28,10 @@ internal/
     client.go        — HTTP-клиент к OpenAI-compatible API (single provider)
     multi.go         — MultiClient: мультипровайдер с fallback, retry, circuit breaker
   tools/
-    registry.go        — реестр инструментов, интерфейс Tool
+    registry.go        — реестр инструментов, интерфейс Tool, JSON Schema валидация
+    validation.go      — валидация аргументов через gojsonschema перед Execute()
     notes.go           — инструмент: заметки (create/search/list/edit/delete) через SQLite
+    embedder.go        — интерфейс Embedder + OllamaEmbedder для семантического поиска
     reminders.go       — инструмент: напоминания (create/list/delete/done, повторение)
     shell.go           — инструмент: безопасный shell (whitelist + sandbox)
     web_search.go      — инструмент: поиск в интернете (Brave/Serper/DuckDuckGo)
@@ -48,10 +50,13 @@ internal/
     reading_list.go    — инструмент: список для чтения (save/add/list/get/update/delete/digest)
     knowledge_search.go — инструмент: unified поиск по вики + reading list (FTS5 + LIKE fallback)
   storage/
-    sqlite.go        — SQLite: схема БД, migrations, CRUD для conversations/messages/notes
-    news.go          — SQLite: новости, фиды, подписки
-    monitor.go       — SQLite: мониторинг сайтов (monitor_checks, monitor_state)
-    wiki.go          — SQLite: wiki (wiki_pages + FTS5, wiki_links); cascade rename в транзакции
+    sqlite.go          — SQLite: схема БД, migrations, CRUD для conversations/messages/notes
+    notes_embeddings.go — embeddings: SaveEmbedding, SearchSimilar (cosine), DeleteEmbedding
+    news.go            — SQLite: новости, фиды, подписки
+    monitor.go         — SQLite: мониторинг сайтов (monitor_checks, monitor_state)
+    wiki.go            — SQLite: wiki (wiki_pages + FTS5, wiki_links); cascade rename в транзакции
+  telemetry/
+    telemetry.go       — OpenTelemetry: InitOTLP/InitStdout/Init, tracers
   telegram/
     bot.go           — Telegram bot: long polling, auth по chat_id, обработка команд
     markdown.go      — Markdown → HTML конвертация для Telegram
@@ -241,9 +246,18 @@ export GLM_API_KEY="..."
 **ReAct loop** в `internal/agent/agent.go`:
 
 1. Загрузить историю диалога из SQLite
-2. Отправить в LLM (messages + system prompt + tool definitions)
-3. Если LLM вернул tool_calls → выполнить инструменты → добавить результаты в messages → повторить (max 10 итераций)
-4. Если LLM вернул текст → сохранить в БД → вернуть пользователю
+2. Создать корневой OpenTelemetry span (`agent.run`)
+3. Отправить в LLM (messages + system prompt + tool definitions) — child span `llm.complete`
+4. Если LLM вернул tool_calls → **валидация аргументов через JSON Schema** → выполнить инструменты (span `tool.execute`) → добавить результаты в messages → повторить (max 10 итераций)
+5. Если LLM вернул текст → сохранить в БД → вернуть пользователю
+
+**OpenTelemetry**: каждый шаг ReAct-цикла трассируется через OTLP HTTP (опционально, `otel.endpoint`).
+Спаны: `agent.run` → `agent.iteration` → `llm.complete` + `tool.execute`. В продакшене трейсы
+отправляются в Jaeger/Grafana Tempo; для разработки доступен stdout-экспортер.
+
+**JSON Schema валидация**: перед вызовом `tool.Execute()` аргументы проверяются через `gojsonschema`
+против схемы из `tool.Parameters()`. Невалидные payloads отклоняются до вызова инструмента — нет
+nil-pointer паник от неправильных аргументов.
 
 ## Добавление нового инструмента
 
@@ -331,8 +345,10 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 | `github.com/go-telegram-bot-api/telegram-bot-api/v5` | Telegram Bot API               |
 | `modernc.org/sqlite`                                 | SQLite (pure Go, без CGO)      |
 | `gopkg.in/yaml.v3`                                   | парсинг конфига                |
-| `github.com/stretchr/testify`                        | assertions в тестах            |
 | `github.com/mmcdole/gofeed`                          | RSS/Atom/JSON Feed парсер      |
+| `github.com/xeipuuv/gojsonschema`                    | JSON Schema валидация          |
+| `go.opentelemetry.io/otel`                           | OpenTelemetry tracing          |
+| `go.opentelemetry.io/otel/sdk/trace/tracetest`       | in-memory exporter для тестов  |
 
 ## Реализованные функции
 
@@ -364,6 +380,10 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 - [x] Личная вики — иерархия путей (`/dev/golang`), `[[path]]` ссылки с cascade rename, backlinks; create/get/edit/delete/list/tree
 - [x] Список для чтения — сохранение URL (fetch + контент), list/get/update/delete, дайджест непрочитанных в утреннем брифинге
 - [x] Unified поиск по базе знаний — одновременный поиск по вики и reading list (FTS5 + LIKE fallback)
+- [x] Семантический поиск заметок (RAG) — embedding через Ollama + cosine similarity, гибридный поиск (FTS5 + векторный)
+- [x] OpenTelemetry трассировка — agent.run, agent.iteration, llm.complete, tool.execute; OTLP HTTP + stdout exporters
+- [x] JSON Schema валидация аргументов инструментов — проверка до вызова Execute(), защита от невалидных tool_calls
+- [x] Юнит-тесты ReAct loop — max_iterations, unknown tool, tool error, OTel spans
 
 ## Инструмент news
 
