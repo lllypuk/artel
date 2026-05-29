@@ -171,16 +171,16 @@ langchaingo дало бы обратный эффект: лишняя завис
 - Modify: `cmd/agent/tools.go` — `registerNotesTool` создаёт `OllamaEmbedder` при `cfg.Notes.Embedding.Enabled`
 - Modify: `internal/tools/notes.go` — `searchNotes`: объединить FTS5 + векторный поиск
 
-- [ ] реализовать `OllamaEmbedder` — HTTP POST `/api/embeddings` в Ollama с model + prompt
-- [ ] в `notes.go` при `createNote` / `updateNote` — если embedder != nil, сгенерировать embedding и
+- [x] реализовать `OllamaEmbedder` — HTTP POST `/api/embeddings` в Ollama с model + prompt
+- [x] в `notes.go` при `createNote` / `updateNote` — если embedder != nil, сгенерировать embedding и
   сохранить через `storage.SaveEmbedding`
-- [ ] в `searchNotes` — если embedder != nil:
+- [x] в `searchNotes` — если embedder != nil:
     1. Сгенерировать embedding от query
     2. Получить top-N по cosine similarity
     3. Получить top-N по FTS5
     4. Объединить, дедуплицировать, отсортировать по релевантности (гибридный скоринг)
-- [ ] написать тесты для `OllamaEmbedder` (httptest mock) и для hybrid search
-- [ ] запустить `make lint test` — должно пройти
+- [x] написать тесты для `OllamaEmbedder` (httptest mock) и для hybrid search
+- [x] запустить `make lint test` — должно пройти
 
 ### Task 4: OpenTelemetry — трассировка ReAct loop
 

@@ -11,12 +11,18 @@ import (
 
 // NotesTool manages personal notes.
 type NotesTool struct {
-	db *storage.DB
+	db       *storage.DB
+	embedder Embedder // optional: enables semantic search when set
 }
 
 // NewNotesTool creates a new notes tool.
 func NewNotesTool(db *storage.DB) *NotesTool {
 	return &NotesTool{db: db}
+}
+
+// NewNotesToolWithEmbedder creates a notes tool with semantic search support.
+func NewNotesToolWithEmbedder(db *storage.DB, embedder Embedder) *NotesTool {
+	return &NotesTool{db: db, embedder: embedder}
 }
 
 type notesArgs struct {
@@ -116,6 +122,18 @@ func (n *NotesTool) executeCreate(ctx context.Context, a notesArgs) (string, err
 	if err != nil {
 		return "", fmt.Errorf("create note: %w", err)
 	}
+
+	// Generate and store embedding if embedder is configured.
+	if n.embedder != nil {
+		text := a.Title + "\n" + a.Content
+		if emb, embErr := n.embedder.Embed(ctx, text); embErr == nil {
+			if saveErr := n.db.SaveEmbedding(ctx, id, emb); saveErr != nil {
+				// Embedding is best-effort — note was created successfully.
+				return fmt.Sprintf("Note created (id: %d) — embedding failed: %v", id, saveErr), nil
+			}
+		}
+	}
+
 	return fmt.Sprintf("Note created (id: %d)", id), nil
 }
 
@@ -123,10 +141,20 @@ func (n *NotesTool) executeSearch(ctx context.Context, a notesArgs) (string, err
 	if a.Query == "" {
 		return "", fmt.Errorf("query is required for search")
 	}
+
+	// Always do FTS5 keyword search.
 	notes, err := n.db.SearchNotes(ctx, a.ChatID, a.Query)
 	if err != nil {
 		return "", fmt.Errorf("search notes: %w", err)
 	}
+
+	// If embedder is enabled, also do semantic search and merge results.
+	if n.embedder != nil {
+		if embNotes, embErr := n.semanticSearch(ctx, a.ChatID, a.Query); embErr == nil {
+			notes = mergeNotesByID(notes, embNotes)
+		}
+	}
+
 	if len(notes) == 0 {
 		return "No notes found.", nil
 	}
@@ -137,6 +165,49 @@ func (n *NotesTool) executeSearch(ctx context.Context, a notesArgs) (string, err
 			note.ID, note.Title, note.Tags, truncate(note.Content, 150))
 	}
 	return result.String(), nil
+}
+
+// semanticSearch performs embedding-based search and returns matching notes.
+func (n *NotesTool) semanticSearch(ctx context.Context, chatID int64, query string) ([]storage.Note, error) {
+	emb, err := n.embedder.Embed(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("embed query: %w", err)
+	}
+
+	noteIDs, err := n.db.SearchSimilar(ctx, emb, 10)
+	if err != nil {
+		return nil, fmt.Errorf("search similar: %w", err)
+	}
+
+	if len(noteIDs) == 0 {
+		return nil, nil
+	}
+
+	notes := make([]storage.Note, 0, len(noteIDs))
+	for _, nid := range noteIDs {
+		note, err := n.db.GetNote(ctx, nid, chatID)
+		if err != nil {
+			continue // skip deleted/inaccessible
+		}
+		notes = append(notes, *note)
+	}
+	return notes, nil
+}
+
+// mergeNotesByID combines two note slices, preserving order and deduplicating by ID.
+// Notes from b that are not in a are appended at the end.
+func mergeNotesByID(a, b []storage.Note) []storage.Note {
+	seen := make(map[int64]bool, len(a))
+	for _, n := range a {
+		seen[n.ID] = true
+	}
+	for _, n := range b {
+		if !seen[n.ID] {
+			a = append(a, n)
+			seen[n.ID] = true
+		}
+	}
+	return a
 }
 
 func (n *NotesTool) executeList(ctx context.Context, a notesArgs) (string, error) {

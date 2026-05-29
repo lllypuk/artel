@@ -56,7 +56,7 @@ func main() {
 	llmProvider := buildLLMProvider(cfg, logger)
 
 	toolRegistry := tools.NewRegistry(logger)
-	toolRegistry.Register(tools.NewNotesTool(db))
+	registerNotesTool(cfg, toolRegistry, logger, db)
 	toolRegistry.Register(tools.NewRemindersTool(db))
 	toolRegistry.Register(tools.NewDisciplineTool(db))
 	toolRegistry.Register(tools.NewGoalsTool(db))
