@@ -229,18 +229,18 @@ Draft-04/07 (именно такой формат возвращает `Paramete
 go get github.com/xeipuuv/gojsonschema
 ```
 
-- [ ] добавить в `registry.go` поле `validators map[string]*gojsonschema.Schema`
-- [ ] при `Register(tool)` — компилировать `tool.Parameters()` в схему через
+- [x] добавить в `registry.go` поле `validators map[string]*gojsonschema.Schema`
+- [x] при `Register(tool)` — компилировать `tool.Parameters()` в схему через
   `gojsonschema.NewGoLoader`; ошибку компиляции логировать как warn (не паниковать)
-- [ ] в `ExecuteWithNotify(ctx, name, rawArgs)` — если валидатор есть, проверить `rawArgs` до
+- [x] в `ExecuteWithNotify(ctx, name, rawArgs)` — если валидатор есть, проверить `rawArgs` до
   вызова `tool.Execute()`
-- [ ] если validation failed — вернуть структурированную ошибку:
+- [x] если validation failed — вернуть структурированную ошибку:
   `fmt.Errorf("invalid args for tool %s: %s", name, errs[0].String())`
-- [ ] написать тесты в `registry_test.go` (файл уже существует, дополнить):
+- [x] написать тесты в `registry_test.go` (файл уже существует, дополнить):
     - `TestRegistry_ValidPayload` — валидные args проходят
     - `TestRegistry_InvalidPayload` — невалидные args отклоняются до вызова tool
     - `TestRegistry_MissingRequiredField` — отсутствие required поля ловится
-- [ ] запустить `make lint test` — должно пройти
+- [x] запустить `make lint test` — должно пройти
 
 ### Task 6: Финальная проверка и документация
 

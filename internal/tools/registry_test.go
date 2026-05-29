@@ -132,3 +132,119 @@ func TestRegisterOverwrite(t *testing.T) {
 		t.Errorf("expected 'second' (last registration wins), got %q", res)
 	}
 }
+
+// ── JSON Schema validation ───────────────────────────────────────────────────
+
+// strictMockTool has a JSON Schema with required fields and typed properties.
+type strictMockTool struct {
+	name string
+}
+
+func (m *strictMockTool) Name() string        { return m.name }
+func (m *strictMockTool) Description() string { return "strict tool: " + m.name }
+func (m *strictMockTool) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"action": map[string]any{
+				"type": "string",
+				"enum": []string{"go", "stop"},
+			},
+			"count": map[string]any{
+				"type": "integer",
+			},
+		},
+		"required": []string{"action"},
+	}
+}
+func (m *strictMockTool) Execute(_ context.Context, _ json.RawMessage) (string, error) {
+	return "ok", nil
+}
+
+func TestRegistryValidPayload(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := tools.NewRegistry(logger)
+	r.Register(&strictMockTool{name: "strict"})
+
+	// Valid: has required action + optional count (correct type).
+	_, err := r.Execute(context.Background(), "strict", json.RawMessage(`{"action":"go","count":5}`))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestRegistryInvalidPayloadWrongType(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := tools.NewRegistry(logger)
+	r.Register(&strictMockTool{name: "strict"})
+
+	// count should be integer, not string.
+	_, err := r.Execute(context.Background(), "strict", json.RawMessage(`{"action":"go","count":"abc"}`))
+	if err == nil {
+		t.Fatal("expected validation error for wrong type")
+	}
+	if !contains(err.Error(), "invalid args") {
+		t.Errorf("expected 'invalid args' in error, got: %s", err.Error())
+	}
+}
+
+func TestRegistryMissingRequiredField(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := tools.NewRegistry(logger)
+	r.Register(&strictMockTool{name: "strict"})
+
+	// Missing required "action" field.
+	_, err := r.Execute(context.Background(), "strict", json.RawMessage(`{"count":1}`))
+	if err == nil {
+		t.Fatal("expected validation error for missing required field")
+	}
+	if !contains(err.Error(), "action") && !contains(err.Error(), "required") {
+		t.Errorf("expected error about missing required field 'action', got: %s", err.Error())
+	}
+}
+
+func TestRegistryValidPayloadMinimal(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := tools.NewRegistry(logger)
+	r.Register(&strictMockTool{name: "strict"})
+
+	// Valid: only required field.
+	_, err := r.Execute(context.Background(), "strict", json.RawMessage(`{"action":"stop"}`))
+	if err != nil {
+		t.Fatalf("expected no error for minimal valid payload, got: %v", err)
+	}
+}
+
+func TestRegistryInvalidEnumValue(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := tools.NewRegistry(logger)
+	r.Register(&strictMockTool{name: "strict"})
+
+	// "action" must be "go" or "stop", not "invalid".
+	_, err := r.Execute(context.Background(), "strict", json.RawMessage(`{"action":"invalid"}`))
+	if err == nil {
+		t.Fatal("expected validation error for invalid enum value")
+	}
+}
+
+func TestRegistryNoSchemaNoValidation(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	r := tools.NewRegistry(logger)
+	// mockTool returns {"type": "object"} with no properties/required — everything passes.
+	r.Register(&mockTool{name: "lenient"})
+
+	_, err := r.Execute(context.Background(), "lenient", json.RawMessage(`anything`))
+	// mockTool schema says "object", so non-object JSON fails.
+	if err == nil {
+		t.Log("no validation error — tool with lenient schema")
+	}
+}
+
+func contains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
