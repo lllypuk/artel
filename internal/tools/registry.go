@@ -31,16 +31,18 @@ type Notifier func(chatID int64, message string)
 
 // Registry holds all registered tools.
 type Registry struct {
-	tools  map[string]Tool
-	notify Notifier
-	logger *slog.Logger
+	tools      map[string]Tool
+	validators map[string]*compiledSchema // tool name → pre-compiled JSON Schema
+	notify     Notifier
+	logger     *slog.Logger
 }
 
 // NewRegistry creates a new tool registry.
 func NewRegistry(logger *slog.Logger) *Registry {
 	return &Registry{
-		tools:  make(map[string]Tool),
-		logger: logger,
+		tools:      make(map[string]Tool),
+		validators: make(map[string]*compiledSchema),
+		logger:     logger,
 	}
 }
 
@@ -52,6 +54,16 @@ func (r *Registry) SetNotifier(notify Notifier) {
 // Register adds a tool to the registry.
 func (r *Registry) Register(t Tool) {
 	r.tools[t.Name()] = t
+	// Pre-compile the JSON Schema for fast validation on every Execute call.
+	params := t.Parameters()
+	if params != nil {
+		cs, err := compileSchema(params)
+		if err != nil {
+			r.logger.Warn("failed to compile JSON Schema for tool", "tool", t.Name(), "error", err)
+		} else {
+			r.validators[t.Name()] = cs
+		}
+	}
 }
 
 // Get returns a tool by name.
@@ -66,14 +78,20 @@ func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessag
 }
 
 // ExecuteWithNotify finds and executes a tool by name.
-// Notifications are disabled for silent operation.
+// Validates arguments against the tool's JSON Schema before execution.
 func (r *Registry) ExecuteWithNotify(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	t, ok := r.tools[name]
 	if !ok {
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
 
-	// Notifications disabled - execute tools silently
+	// Validate arguments against JSON Schema if available.
+	if cs, hasSchema := r.validators[name]; hasSchema && len(args) > 0 {
+		if err := validateArgs(cs, args); err != nil {
+			return "", fmt.Errorf("invalid args for tool %s: %w", name, err)
+		}
+	}
+
 	return t.Execute(ctx, args)
 }
 

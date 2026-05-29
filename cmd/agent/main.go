@@ -15,6 +15,7 @@ import (
 	"github.com/lllypuk/agent-shatrov/internal/llm"
 	"github.com/lllypuk/agent-shatrov/internal/storage"
 	"github.com/lllypuk/agent-shatrov/internal/telegram"
+	"github.com/lllypuk/agent-shatrov/internal/telemetry"
 	"github.com/lllypuk/agent-shatrov/internal/tools"
 )
 
@@ -51,12 +52,33 @@ func main() {
 	}
 	defer db.Close() //nolint:errcheck
 
+	// Initialize OpenTelemetry tracing.
+	var otelShutdown func(context.Context) error
+	if cfg.Otel.Endpoint != "" {
+		serviceName := cfg.Otel.ServiceName
+		if serviceName == "" {
+			serviceName = "agent-shatrov"
+		}
+		shutdown, err := telemetry.InitOTLP(cfg.Otel.Endpoint, serviceName)
+		if err != nil {
+			logger.Warn("OTel OTLP initialization failed, using noop", "error", err)
+			otelShutdown = telemetry.ShutdownNoop()
+		} else {
+			otelShutdown = shutdown
+			logger.Info("OTel tracing enabled", "endpoint", cfg.Otel.Endpoint, "service", serviceName)
+		}
+	} else {
+		telemetry.Init()
+		otelShutdown = telemetry.ShutdownNoop()
+	}
+	defer telemetry.ShutdownWithTimeout(otelShutdown, 5*time.Second)
+
 	startTime := time.Now()
 
 	llmProvider := buildLLMProvider(cfg, logger)
 
 	toolRegistry := tools.NewRegistry(logger)
-	toolRegistry.Register(tools.NewNotesTool(db))
+	registerNotesTool(cfg, toolRegistry, logger, db)
 	toolRegistry.Register(tools.NewRemindersTool(db))
 	toolRegistry.Register(tools.NewDisciplineTool(db))
 	toolRegistry.Register(tools.NewGoalsTool(db))

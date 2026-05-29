@@ -116,6 +116,31 @@ func registerStocksTool(cfg *config.Config, registry *tools.Registry, logger *sl
 	logger.Info("Stocks tool enabled", "cache_ttl_minutes", cacheTTL, "timeout", timeout)
 }
 
+// registerNotesTool регистрирует инструмент заметок с опциональным embedding.
+func registerNotesTool(cfg *config.Config, registry *tools.Registry, logger *slog.Logger, db *storage.DB) {
+	if cfg.Notes.Embedding.Enabled {
+		model := cfg.Notes.Embedding.Model
+		if model == "" {
+			model = "nomic-embed-text"
+		}
+		ollamaURL := cfg.Notes.Embedding.OllamaURL
+		if ollamaURL == "" {
+			ollamaURL = "http://localhost:11434"
+		}
+		embedder := tools.NewOllamaEmbedder(tools.OllamaEmbedderConfig{
+			BaseURL: ollamaURL,
+			Model:   model,
+		})
+		registry.Register(tools.NewNotesToolWithEmbedder(db, embedder))
+		logger.Info("Notes tool enabled with semantic search",
+			"model", model,
+			"ollama_url", ollamaURL,
+		)
+	} else {
+		registry.Register(tools.NewNotesTool(db))
+	}
+}
+
 func registerWeatherTool(cfg *config.Config, registry *tools.Registry, logger *slog.Logger) {
 	if !cfg.Weather.Enabled {
 		return

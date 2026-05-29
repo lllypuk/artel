@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,9 @@ import (
 	"github.com/lllypuk/agent-shatrov/internal/llm"
 	"github.com/lllypuk/agent-shatrov/internal/storage"
 	"github.com/lllypuk/agent-shatrov/internal/tools"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -47,8 +51,9 @@ func newAgent(t *testing.T, srv *httptest.Server) *agent.Agent {
 
 // llmMockTool is a Tool implementation used only inside agent tests.
 type llmMockTool struct {
-	name   string
-	result string
+	name    string
+	result  string
+	execErr error
 }
 
 func (m *llmMockTool) Name() string        { return m.name }
@@ -57,7 +62,7 @@ func (m *llmMockTool) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
 }
 func (m *llmMockTool) Execute(_ context.Context, _ json.RawMessage) (string, error) {
-	return m.result, nil
+	return m.result, m.execErr
 }
 
 // textResponse returns an httptest.Server that always replies with a plain
@@ -260,6 +265,182 @@ func TestHandleMessageToolResultInContext(t *testing.T) {
 	}
 }
 
+// ── ReAct loop edge cases ──────────────────────────────────────────────────
+
+func TestHandleMessageMaxIterations(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		callCount++
+		resp := llm.ChatResponse{
+			Choices: []llm.Choice{{
+				Message: llm.Message{
+					Role: "assistant",
+					ToolCalls: []llm.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						Function: llm.FunctionCall{
+							Name:      "my_tool",
+							Arguments: `{}`,
+						},
+					}},
+				},
+			}},
+			Usage: llm.Usage{TotalTokens: 5},
+		}
+		json.NewEncoder(w).Encode(resp) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	db := newTestDB(t)
+	logger := silentLogger()
+	registry := tools.NewRegistry(logger)
+	registry.Register(&llmMockTool{name: "my_tool", result: "ok"})
+
+	a := agent.New(llm.NewClient(srv.URL, "key"), "model", 3, registry, db, logger)
+
+	resp, err := a.HandleMessage(context.Background(), 10, "keep going")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(resp.Text, "лимит итераций") {
+		t.Errorf("expected max iterations message, got %q", resp.Text)
+	}
+	if callCount != 3 {
+		t.Errorf("expected 3 LLM calls (maxIterations), got %d", callCount)
+	}
+	if resp.Usage == nil {
+		t.Error("expected non-nil usage even when hitting max iterations")
+	}
+}
+
+func TestHandleMessageUnknownTool(t *testing.T) {
+	var secondReq llm.ChatRequest
+	callCount := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		callCount++
+		var resp llm.ChatResponse
+		if callCount == 1 {
+			resp = llm.ChatResponse{
+				Choices: []llm.Choice{{
+					Message: llm.Message{
+						Role: "assistant",
+						ToolCalls: []llm.ToolCall{{
+							ID:       "tc1",
+							Type:     "function",
+							Function: llm.FunctionCall{Name: "nonexistent", Arguments: `{}`},
+						}},
+					},
+				}},
+			}
+		} else {
+			json.NewDecoder(r.Body).Decode(&secondReq) //nolint:errcheck
+			resp = llm.ChatResponse{
+				Choices: []llm.Choice{{
+					Message: llm.Message{Role: "assistant", Content: "recovered"},
+				}},
+			}
+		}
+		json.NewEncoder(w).Encode(resp) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	db := newTestDB(t)
+	logger := silentLogger()
+	registry := tools.NewRegistry(logger)
+
+	a := agent.New(llm.NewClient(srv.URL, "key"), "model", 10, registry, db, logger)
+
+	resp, err := a.HandleMessage(context.Background(), 10, "use unknown tool")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Text != "recovered" {
+		t.Errorf("expected 'recovered', got %q", resp.Text)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 LLM calls, got %d", callCount)
+	}
+
+	// The second LLM request must include a "tool" role message with the error.
+	found := false
+	for _, m := range secondReq.Messages {
+		if m.Role == "tool" && strings.Contains(m.Content, "Error: unknown tool: nonexistent") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected tool error result in second LLM request, got messages: %+v", secondReq.Messages)
+	}
+}
+
+func TestHandleMessageToolError(t *testing.T) {
+	var secondReq llm.ChatRequest
+	callCount := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		callCount++
+		var resp llm.ChatResponse
+		if callCount == 1 {
+			resp = llm.ChatResponse{
+				Choices: []llm.Choice{{
+					Message: llm.Message{
+						Role: "assistant",
+						ToolCalls: []llm.ToolCall{{
+							ID:       "tc1",
+							Type:     "function",
+							Function: llm.FunctionCall{Name: "failing", Arguments: `{}`},
+						}},
+					},
+				}},
+			}
+		} else {
+			json.NewDecoder(r.Body).Decode(&secondReq) //nolint:errcheck
+			resp = llm.ChatResponse{
+				Choices: []llm.Choice{{
+					Message: llm.Message{Role: "assistant", Content: "handled error"},
+				}},
+			}
+		}
+		json.NewEncoder(w).Encode(resp) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	db := newTestDB(t)
+	logger := silentLogger()
+	registry := tools.NewRegistry(logger)
+	registry.Register(&llmMockTool{name: "failing", execErr: fmt.Errorf("something went wrong")})
+
+	a := agent.New(llm.NewClient(srv.URL, "key"), "model", 10, registry, db, logger)
+
+	resp, err := a.HandleMessage(context.Background(), 10, "trigger error")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Text != "handled error" {
+		t.Errorf("expected 'handled error', got %q", resp.Text)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 LLM calls, got %d", callCount)
+	}
+
+	// The second LLM request must include a "tool" role message with the error.
+	found := false
+	for _, m := range secondReq.Messages {
+		if m.Role == "tool" && strings.Contains(m.Content, "Error: something went wrong") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected tool error result in second LLM request, got messages: %+v", secondReq.Messages)
+	}
+}
+
 // ── NewConversation ───────────────────────────────────────────────────────────
 
 func TestNewConversation(t *testing.T) {
@@ -434,5 +615,63 @@ func TestHandleMessageWithAttachmentsImage(t *testing.T) {
 	}
 	if imgPart.ImageURL == nil || !strings.HasPrefix(imgPart.ImageURL.URL, "data:image/jpeg;base64,") {
 		t.Errorf("unexpected image URL: %+v", imgPart.ImageURL)
+	}
+}
+
+// ── OpenTelemetry tracing ───────────────────────────────────────────────────
+
+func TestHandleMessageWithTracing(t *testing.T) {
+	// Set up in-memory exporter as the global tracer provider.
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp)),
+	)
+
+	// Replace global provider for this test.
+	origTP := otel.GetTracerProvider() //nolint:staticcheck
+	otel.SetTracerProvider(tp)
+	defer func() {
+		otel.SetTracerProvider(origTP)
+		_ = tp.Shutdown(context.Background())
+	}()
+
+	srv := textResponse(t, "Hello with tracing!")
+
+	db := newTestDB(t)
+	logger := silentLogger()
+	registry := tools.NewRegistry(logger)
+
+	a := agent.New(llm.NewClient(srv.URL, "key"), "model", 10, registry, db, logger)
+
+	resp, err := a.HandleMessage(context.Background(), 777, "trace me")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Text != "Hello with tracing!" {
+		t.Errorf("expected 'Hello with tracing!', got %q", resp.Text)
+	}
+
+	// Flush spans.
+	_ = tp.ForceFlush(context.Background())
+
+	spans := exp.GetSpans()
+	if len(spans) == 0 {
+		t.Fatal("expected at least one span")
+	}
+
+	// Check that we have an agent.run span.
+	foundRun := false
+	for _, s := range spans {
+		if s.Name == "agent.run" {
+			foundRun = true
+			break
+		}
+	}
+	if !foundRun {
+		names := make([]string, len(spans))
+		for i, s := range spans {
+			names[i] = s.Name
+		}
+		t.Errorf("expected 'agent.run' span, got spans: %v", names)
 	}
 }

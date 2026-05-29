@@ -52,9 +52,9 @@ langchaingo дало бы обратный эффект: лишняя завис
 
 ## Testing Strategy
 
-- **Unit tests**: моки для `llm.Provider` и `tools.Tool`, табличные тесты для всех веток ReAct loop
-- **Storage tests**: миграции SQLite в `:memory:`, проверка CRUD и FTS5 для notes
-- **Integration tests** (Task 3): docker-compose с Jaeger/OTel collector, проверка трейсов
+- **Unit tests**: httptest.Server для LLM (уже используется в agent_test.go), табличные тесты для всех веток ReAct loop
+- **Storage tests**: миграции SQLite в `:memory:`, проверка CRUD для note_embeddings
+- **OTel tests** (Task 4): in-memory span exporter (`sdktrace.NewSimpleSpanProcessor` + `tracetest.NewInMemoryExporter`) — никакого docker-compose, всё в unit-тестах
 - **Middleware tests**: валидные/невалидные JSON payloads для каждого инструмента
 
 ## Progress Tracking
@@ -99,9 +99,11 @@ langchaingo дало бы обратный эффект: лишняя завис
 
 ### 4. JSON Schema валидация перед Execute()
 
-- Создать `internal/tools/middleware.go` — `ValidatingRegistry` или middleware wrapper
-- При `Register(tool)` — компилировать `tool.Parameters()` в `gojsonschema.Schema` (или
-  `xjsonschema`)
+- Добавить в `registry.go` поле `validators map[string]*gojsonschema.Schema` +
+  helper-функции в `validation.go`
+- Библиотека: `github.com/xeipuuv/gojsonschema` (JSON Schema Draft-04/07, стабильная)
+- При `Register(tool)` — компилировать `tool.Parameters()` в schema через
+  `gojsonschema.NewGoLoader`
 - При `Execute(ctx, name, rawArgs)` — сначала валидация schema, потом `tool.Execute()`
 - Если валидация не прошла — вернуть structured error в LLM (а не panic или nil dereference)
 
@@ -114,24 +116,30 @@ langchaingo дало бы обратный эффект: лишняя завис
 
 ### Task 1: ReAct Loop Unit Tests
 
+⚠️ **`internal/agent/agent_test.go` уже существует** с 13 тестами (httptest.Server подход — лучше чем
+моки, тестирует всю цепочку). Отдельные `mock_provider.go` / `mock_tool.go` не нужны.
+
+**Уже покрыто:**
+- `TestHandleMessageSimpleResponse` — текстовый ответ ✅
+- `TestHandleMessageToolCallLoop` — tool call → execute → финальный текст ✅
+- `TestHandleMessageToolResultInContext` — tool result в контексте LLM ✅
+- `TestHandleMessageNoChoices` — пустой ответ LLM ✅
+- `TestHandleMessagePreservesHistory` — история диалога ✅
+- `TestHandleMessageWithAttachments*` — вложения/vision ✅
+- `TestNewConversation`, `TestGetSetModel`, `TestSetModels` ✅
+
 **Files:**
 
-- Create: `internal/agent/agent_test.go`
-- Create: `internal/agent/mock_provider.go`
-- Create: `internal/agent/mock_tool.go`
+- Modify: `internal/agent/agent_test.go` — добавить 3 недостающих теста
 
-- [ ] создать `mockProvider` — `llm.Provider` с настраиваемым ответом (`responses []CompletionResponse`, cursor)
-- [ ] создать `mockTool` — `tools.Tool` с полем `calledWith map[string]any`, фиксирует `Execute()`
-- [ ] написать тесты:
-    - `TestAgent_SingleTurn_TextResponse` — LLM отвечает текстом → `agent.Run()` возвращает текст, 1
-      итерация
-    - `TestAgent_TwoTurns_ToolThenText` — LLM: tool_call → tool execute → LLM: текст → 2 итерации
-    - `TestAgent_MaxIterations` — LLM всегда возвращает tool_call → после `max_iterations`
-      возвращается error или partial text
-    - `TestAgent_UnknownTool` — LLM просит несуществующий tool → graceful error, не panic
-    - `TestAgent_ToolError` — tool.Execute возвращает error → error передаётся в LLM как результат,
-      loop продолжается
-- [ ] запустить `make lint test` — должно пройти
+- [x] `agent_test.go` создан, базовые тесты написаны
+- [x] добавить `TestHandleMessageMaxIterations` — LLM всегда возвращает tool_call →
+  после `max_iterations` возвращается частичный текст (не паника)
+- [x] добавить `TestHandleMessageUnknownTool` — LLM просит несуществующий tool →
+  graceful error в ответе, не паника, loop продолжается
+- [x] добавить `TestHandleMessageToolError` — tool.Execute возвращает error →
+  error передаётся в LLM как результат ("Error: ..."), loop продолжается
+- [x] запустить `make lint test` — должно пройти
 
 ### Task 2: RAG / Embedding для заметок — инфраструктура
 
@@ -142,14 +150,17 @@ langchaingo дало бы обратный эффект: лишняя завис
 - Modify: `internal/config/config.go` — добавить `NotesEmbeddingConfig`
 - Modify: `config.example.yaml` — пример секции `notes.embedding`
 
-- [ ] добавить в `sqlite.go` DDL: `CREATE TABLE note_embeddings(...)` + `CREATE INDEX` по `note_id`
-- [ ] в `notes_embeddings.go` реализовать:
-    - `SaveEmbedding(ctx, noteID int64, embedding []float32) error`
-    - `SearchSimilar(ctx, queryEmbedding []float32, limit int) ([]int64, error)` — cosine similarity
+- [x] добавить в `sqlite.go` DDL: `CREATE TABLE note_embeddings(...)` + `CREATE INDEX` по `note_id`
+- [x] в `notes_embeddings.go` реализовать:
+    - `SaveEmbedding(ctx, noteID int64, embedding []float32) error` — сериализация `[]float32` в
+      `[]byte` через `encoding/binary` (little-endian), хранение в BLOB
+    - `SearchSimilar(ctx, queryEmbedding []float32, limit int) ([]int64, error)` — загрузить все
+      embeddings из БД в память, посчитать cosine similarity в Go (O(n) scan); при ~1000 заметок
+      достаточно быстро, нативный vector search в SQLite не поддерживается
     - `DeleteEmbedding(ctx, noteID int64) error`
-- [ ] добавить `NotesEmbeddingConfig` в `config.go` (Enabled, Model, OllamaURL)
-- [ ] написать тесты для `storage/notes_embeddings.go` через `:memory:` SQLite
-- [ ] запустить `make lint test` — должно пройти
+- [x] добавить `NotesEmbeddingConfig` в `config.go` (Enabled, Model, OllamaURL)
+- [x] написать тесты для `storage/notes_embeddings.go` через `:memory:` SQLite
+- [x] запустить `make lint test` — должно пройти
 
 ### Task 3: RAG — генерация embedding и поисковый инструмент
 
@@ -160,52 +171,76 @@ langchaingo дало бы обратный эффект: лишняя завис
 - Modify: `cmd/agent/tools.go` — `registerNotesTool` создаёт `OllamaEmbedder` при `cfg.Notes.Embedding.Enabled`
 - Modify: `internal/tools/notes.go` — `searchNotes`: объединить FTS5 + векторный поиск
 
-- [ ] реализовать `OllamaEmbedder` — HTTP POST `/api/embeddings` в Ollama с model + prompt
-- [ ] в `notes.go` при `createNote` / `updateNote` — если embedder != nil, сгенерировать embedding и
+- [x] реализовать `OllamaEmbedder` — HTTP POST `/api/embeddings` в Ollama с model + prompt
+- [x] в `notes.go` при `createNote` / `updateNote` — если embedder != nil, сгенерировать embedding и
   сохранить через `storage.SaveEmbedding`
-- [ ] в `searchNotes` — если embedder != nil:
+- [x] в `searchNotes` — если embedder != nil:
     1. Сгенерировать embedding от query
     2. Получить top-N по cosine similarity
     3. Получить top-N по FTS5
     4. Объединить, дедуплицировать, отсортировать по релевантности (гибридный скоринг)
-- [ ] написать тесты для `OllamaEmbedder` (httptest mock) и для hybrid search
-- [ ] запустить `make lint test` — должно пройти
+- [x] написать тесты для `OllamaEmbedder` (httptest mock) и для hybrid search
+- [x] запустить `make lint test` — должно пройти
 
 ### Task 4: OpenTelemetry — трассировка ReAct loop
 
 **Files:**
 
-- Modify: `go.mod` / `go.sum` — добавить `go.opentelemetry.io/otel`
-- Modify: `cmd/agent/main.go` — инициализация TracerProvider (OTLP или stdout для dev)
+- Modify: `go.mod` / `go.sum` — добавить OTel зависимости (см. ниже)
+- Modify: `cmd/agent/main.go` — инициализация TracerProvider (OTLP HTTP если задан endpoint,
+  иначе stdout для dev; если OTel не сконфигурирован — noop)
 - Modify: `internal/agent/agent.go` — спаны: `agent.run`, `llm.complete`, `tool.{name}`
 - Modify: `internal/llm/client.go` — span на HTTP запрос с атрибутами: model, provider, tokens
 - Modify: `internal/llm/multi.go` — span на fallback/retry
 
-- [ ] добавить зависимости: `otel`, `otel/trace`, `otel/sdk`, `otel/exporters/otlp/otlptrace/otlptracehttp`
-- [ ] в `main.go` инициализировать `TracerProvider` при старте, shutdown при SIGINT
-- [ ] в `agent.go` — `tracer.Start(ctx, "agent.run")` → child spans для каждой итерации, LLM call, tool execution
-- [ ] в `client.go` — `tracer.Start(ctx, "llm.complete")` с атрибутами model, provider, token count
-- [ ] в `multi.go` — span на каждый fallback с атрибутом `provider_name`
-- [ ] написать тест: проверить что spans создаются (in-memory exporter для тестов)
-- [ ] запустить `make lint test` — должно пройти
+**OTel зависимости** (`go get`):
+```
+go.opentelemetry.io/otel
+go.opentelemetry.io/otel/trace
+go.opentelemetry.io/otel/sdk
+go.opentelemetry.io/otel/sdk/trace
+go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp
+go.opentelemetry.io/otel/exporters/stdout/stdouttrace
+```
+
+- [x] добавить зависимости через `go get` (список выше)
+- [x] в `main.go` инициализировать `TracerProvider`: если `otel.endpoint` задан в конфиге — OTLP
+  HTTP экспортер; иначе noop провайдер (чтобы OTel не был обязательным)
+- [x] добавить `OtelConfig` в `internal/config/config.go` (`Endpoint string`, `ServiceName string`)
+- [x] в `agent.go` — `tracer.Start(ctx, "agent.run")` → child spans для каждой итерации, LLM call,
+  tool execution
+- [x] в `client.go` — `tracer.Start(ctx, "llm.complete")` с атрибутами model, provider, token count
+- [x] в `multi.go` — span на каждый fallback с атрибутом `provider_name`
+- [x] написать тест: проверить что spans создаются через `tracetest.NewInMemoryExporter` +
+  `sdktrace.NewSimpleSpanProcessor` (не docker-compose, не Jaeger — только unit test)
+- [x] запустить `make lint test` — должно пройти
 
 ### Task 5: JSON Schema валидация в Registry
 
+Используем `github.com/xeipuuv/gojsonschema` — стабильная библиотека с поддержкой JSON Schema
+Draft-04/07 (именно такой формат возвращает `Parameters()`). Альтернативы не рассматриваем.
+
 **Files:**
 
-- Modify: `internal/tools/registry.go`
-- Create: `internal/tools/validation.go`
+- Modify: `internal/tools/registry.go` — добавить `validators map[string]*gojsonschema.Schema`
+- Create: `internal/tools/validation.go` — helper-функции компиляции схем и валидации
 
-- [ ] добавить в `registry.go` поле `validators map[string]*gojsonschema.Schema`
-- [ ] при `Register(tool)` — компилировать `tool.Parameters()` в JSON Schema (через
-  `gojsonschema.NewGoLoader`)
-- [ ] в `Execute(ctx, name, rawArgs)` — перед `tool.Execute()` валидировать `rawArgs` по schema
-- [ ] если validation failed — вернуть `fmt.Errorf("validation failed for tool %s: %v", name, errs)`
-- [ ] написать тесты:
+```
+go get github.com/xeipuuv/gojsonschema
+```
+
+- [x] добавить в `registry.go` поле `validators map[string]*gojsonschema.Schema`
+- [x] при `Register(tool)` — компилировать `tool.Parameters()` в схему через
+  `gojsonschema.NewGoLoader`; ошибку компиляции логировать как warn (не паниковать)
+- [x] в `ExecuteWithNotify(ctx, name, rawArgs)` — если валидатор есть, проверить `rawArgs` до
+  вызова `tool.Execute()`
+- [x] если validation failed — вернуть структурированную ошибку:
+  `fmt.Errorf("invalid args for tool %s: %s", name, errs[0].String())`
+- [x] написать тесты в `registry_test.go` (файл уже существует, дополнить):
     - `TestRegistry_ValidPayload` — валидные args проходят
     - `TestRegistry_InvalidPayload` — невалидные args отклоняются до вызова tool
     - `TestRegistry_MissingRequiredField` — отсутствие required поля ловится
-- [ ] запустить `make lint test` — должно пройти
+- [x] запустить `make lint test` — должно пройти
 
 ### Task 6: Финальная проверка и документация
 
@@ -214,10 +249,10 @@ langchaingo дало бы обратный эффект: лишняя завис
 - Modify: `CLAUDE.md` — обновить разделы Architecture, Implemented Features
 - Move: `docs/plans/20260529-architecture-improvements.md` → `docs/plans/completed/`
 
-- [ ] обновить `CLAUDE.md`: добавить embedding/RAG в описание notes, добавить OTel в архитектуру,
+- [x] обновить `CLAUDE.md`: добавить embedding/RAG в описание notes, добавить OTel в архитектуру,
   упомянуть middleware валидацию
-- [ ] убедиться что `make lint test` проходит полностью
-- [ ] переместить план в `docs/plans/completed/`
+- [x] убедиться что `make lint test` проходит полностью
+- [x] переместить план в `docs/plans/completed/`
 
 ## Post-Completion
 
@@ -226,8 +261,9 @@ langchaingo дало бы обратный эффект: лишняя завис
 - Task 2-3 (RAG): поднять Ollama локально (`ollama run nomic-embed-text`), создать заметку,
   проверить что `note_embeddings` заполнилась, выполнить поиск по синониму (не exact match) —
   убедиться что семантически близкая заметка находится
-- Task 4 (OTel): поднять Jaeger (`docker run -p 16686:16686 jaegertracing/all-in-one`), проверить
-  трейсы в UI по `service.name=agent-shatrov`
+- Task 4 (OTel): поднять Jaeger (`docker run -p 16686:16686 jaegertracing/all-in-one`), задать
+  в конфиге `otel.endpoint: "http://localhost:4318"` и `otel.service_name: "agent-shatrov"`,
+  проверить трейсы в UI http://localhost:16686
 - Task 5 (Validation): вызвать инструмент с невалидным JSON (например, string вместо int) —
   убедиться что агент получает structured error и loop продолжается корректно
 
