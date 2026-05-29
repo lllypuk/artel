@@ -160,7 +160,8 @@ func formatNewsItems(items []news.ItemWithScore, title string, limit, offset int
 	if offset > 0 {
 		fmt.Fprintf(&buf, "Страница %d\n", offset/limit+1)
 	}
-	buf.WriteString(strings.Repeat("─", 30) + "\n")
+	buf.WriteString(strings.Repeat("─", 30))
+	buf.WriteString("\n")
 
 	for _, iw := range items {
 		// Status badges
@@ -193,7 +194,8 @@ func formatNewsItems(items []news.ItemWithScore, title string, limit, offset int
 		}
 		fmt.Fprintf(&buf, " | #%d\n", iw.Item.ID)
 
-		buf.WriteString(strings.Repeat("─", 30) + "\n")
+		buf.WriteString(strings.Repeat("─", 30))
+		buf.WriteString("\n")
 	}
 
 	// Pagination hint
