@@ -2,12 +2,54 @@ package transport
 
 import "testing"
 
-func TestAuthGateAllowOwner(t *testing.T) {
+func TestAuthGateAllowOwnerDM(t *testing.T) {
 	g := NewAuthGate(AuthConfig{SelfID: "bot1", SelfUsername: "bot", OwnerIDs: []string{"owner"}})
 
-	allowed, reason := g.Allowed(InboundMessage{SenderID: "owner", Text: "do it"})
+	allowed, reason := g.Allowed(InboundMessage{
+		SenderID: "owner",
+		Text:     "do it",
+		IsDM:     true,
+	})
 	if !allowed || reason != "owner" {
-		t.Fatalf("expected owner allowed, got allowed=%v reason=%q", allowed, reason)
+		t.Fatalf("expected owner in DM allowed, got allowed=%v reason=%q", allowed, reason)
+	}
+}
+
+func TestAuthGateAllowOwnerChannelSelfMention(t *testing.T) {
+	g := NewAuthGate(AuthConfig{SelfID: "bot1", SelfUsername: "analyst-bot", OwnerIDs: []string{"owner"}})
+
+	allowed, reason := g.Allowed(InboundMessage{
+		SenderID: "owner",
+		Text:     "@analyst-bot check this",
+		Mentions: []string{"analyst-bot"},
+	})
+	if !allowed || reason != "owner" {
+		t.Fatalf("expected owner channel self-mention allowed, got allowed=%v reason=%q", allowed, reason)
+	}
+}
+
+func TestAuthGateRejectOwnerChannelNoMention(t *testing.T) {
+	g := NewAuthGate(AuthConfig{SelfID: "bot1", SelfUsername: "analyst-bot", OwnerIDs: []string{"owner"}})
+
+	allowed, reason := g.Allowed(InboundMessage{
+		SenderID: "owner",
+		Text:     "just a general broadcast",
+	})
+	if allowed {
+		t.Fatalf("expected owner channel message without mention blocked, got allowed reason=%q", reason)
+	}
+}
+
+func TestAuthGateRejectOwnerChannelDifferentBotMention(t *testing.T) {
+	g := NewAuthGate(AuthConfig{SelfID: "analyst1", SelfUsername: "analyst-bot", OwnerIDs: []string{"owner"}})
+
+	allowed, reason := g.Allowed(InboundMessage{
+		SenderID: "owner",
+		Text:     "@developer-bot handle this",
+		Mentions: []string{"developer-bot"},
+	})
+	if allowed {
+		t.Fatalf("expected owner channel message mentioning different bot blocked, got allowed reason=%q", reason)
 	}
 }
 
@@ -108,10 +150,13 @@ func TestAuthGateIgnoreUnaddressedChannelMessage(t *testing.T) {
 func TestAuthGateOwnerByChatID(t *testing.T) {
 	g := NewAuthGate(AuthConfig{SelfID: "bot1", SelfUsername: "bot", OwnerIDs: []string{"chat-42"}})
 
+	// Recognition by ChatID represents a private chat (e.g. Telegram DM), so it
+	// must still be allowed even without an explicit mention.
 	allowed, reason := g.Allowed(InboundMessage{
 		ChatID:   "chat-42",
 		SenderID: "someone",
 		Text:     "do it",
+		IsDM:     true,
 	})
 	if !allowed || reason != "owner" {
 		t.Fatalf("expected owner by chat id allowed, got allowed=%v reason=%q", allowed, reason)
@@ -126,6 +171,7 @@ func TestAuthGateOwnerByChatIDWithoutSelfID(t *testing.T) {
 		ChatID:   "chat-42",
 		SenderID: "someone",
 		Text:     "do it",
+		IsDM:     true,
 	})
 	if !allowed || reason != "owner" {
 		t.Fatalf("expected owner by chat id allowed without self id, got allowed=%v reason=%q", allowed, reason)

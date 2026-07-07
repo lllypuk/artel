@@ -38,12 +38,23 @@ func NewAuthGate(cfg AuthConfig) *AuthGate {
 
 // Allowed returns true when the message is authorized to trigger the agent.
 // The reason string is for diagnostics and tests only.
+//
+// Authorization rules:
+//   - Messages from self are always ignored.
+//   - Owners (human supervisors) are allowed in DMs unconditionally. In a
+//     channel, an owner is allowed only when the message @-mentions this bot's
+//     own SelfUsername.
+//   - Known team bots are allowed only when they @-mention this bot.
+//   - Other regular users are allowed in DMs or when they @-mention this bot.
 func (g *AuthGate) Allowed(m InboundMessage) (allowed bool, reason string) {
 	if g.isSelf(m) {
 		return false, "self"
 	}
 	if g.isOwner(m) {
-		return true, "owner"
+		if m.IsDM || g.mentionsSelf(m) {
+			return true, "owner"
+		}
+		return false, "owner_not_addressed"
 	}
 	if g.isUnverifiedTeamBot(m) {
 		return false, "unverified_bot"
