@@ -39,5 +39,3 @@ type Post struct {
 func (p *Post) CreatedAt() time.Time {
 	return time.UnixMilli(p.CreateAt)
 }
-
-
