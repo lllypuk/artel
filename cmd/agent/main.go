@@ -13,6 +13,7 @@ import (
 	"github.com/lllypuk/agent-shatrov/internal/agent"
 	"github.com/lllypuk/agent-shatrov/internal/config"
 	"github.com/lllypuk/agent-shatrov/internal/llm"
+	"github.com/lllypuk/agent-shatrov/internal/safeguards"
 	"github.com/lllypuk/agent-shatrov/internal/storage"
 	"github.com/lllypuk/agent-shatrov/internal/telegram"
 	"github.com/lllypuk/agent-shatrov/internal/telemetry"
@@ -95,6 +96,12 @@ func main() {
 	ag := agent.New(llmProvider, cfg.LLM.Models.Default, cfg.LLM.MaxIterations, toolRegistry, db, logger)
 	setupAgent(ag, cfg)
 
+	guard := safeguards.New(safeguards.Config{
+		WarnThreshold:       cfg.Safeguards.LoopWarnBotMessages,
+		SuppressThreshold:   cfg.Safeguards.LoopSuppressBotMessages,
+		MaxRepliesPerMinute: cfg.Safeguards.MaxRepliesPerMinute,
+	})
+
 	var tr transport.Transport
 	switch cfg.Transport.Type {
 	case "telegram", "":
@@ -103,6 +110,7 @@ func main() {
 			logger.Error("create telegram bot", "error", err)
 			os.Exit(1)
 		}
+		bot.SetSafeguards(guard)
 		setupBot(bot, cfg, toolRegistry)
 
 		bot.SetNotificationHandler()

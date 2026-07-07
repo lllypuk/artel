@@ -13,6 +13,7 @@ type Config struct {
 	Transport  TransportConfig  `yaml:"transport"`
 	Telegram   TelegramConfig   `yaml:"telegram"`
 	Mattermost MattermostConfig `yaml:"mattermost"`
+	Safeguards SafeguardsConfig `yaml:"safeguards"`
 	Proactive  ProactiveConfig  `yaml:"proactive"`
 	LLM        LLMConfig        `yaml:"llm"`
 	Database   DatabaseConfig   `yaml:"database"`
@@ -33,6 +34,14 @@ type Config struct {
 
 type TransportConfig struct {
 	Type string `yaml:"type"` // "telegram" or "mattermost"
+}
+
+// SafeguardsConfig configures loop-detection and rate-limiting for autonomous
+// multi-agent conversations.
+type SafeguardsConfig struct {
+	LoopWarnBotMessages     int `yaml:"loop_warn_bot_messages"`     // default: 10
+	LoopSuppressBotMessages int `yaml:"loop_suppress_bot_messages"` // default: 15
+	MaxRepliesPerMinute     int `yaml:"max_replies_per_minute"`     // default: 5
 }
 
 // MattermostConfig configures the Mattermost transport and multi-agent auth.
@@ -276,6 +285,15 @@ func (c *Config) validate() error {
 	}
 	if c.Transport.Type != "telegram" && c.Transport.Type != "mattermost" {
 		return fmt.Errorf("transport.type must be 'telegram' or 'mattermost'")
+	}
+	if c.Safeguards.LoopWarnBotMessages == 0 {
+		c.Safeguards.LoopWarnBotMessages = 10
+	}
+	if c.Safeguards.LoopSuppressBotMessages == 0 {
+		c.Safeguards.LoopSuppressBotMessages = 15
+	}
+	if c.Safeguards.MaxRepliesPerMinute == 0 {
+		c.Safeguards.MaxRepliesPerMinute = 5
 	}
 	if err := c.validateTransport(); err != nil {
 		return err

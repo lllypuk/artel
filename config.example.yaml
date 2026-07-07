@@ -49,6 +49,13 @@ llm:
 # telegram:
 #   proxy: ""            # прокси только для Telegram, e.g. "http://127.0.0.1:2080"
 
+# ── Safeguards (предохранители петель для multi-agent режима) ───────────────
+# Работают для Telegram сейчас и готовы для Mattermost при multi-instance запуске.
+safeguards:
+  loop_warn_bot_messages: 10      # логировать предупреждение после N сообщений ботов
+  loop_suppress_bot_messages: 15  # остановить автоответы после N сообщений ботов
+  max_replies_per_minute: 5       # не больше N ответов агента в минуту на тред
+
 # ── LLM (дополнительные настройки) ───────────────────────────────────────────
 # llm:
 #   provider: "glm"

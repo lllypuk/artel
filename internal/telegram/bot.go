@@ -18,8 +18,10 @@ import (
 
 	"github.com/lllypuk/agent-shatrov/internal/agent"
 	"github.com/lllypuk/agent-shatrov/internal/config"
+	"github.com/lllypuk/agent-shatrov/internal/safeguards"
 	"github.com/lllypuk/agent-shatrov/internal/storage"
 	"github.com/lllypuk/agent-shatrov/internal/tools"
+	"github.com/lllypuk/agent-shatrov/internal/transport"
 )
 
 // Message is a normalized incoming message produced by the Telegram bot for an adapter.
@@ -41,6 +43,7 @@ type Bot struct {
 	filesTool    *tools.FilesTool
 	allowedUsers map[int64]bool
 	logger       *slog.Logger
+	safeguards   *safeguards.Guard
 	// files config
 	maxFileSizeKB     int
 	allowedExtensions map[string]bool
@@ -128,6 +131,14 @@ func (b *Bot) SetStatusInfo(startTime time.Time, dbPath string, db *storage.DB) 
 	b.startTime = startTime
 	b.dbPath = dbPath
 	b.db = db
+}
+
+// SetSafeguards installs the loop-detection / rate-limit guard.
+func (b *Bot) SetSafeguards(guard *safeguards.Guard) {
+	b.safeguards = guard
+	if guard != nil && b.api != nil && b.api.Self.ID != 0 {
+		guard.SetSelfID(strconv.FormatInt(b.api.Self.ID, 10))
+	}
 }
 
 // Messages returns normalized inbound messages as a channel.
@@ -240,6 +251,31 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 
 	b.logger.Debug("message received", "chat_id", chatID, "text", truncateLog(text, 100))
 
+	inbound := transport.InboundMessage{
+		ChatID:     strconv.FormatInt(msg.Chat.ID, 10),
+		SenderID:   strconv.FormatInt(msg.From.ID, 10),
+		SenderName: msg.From.UserName,
+		IsBot:      msg.From.IsBot,
+		Text:       text,
+		Mentions:   extractMentions(msg),
+		IsDM:       msg.Chat.IsPrivate(),
+	}
+
+	if b.safeguards != nil {
+		decision := b.safeguards.BeforeHandle(inbound, time.Now())
+		if !decision.Allowed {
+			b.logger.Warn("safeguard blocked message", "reason", decision.Reason, "chat_id", chatID)
+			if decision.Escalate {
+				b.sendLongText(chatID, safeguards.EscalationMessage)
+				b.safeguards.RecordResponse(inbound, time.Now())
+			}
+			return
+		}
+		if decision.Warn {
+			b.logger.Warn("loop warning: approaching iteration limit", "chat_id", chatID)
+		}
+	}
+
 	// Handle commands
 	if strings.HasPrefix(text, "/") {
 		b.handleCommand(ctx, chatID, text)
@@ -260,6 +296,10 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 
 	// Send response (split if too long for Telegram)
 	b.sendLongText(chatID, resp.Text)
+
+	if b.safeguards != nil {
+		b.safeguards.RecordResponse(inbound, time.Now())
+	}
 
 	if resp.Usage != nil {
 		b.logger.Debug("usage",
