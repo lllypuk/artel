@@ -233,3 +233,57 @@ func TestRateLimitPerThread(t *testing.T) {
 	// Thread B is still allowed.
 	assert.True(t, g.AllowReply(threadB, base).Allowed)
 }
+
+func TestRecordResponseIncrementsLoopCounter(t *testing.T) {
+	cfg := Config{WarnThreshold: 10, SuppressThreshold: 15, MaxRepliesPerMinute: 10}
+	g := New(cfg)
+	base := time.Now()
+
+	// Simulate one side of a two-bot conversation: this instance sees the
+	// incoming messages from the other bot and records its own replies.
+	peer := botMessage(0, 1, "ping")
+	for range 6 {
+		_ = g.BeforeHandle(peer, base)
+		g.RecordResponse(peer, base)
+	}
+
+	count, replies := g.State(threadKey(peer))
+	assert.Equal(t, 12, count, "each cycle of inbound+outgoing counts as 2 bot messages")
+	assert.Equal(t, 6, replies, "six recorded replies")
+
+	// A few more inbound messages should trigger suppression at the documented
+	// total of ~15 bot messages.
+	for range 2 {
+		_ = g.BeforeHandle(peer, base)
+	}
+	assert.Equal(t, 14, countOf(t, g, threadKey(peer)))
+
+	d := g.BeforeHandle(peer, base)
+	assert.False(t, d.Allowed, "suppress should fire from BeforeHandle")
+	assert.True(t, d.Escalate)
+	assert.Equal(t, "loop_suppress", d.Reason)
+}
+
+func TestHumanMessageResetsAfterResponses(t *testing.T) {
+	cfg := Config{WarnThreshold: 2, SuppressThreshold: 4, MaxRepliesPerMinute: 10}
+	g := New(cfg)
+	base := time.Now()
+
+	m := botMessage(0, 1, "ping")
+	_ = g.BeforeHandle(m, base)
+	g.RecordResponse(m, base)
+
+	count, _ := g.State(threadKey(m))
+	assert.Equal(t, 2, count, "one inbound + one outbound bot message")
+
+	// Human message resets the counter, including outbound messages.
+	_ = g.BeforeHandle(humanMessage(0, 9, "stop"), base)
+	count, _ = g.State(threadKey(m))
+	assert.Equal(t, 0, count)
+}
+
+func countOf(t *testing.T, g *Guard, key string) int {
+	t.Helper()
+	count, _ := g.State(key)
+	return count
+}

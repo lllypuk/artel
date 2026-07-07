@@ -164,7 +164,9 @@ func (g *Guard) AllowReply(m transport.InboundMessage, now time.Time) Decision {
 }
 
 // RecordResponse records that the agent sent a response in the message's thread.
-// It is used for the per-thread rate-limit window.
+// It is used for the per-thread rate-limit window and also increments the loop
+// counter so that each instance tracks both inbound and outbound bot messages
+// in the thread (approximating the total bot-message count).
 func (g *Guard) RecordResponse(m transport.InboundMessage, now time.Time) {
 	key := threadKey(m)
 
@@ -178,6 +180,7 @@ func (g *Guard) RecordResponse(m transport.InboundMessage, now time.Time) {
 	}
 
 	state.replies = append(state.replies, now)
+	state.botCount++
 	state.lastUpdate = now
 }
 
