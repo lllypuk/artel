@@ -286,7 +286,8 @@ func (w *WSClient) readLoop(ctx context.Context, conn *websocket.Conn) {
 		}
 
 		if w.handler != nil {
-			w.handler(posted)
+			p := posted // capture for goroutine
+			go w.handler(p)
 		}
 	}
 }

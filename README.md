@@ -53,8 +53,8 @@ make run
 ## Команды
 
 ```bash
-make run                    # собрать и запустить с config.yaml
-make run CONFIG=config.yaml # передать другой конфиг при сборке через Makefile (если поддерживается)
+make run                    # собрать и запустить с config.yaml (по умолчанию)
+make run CONFIG=config-analyst.yaml # запустить с другим конфигом (multi-instance)
 ./bin/agent config-analyst.yaml  # запустить указанной конфигурацией (multi-instance)
 make stop                   # остановить
 make restart                # перезапустить

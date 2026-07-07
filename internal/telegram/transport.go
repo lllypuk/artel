@@ -36,23 +36,17 @@ func (t *TelegramTransport) Send(ctx context.Context, m transport.Message) error
 	return nil
 }
 
-// Messages returns inbound messages adapted to the transport format.
+// Messages returns nil for Telegram. Telegram handles inbound updates
+// internally inside Run (via handleUpdate) and does not use the dispatcher
+// pattern. A nil channel blocks forever in a select, which is the correct
+// behavior since no messages will ever be produced here.
 func (t *TelegramTransport) Messages() <-chan transport.InboundMessage {
-	out := make(chan transport.InboundMessage)
-	go t.forwardUpdates(out)
-	return out
+	return nil
 }
 
 // Close stops the underlying bot update loop.
 func (t *TelegramTransport) Close() error {
 	return nil
-}
-
-func (t *TelegramTransport) forwardUpdates(out chan<- transport.InboundMessage) {
-	in := t.bot.Messages()
-	for msg := range in {
-		out <- toInboundMessage(msg)
-	}
 }
 
 func parseChatID(s string) (int64, error) {

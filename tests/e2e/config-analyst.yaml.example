@@ -6,7 +6,7 @@ transport:
 
 mattermost:
   server_url: "http://localhost:8065"
-  token: "<анalyst-bot-token>"
+  token: "<analyst-bot-token>"
   proxy: ""
   bot_username: "analyst-bot"
   owner_user_id: "<owner-user-id>"

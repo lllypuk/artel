@@ -142,39 +142,12 @@ func (b *Bot) SetSafeguards(guard *safeguards.Guard) {
 	}
 }
 
-// Messages returns normalized inbound messages as a channel.
-// This allows a transport adapter to consume Telegram updates without direct
-// knowledge of tgbotapi types.
+// Messages returns nil for Telegram. Telegram updates are consumed
+// internally by Run/handleUpdate; calling GetUpdatesChan a second time would
+// conflict with the existing long-poller (Telegram API returns 409 Conflict).
+// Use the Mattermost transport if you need the dispatcher pattern.
 func (b *Bot) Messages() <-chan Message {
-	out := make(chan Message)
-	go b.forwardMessages(out)
-	return out
-}
-
-func (b *Bot) forwardMessages(out chan<- Message) {
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-	updates := b.api.GetUpdatesChan(u)
-	for update := range updates {
-		if update.Message == nil || update.Message.Text == "" {
-			continue
-		}
-		msg := update.Message
-		replyTo := ""
-		if msg.ReplyToMessage != nil {
-			replyTo = strconv.Itoa(msg.ReplyToMessage.MessageID)
-		}
-		out <- Message{
-			ChatID:     strconv.FormatInt(msg.Chat.ID, 10),
-			SenderID:   strconv.FormatInt(msg.From.ID, 10),
-			SenderName: msg.From.UserName,
-			IsBot:      msg.From.IsBot,
-			Text:       strings.TrimSpace(msg.Text),
-			Mentions:   extractMentions(msg),
-			IsDM:       msg.Chat.IsPrivate(),
-			ReplyTo:    replyTo,
-		}
-	}
+	return nil
 }
 
 func extractMentions(msg *tgbotapi.Message) []string {

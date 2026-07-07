@@ -12,8 +12,9 @@ type AuthConfig struct {
 	// SelfUsername is the agent's own username without the leading '@'.
 	// Used to detect @-mentions in channel conversations.
 	SelfUsername string
-	// OwnerIDs are human supervisors with full access. A message from any of
-	// these IDs is always handled, even in a public channel without a mention.
+	// OwnerIDs are human supervisors. A message from any of these IDs is
+	// always handled in a DM. In a public channel, an owner is handled only
+	// when the message @-mentions this bot's SelfUsername.
 	OwnerIDs []string
 	// TeamBots are known bot teammates. They are allowed to trigger the agent
 	// only when they @-mention it (or in a DM, depending on transport rules).

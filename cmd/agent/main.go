@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -284,13 +285,19 @@ func buildMattermostTransport(ctx context.Context, cfg *config.Config, ag *agent
 	}
 	guard.SetSelfID(mmTr.SelfID())
 
+	if cfg.Mattermost.BotUsername != "" &&
+		!strings.EqualFold(cfg.Mattermost.BotUsername, mmTr.SelfUsername()) {
+		logger.Warn("mattermost: configured bot_username does not match actual username; using actual",
+			"configured", cfg.Mattermost.BotUsername, "actual", mmTr.SelfUsername())
+	}
+
 	ownerIDs := make([]string, 0, 1)
 	if cfg.Mattermost.OwnerUserID != "" {
 		ownerIDs = append(ownerIDs, cfg.Mattermost.OwnerUserID)
 	}
 	authGate := transport.NewAuthGate(transport.AuthConfig{
 		SelfID:             mmTr.SelfID(),
-		SelfUsername:       cfg.Mattermost.BotUsername,
+		SelfUsername:       mmTr.SelfUsername(),
 		OwnerIDs:           ownerIDs,
 		TeamBots:           cfg.Mattermost.TeamBots,
 		StrictBotWhitelist: true,
