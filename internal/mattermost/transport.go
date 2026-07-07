@@ -22,6 +22,9 @@ type Transport struct {
 	rest      *RESTClient
 	ws        *WSClient
 	selfID    string
+	selfName  string
+	mu        sync.Mutex
+	userCache map[string]*User
 	messages  chan transport.InboundMessage
 	logger    *slog.Logger
 	closeOnce sync.Once
@@ -40,10 +43,11 @@ func NewTransport(serverURL, token, proxyURL string, logger *slog.Logger) (*Tran
 	ws := NewWSClient(serverURL, token, logger, dialer)
 
 	return &Transport{
-		rest:     rest,
-		ws:       ws,
-		messages: make(chan transport.InboundMessage, 64),
-		logger:   logger,
+		rest:      rest,
+		ws:        ws,
+		messages:  make(chan transport.InboundMessage, 64),
+		userCache: make(map[string]*User),
+		logger:    logger,
 	}, nil
 }
 
@@ -56,11 +60,14 @@ func (t *Transport) Run(ctx context.Context) error {
 		return fmt.Errorf("mattermost transport: identify self: %w", err)
 	}
 	t.selfID = me.ID
+	t.selfName = me.Username
+	t.cacheUser(me)
+
 	t.logger.Info("mattermost transport authorized", "username", me.Username, "bot", me.IsBot)
 
 	t.ws.OnPosted(func(ev PostedEvent) {
 		select {
-		case t.messages <- t.adaptInbound(ev):
+		case t.messages <- t.adaptInbound(ctx, ev):
 		case <-ctx.Done():
 		}
 	})
@@ -101,18 +108,63 @@ func (t *Transport) Close() error {
 	return err
 }
 
-func (t *Transport) adaptInbound(ev PostedEvent) transport.InboundMessage {
+func (t *Transport) adaptInbound(ctx context.Context, ev PostedEvent) transport.InboundMessage {
+	u := t.userInfo(ctx, ev.UserID)
+	senderName := ev.Username
+	isBot := false
+	if u != nil {
+		if senderName == "" {
+			senderName = u.Username
+		}
+		isBot = u.IsBot
+	}
+
 	return transport.InboundMessage{
 		ChatID:     ev.ChannelID,
 		ThreadID:   ev.RootID,
 		SenderID:   ev.UserID,
-		SenderName: ev.Username,
-		IsBot:      false, // Will be refined by auth layer using user info.
+		SenderName: senderName,
+		IsBot:      isBot,
 		Text:       strings.TrimSpace(ev.Message),
 		Mentions:   extractMentions(ev.Message),
 		IsDM:       ev.ChannelType == ChannelTypeDirect,
 		ReplyTo:    "",
 	}
+}
+
+func (t *Transport) cacheUser(u *User) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if u != nil {
+		t.userCache[u.ID] = u
+	}
+}
+
+func (t *Transport) userInfo(ctx context.Context, userID string) *User {
+	t.mu.Lock()
+	if u, ok := t.userCache[userID]; ok {
+		t.mu.Unlock()
+		return u
+	}
+	t.mu.Unlock()
+
+	u, err := t.rest.GetUser(ctx, userID)
+	if err != nil {
+		t.logger.Debug("mattermost: failed to fetch user info", "user_id", userID, "error", err)
+		return nil
+	}
+	t.cacheUser(u)
+	return u
+}
+
+// SelfID returns the transport's own Mattermost user ID.
+func (t *Transport) SelfID() string {
+	return t.selfID
+}
+
+// SelfUsername returns the transport's own Mattermost username.
+func (t *Transport) SelfUsername() string {
+	return t.selfName
 }
 
 // extractMentions returns account names mentioned in the message without the leading '@'.

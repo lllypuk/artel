@@ -81,6 +81,16 @@ func (c *RESTClient) GetMe(ctx context.Context) (*User, error) {
 	return &u, nil
 }
 
+// GetUser returns a Mattermost user by ID.
+func (c *RESTClient) GetUser(ctx context.Context, userID string) (*User, error) {
+	var u User
+	path := fmt.Sprintf("/api/v4/users/%s", userID)
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &u); err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
 // GetChannel returns a channel by ID, including its type field.
 func (c *RESTClient) GetChannel(ctx context.Context, channelID string) (*Channel, error) {
 	var ch Channel

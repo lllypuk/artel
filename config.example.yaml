@@ -15,6 +15,19 @@
 transport:
   type: telegram            # telegram | mattermost
 
+# ── Mattermost (альтернатива Telegram) ──────────────────────────────────────
+# Раскомментируй и заполни при использовании transport.type = mattermost.
+# mattermost:
+#   server_url: "https://mattermost.example.com"
+#   token: ""              # токен бота Mattermost
+#   proxy: ""              # прокси для Mattermost (опционально)
+#   bot_username: "agent-shatrov"  # имя этого бота без @
+#   owner_user_id: ""      # user id человека-владельца (полный доступ)
+#   team_bots:             # белый список ботов-коллег (username или id)
+#     - "analyst-bot"
+#     - "developer-bot"
+#     - "tester-bot"
+
 telegram:
   token: ""              # ← ЗАПОЛНИ: токен от @BotFather
   allowed_users:         # ← ЗАПОЛНИ: твой chat_id (узнать: @userinfobot в Telegram)

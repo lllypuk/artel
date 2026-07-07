@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Transport  TransportConfig  `yaml:"transport"`
 	Telegram   TelegramConfig   `yaml:"telegram"`
+	Mattermost MattermostConfig `yaml:"mattermost"`
 	Proactive  ProactiveConfig  `yaml:"proactive"`
 	LLM        LLMConfig        `yaml:"llm"`
 	Database   DatabaseConfig   `yaml:"database"`
@@ -32,6 +33,16 @@ type Config struct {
 
 type TransportConfig struct {
 	Type string `yaml:"type"` // "telegram" or "mattermost"
+}
+
+// MattermostConfig configures the Mattermost transport and multi-agent auth.
+type MattermostConfig struct {
+	ServerURL   string   `yaml:"server_url"`    // e.g. https://mattermost.example.com
+	Token       string   `yaml:"token"`         // bot access token
+	Proxy       string   `yaml:"proxy"`         // optional HTTP proxy
+	BotUsername string   `yaml:"bot_username"`  // agent's own username, without @
+	OwnerUserID string   `yaml:"owner_user_id"` // human supervisor user id (full access)
+	TeamBots    []string `yaml:"team_bots"`     // whitelisted bot teammate usernames/ids
 }
 
 type TelegramConfig struct {
@@ -236,6 +247,29 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+func (c *Config) validateTransport() error {
+	switch c.Transport.Type {
+	case "telegram":
+		if c.Telegram.Token == "" {
+			return fmt.Errorf("telegram.token is required")
+		}
+		if len(c.Telegram.AllowedUsers) == 0 {
+			return fmt.Errorf("telegram.allowed_users must have at least one user")
+		}
+	case "mattermost":
+		if c.Mattermost.ServerURL == "" {
+			return fmt.Errorf("mattermost.server_url is required")
+		}
+		if c.Mattermost.Token == "" {
+			return fmt.Errorf("mattermost.token is required")
+		}
+		if c.Mattermost.BotUsername == "" {
+			return fmt.Errorf("mattermost.bot_username is required")
+		}
+	}
+	return nil
+}
+
 func (c *Config) validate() error {
 	if c.Transport.Type == "" {
 		c.Transport.Type = "telegram"
@@ -243,11 +277,8 @@ func (c *Config) validate() error {
 	if c.Transport.Type != "telegram" && c.Transport.Type != "mattermost" {
 		return fmt.Errorf("transport.type must be 'telegram' or 'mattermost'")
 	}
-	if c.Telegram.Token == "" {
-		return fmt.Errorf("telegram.token is required")
-	}
-	if len(c.Telegram.AllowedUsers) == 0 {
-		return fmt.Errorf("telegram.allowed_users must have at least one user")
+	if err := c.validateTransport(); err != nil {
+		return err
 	}
 	// api_key and base_url are required only when providers are not configured.
 	if len(c.LLM.Providers) == 0 && c.LLM.APIKey == "" {

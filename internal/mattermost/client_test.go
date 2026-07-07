@@ -90,6 +90,21 @@ func TestRESTClientGetMe(t *testing.T) {
 	assert.True(t, u.IsBot)
 }
 
+func TestRESTClientGetUser(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v4/users/user-1", r.URL.Path)
+		require.NoError(t, json.NewEncoder(w).Encode(User{ID: "user-1", Username: "alice", IsBot: false}))
+	}))
+	defer server.Close()
+
+	client := NewRESTClient(server.URL, "token", server.Client())
+	u, err := client.GetUser(context.Background(), "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, "user-1", u.ID)
+	assert.Equal(t, "alice", u.Username)
+	assert.False(t, u.IsBot)
+}
+
 func TestRESTClientGetChannel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/api/v4/channels/ch1", r.URL.Path)

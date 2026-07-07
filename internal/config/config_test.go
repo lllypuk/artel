@@ -557,6 +557,86 @@ llm:
 	}
 }
 
+func TestMattermostConfig(t *testing.T) {
+	path := writeTempConfig(t, `
+transport:
+  type: mattermost
+mattermost:
+  server_url: "https://mm.example.com"
+  token: "mm-token"
+  bot_username: "analyst-bot"
+  owner_user_id: "owner-1"
+  team_bots: ["dev-bot", "test-bot"]
+llm:
+  api_key: "key"
+  base_url: "https://api.example.com"
+database:
+  path: "./data/test.db"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Transport.Type != "mattermost" {
+		t.Errorf("expected transport 'mattermost', got %q", cfg.Transport.Type)
+	}
+	if cfg.Mattermost.ServerURL != "https://mm.example.com" {
+		t.Errorf("unexpected server_url: %q", cfg.Mattermost.ServerURL)
+	}
+	if cfg.Mattermost.Token != "mm-token" {
+		t.Errorf("unexpected token: %q", cfg.Mattermost.Token)
+	}
+	if cfg.Mattermost.BotUsername != "analyst-bot" {
+		t.Errorf("unexpected bot_username: %q", cfg.Mattermost.BotUsername)
+	}
+	if cfg.Mattermost.OwnerUserID != "owner-1" {
+		t.Errorf("unexpected owner_user_id: %q", cfg.Mattermost.OwnerUserID)
+	}
+	if len(cfg.Mattermost.TeamBots) != 2 || cfg.Mattermost.TeamBots[0] != "dev-bot" {
+		t.Errorf("unexpected team_bots: %v", cfg.Mattermost.TeamBots)
+	}
+}
+
+func TestMattermostValidationRequiresFields(t *testing.T) {
+	path := writeTempConfig(t, `
+transport:
+  type: mattermost
+mattermost:
+  server_url: "https://mm.example.com"
+  bot_username: "bot"
+llm:
+  api_key: "key"
+  base_url: "https://api.example.com"
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected validation error for missing mattermost.token")
+	}
+	if !strings.Contains(err.Error(), "mattermost.token") {
+		t.Errorf("expected error to mention 'mattermost.token', got: %v", err)
+	}
+}
+
+func TestMattermostValidationRequiresBotUsername(t *testing.T) {
+	path := writeTempConfig(t, `
+transport:
+  type: mattermost
+mattermost:
+  server_url: "https://mm.example.com"
+  token: "tok"
+llm:
+  api_key: "key"
+  base_url: "https://api.example.com"
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected validation error for missing mattermost.bot_username")
+	}
+	if !strings.Contains(err.Error(), "mattermost.bot_username") {
+		t.Errorf("expected error to mention 'mattermost.bot_username', got: %v", err)
+	}
+}
+
 func TestLLMAPIKeyWarningInMultiProviderMode(t *testing.T) {
 	path := writeTempConfig(t, `
 telegram:

@@ -65,6 +65,10 @@ func TestTransportEndToEnd(t *testing.T) {
 			return
 		case "/api/v4/users/me":
 			require.NoError(t, json.NewEncoder(w).Encode(User{ID: "self", Username: "bot", IsBot: true}))
+		case "/api/v4/users/u1":
+			require.NoError(t, json.NewEncoder(w).Encode(User{ID: "u1", Username: "user", IsBot: false}))
+		case "/api/v4/users/self":
+			require.NoError(t, json.NewEncoder(w).Encode(User{ID: "self", Username: "bot", IsBot: true}))
 		case "/api/v4/posts":
 			var body map[string]string
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
@@ -106,6 +110,7 @@ func TestTransportEndToEnd(t *testing.T) {
 	assert.Equal(t, "r1", msg.ThreadID)
 	assert.Equal(t, "u1", msg.SenderID)
 	assert.Equal(t, "user", msg.SenderName)
+	assert.False(t, msg.IsBot)
 	assert.True(t, msg.IsDM)
 	assert.Equal(t, "hello @bot", msg.Text)
 	assert.Equal(t, []string{"bot"}, msg.Mentions)
