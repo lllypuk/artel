@@ -163,12 +163,12 @@ Whitelist имён ботов команды в конфиге; человек-�
   `internal/mm/`)
 - Create: `internal/mattermost/transport.go` — реализация `Transport`
 
-- [ ] REST-клиент: post message, get channel, get thread; авторизация по bot token
-- [ ] WebSocket-клиент: подписка на `posted` events, парсинг @-mentions
-- [ ] реализовать `Transport` для Mattermost (`Send` / `Messages()` / `Close`)
-- [ ] DM-детекция по `channel_type` (DM vs channel) — влияет на тон ответа
-- [ ] тесты через httptest + mock WS
-- [ ] `make lint test`
+- [x] REST-клиент: post message, get channel, get thread; авторизация по bot token
+- [x] WebSocket-клиент: подписка на `posted` events, парсинг @-mentions
+- [x] реализовать `Transport` для Mattermost (`Send` / `Messages()` / `Close`)
+- [x] DM-детекция по `channel_type` (DM vs channel) — влияет на тон ответа
+- [x] тесты через httptest + mock WS
+- [x] `make lint test`
 
 ### Task 3: Multi-agent auth (@-mention от ботов)
 
