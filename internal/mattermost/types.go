@@ -40,8 +40,4 @@ func (p *Post) CreatedAt() time.Time {
 	return time.UnixMilli(p.CreateAt)
 }
 
-// ThreadResponse is the payload returned by the thread endpoint.
-type ThreadResponse struct {
-	Order []string        `json:"order"`
-	Posts map[string]Post `json:"posts"`
-}
+

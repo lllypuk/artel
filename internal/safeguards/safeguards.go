@@ -219,8 +219,11 @@ func threadKey(m transport.InboundMessage) string {
 	return m.ChatID
 }
 
+// filterWindow returns a new slice containing only the timestamps at or after
+// cutoff. It does not mutate the input slice; callers must reassign the result
+// if they want the filtered view to persist.
 func filterWindow(times []time.Time, cutoff time.Time) []time.Time {
-	out := times[:0]
+	out := make([]time.Time, 0, len(times))
 	for _, t := range times {
 		if t.After(cutoff) || t.Equal(cutoff) {
 			out = append(out, t)

@@ -15,13 +15,14 @@ import (
 const platformMattermost = "mattermost"
 
 // mattermostNotifier returns a Notifier that converts an internal integer chat
-// ID back into a Mattermost channel ID and posts a message.
-func mattermostNotifier(tr transport.Transport, db *storage.DB, logger *slog.Logger) func(chatID int64, message string) {
+// ID back into a Mattermost channel ID and posts a message. The supplied ctx
+// is captured so that notifications are cancelled when the agent shuts down.
+func mattermostNotifier(ctx context.Context, tr transport.Transport, db *storage.DB, logger *slog.Logger) func(chatID int64, message string) {
 	return func(chatID int64, message string) {
 		if message == "" {
 			return
 		}
-		platform, channelID, err := db.ResolveChatID(context.Background(), chatID)
+		platform, channelID, err := db.ResolveChatID(ctx, chatID)
 		if err != nil {
 			logger.Warn("mattermost notifier: resolve chat id failed", "chat_id", chatID, "error", err)
 			return
@@ -30,7 +31,7 @@ func mattermostNotifier(tr transport.Transport, db *storage.DB, logger *slog.Log
 			logger.Warn("mattermost notifier: chat id platform mismatch", "chat_id", chatID, "platform", platform)
 			return
 		}
-		if err := tr.Send(context.Background(), transport.Message{TargetID: channelID, Text: message}); err != nil {
+		if err := tr.Send(ctx, transport.Message{TargetID: channelID, Text: message}); err != nil {
 			logger.Warn("mattermost notifier: send failed", "chat_id", chatID, "error", err)
 		}
 	}

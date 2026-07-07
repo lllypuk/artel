@@ -117,18 +117,6 @@ func (c *RESTClient) getChannel(ctx context.Context, channelID string) (*Channel
 	return &ch, nil
 }
 
-// getPostThread returns the posts in a thread by its root ID.
-//
-//nolint:unused
-func (c *RESTClient) getPostThread(ctx context.Context, rootID string) (*ThreadResponse, error) {
-	var tr ThreadResponse
-	path := fmt.Sprintf("/api/v4/posts/%s/thread", url.PathEscape(rootID))
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, &tr); err != nil {
-		return nil, err
-	}
-	return &tr, nil
-}
-
 // PostMessage creates a post in a channel. If rootID is non-empty it is a
 // thread reply. Long messages are split into multiple posts inside the same
 // thread. Returns the ID of the first created post.

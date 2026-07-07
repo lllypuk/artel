@@ -103,7 +103,7 @@ func main() {
 		MaxRepliesPerMinute: cfg.Safeguards.MaxRepliesPerMinute,
 	})
 
-	tr, transportStarted, err := buildTransport(ctx, cfg, ag, guard, db, toolRegistry, startTime, cancel, logger)
+	tr, err := buildTransport(ctx, cfg, ag, guard, db, toolRegistry, startTime, cancel, logger)
 	if err != nil {
 		logger.Error("build transport", "error", err)
 		os.Exit(1)
@@ -130,14 +130,7 @@ func main() {
 		"role", cfg.Role.Name,
 	)
 
-	if !transportStarted {
-		go func() {
-			if err := tr.Run(ctx); err != nil && err != context.Canceled {
-				logger.Error("transport stopped with error", "error", err)
-				cancel()
-			}
-		}()
-	}
+	_ = tr // transport Run loop was started inside buildTransport
 
 	<-ctx.Done()
 
@@ -242,23 +235,22 @@ func buildLLMProvider(cfg *config.Config, logger *slog.Logger) llm.Provider {
 	return llm.NewMultiClient(providers, multiCfg, logger)
 }
 
-// buildTransport selects and initializes the configured message transport.
-// For Mattermost it also starts the WebSocket loop and dispatcher; the returned
-// transportStarted flag tells main not to call tr.Run again.
-func buildTransport(ctx context.Context, cfg *config.Config, ag *agent.Agent, guard *safeguards.Guard, db *storage.DB, registry *tools.Registry, startTime time.Time, cancel context.CancelFunc, logger *slog.Logger) (transport.Transport, bool, error) {
+// buildTransport selects, initializes, and starts the configured message
+// transport. Both Telegram and Mattermost follow the same pattern: the
+// transport's Run loop and background schedulers are launched here, so the
+// caller only needs to wait on ctx.Done().
+func buildTransport(ctx context.Context, cfg *config.Config, ag *agent.Agent, guard *safeguards.Guard, db *storage.DB, registry *tools.Registry, startTime time.Time, cancel context.CancelFunc, logger *slog.Logger) (transport.Transport, error) {
 	switch cfg.Transport.Type {
 	case "telegram", "":
-		tr, err := buildTelegramTransport(ctx, cfg, ag, guard, db, registry, startTime, logger)
-		return tr, false, err
+		return buildTelegramTransport(ctx, cfg, ag, guard, db, registry, startTime, cancel, logger)
 	case "mattermost":
-		tr, err := buildMattermostTransport(ctx, cfg, ag, guard, db, cancel, logger)
-		return tr, true, err
+		return buildMattermostTransport(ctx, cfg, ag, guard, db, cancel, logger)
 	default:
-		return nil, false, fmt.Errorf("unknown transport type %q", cfg.Transport.Type)
+		return nil, fmt.Errorf("unknown transport type %q", cfg.Transport.Type)
 	}
 }
 
-func buildTelegramTransport(ctx context.Context, cfg *config.Config, ag *agent.Agent, guard *safeguards.Guard, db *storage.DB, registry *tools.Registry, startTime time.Time, logger *slog.Logger) (transport.Transport, error) {
+func buildTelegramTransport(ctx context.Context, cfg *config.Config, ag *agent.Agent, guard *safeguards.Guard, db *storage.DB, registry *tools.Registry, startTime time.Time, cancel context.CancelFunc, logger *slog.Logger) (transport.Transport, error) {
 	bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.Proxy, cfg.Telegram.AllowedUsers, ag, logger)
 	if err != nil {
 		return nil, fmt.Errorf("create telegram bot: %w", err)
@@ -270,9 +262,16 @@ func buildTelegramTransport(ctx context.Context, cfg *config.Config, ag *agent.A
 	bot.SetStatusInfo(startTime, cfg.Database.Path, db)
 
 	notifier := bot.GetNotifier()
-	startBackgroundLoops(ctx, cfg, db, ag, notifier, cfg.Telegram.AllowedUsers, logger)
+	startBackgroundLoops(ctx, cfg, ag, db, notifier, cfg.Telegram.AllowedUsers, logger)
 
-	return telegram.NewTransport(bot), nil
+	tr := telegram.NewTransport(bot)
+	go func() {
+		if err := tr.Run(ctx); err != nil && err != context.Canceled {
+			logger.Error("telegram transport stopped with error", "error", err)
+			cancel()
+		}
+	}()
+	return tr, nil
 }
 
 func buildMattermostTransport(ctx context.Context, cfg *config.Config, ag *agent.Agent, guard *safeguards.Guard, db *storage.DB, cancel context.CancelFunc, logger *slog.Logger) (transport.Transport, error) {
@@ -297,9 +296,12 @@ func buildMattermostTransport(ctx context.Context, cfg *config.Config, ag *agent
 		StrictBotWhitelist: true,
 	})
 
-	ag.SetNotifier(mattermostNotifier(mmTr, db, logger))
+	ag.SetNotifier(mattermostNotifier(ctx, mmTr, db, logger))
 
-	startBackgroundLoops(ctx, cfg, db, ag, ag.GetNotifier(), []int64{}, logger)
+	// Proactive schedulers and monitor target Telegram user IDs; in Mattermost
+	// mode there are none, so these loops would run without delivering anything.
+	// Skip them rather than spin idle goroutines.
+	startMattermostBackgroundLoops(ctx, cfg, ag, db, ag.GetNotifier(), logger)
 
 	go func() {
 		if err := mmTr.Run(ctx); err != nil && err != context.Canceled {
@@ -313,10 +315,18 @@ func buildMattermostTransport(ctx context.Context, cfg *config.Config, ag *agent
 }
 
 // startBackgroundLoops starts reminder, proactive digest and monitor loops
-// using the supplied notifier and allowed-user list (empty for Mattermost,
-// explicit for Telegram).
-func startBackgroundLoops(ctx context.Context, cfg *config.Config, db *storage.DB, ag *agent.Agent, notifier tools.Notifier, allowedUsers []int64, logger *slog.Logger) {
+// for Telegram. These loops deliver notifications to a fixed set of human user
+// IDs and are not meaningful in Mattermost mode.
+func startBackgroundLoops(ctx context.Context, cfg *config.Config, ag *agent.Agent, db *storage.DB, notifier tools.Notifier, allowedUsers []int64, logger *slog.Logger) {
 	go runReminderScheduler(ctx, db, notifier, logger)
 	go runProactiveScheduler(ctx, cfg.Proactive, ag, notifier, allowedUsers, db, cfg.Weather.Enabled, cfg.News.Enabled, cfg.Stocks.Enabled, logger)
 	startMonitorLoop(ctx, &cfg.Monitor, db, notifier, allowedUsers, logger)
+}
+
+// startMattermostBackgroundLoops starts only the loops that are transport-
+// agnostic. Reminder scheduler delivers to any notifier (including the
+// Mattermost notifier), so it runs in both modes. Proactive digests and the
+// system monitor target Telegram user IDs and are skipped in Mattermost mode.
+func startMattermostBackgroundLoops(ctx context.Context, cfg *config.Config, ag *agent.Agent, db *storage.DB, notifier tools.Notifier, logger *slog.Logger) {
+	go runReminderScheduler(ctx, db, notifier, logger)
 }
