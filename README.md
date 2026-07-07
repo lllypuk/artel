@@ -1,6 +1,8 @@
 # agent-shatrov
 
-Персональный AI-агент с Telegram-интерфейсом для личного использования на локальном компьютере.
+Персональный AI-агент с Telegram/Mattermost-интерфейсами для личного использования на локальном компьютере.
+Может работать как одиночный Telegram-бот или как набор автономных ролей (аналитик, разработчик,
+тестировщик) в общем Mattermost.
 
 ## Docker
 
@@ -29,9 +31,10 @@ docker compose logs -f
 
 - **Go 1.26**
 - **LLM**: GLM-4.7 / GLM-4.7-Flash (z.ai, OpenAI-compatible API)
-- **Интерфейс**: Telegram Bot (long polling)
+- **Интерфейс**: Telegram Bot (long polling) · Mattermost Bot (REST + WebSocket)
 - **Хранилище**: SQLite
-- **Безопасность**: whitelist/sandbox для shell-команд
+- **Безопасность**: whitelist/sandbox для shell-команд · предохранители от петель для multi-agent
+  диалогов
 
 ## Быстрый старт
 
@@ -40,9 +43,11 @@ git clone https://github.com/lllypuk/agent-shatrov.git
 cd agent-shatrov
 
 cp config.example.yaml config.yaml
-# заполнить telegram.token, telegram.allowed_users, llm.api_key
+# заполнить telegram.token + telegram.allowed_users (или mattermost + role)
+# и llm.api_key
 
 make run
+# для второго инстанса в Mattermost см. docs/multi-instance-guide.md
 ```
 
 ## Команды
@@ -69,11 +74,23 @@ cmd/agent/
   monitor.go         — фоновый цикл мониторинга сайтов с Telegram-алертами
   logger.go          — настройка логгера
 internal/
-  config/config.go   — конфигурация (YAML + env)
+  config/config.go   — конфигурация (YAML + env): transport, role, safeguards
   agent/agent.go     — ядро агента (ReAct loop)
   llm/
     client.go        — клиент к LLM API (OpenAI-compatible)
     multi.go         — мультипровайдер с fallback, retry, circuit breaker
+  transport/
+    transport.go     — общий интерфейс Transport (заменяет прямую зависимость ядра от Telegram)
+    auth.go          — gate авторизации: владелец + whitelist ботов-коллег + @-mention
+  telegram/
+    bot.go           — Telegram бот
+    markdown.go      — Markdown → HTML конвертация
+    transport.go     — реализация Transport для Telegram
+  mattermost/
+    client.go        — REST + WebSocket клиент Mattermost
+    transport.go     — реализация Transport для Mattermost
+  safeguards/
+    safeguards.go    — loop-detection и rate-limit для multi-agent диалогов
   tools/
     registry.go      — реестр инструментов
     notes.go         — заметки (create/search/edit/delete)
@@ -96,10 +113,10 @@ internal/
     news.go          — SQLite: новости, фиды, подписки
     monitor.go       — SQLite: мониторинг сайтов (monitor_checks, monitor_state)
     wiki.go          — SQLite: wiki (wiki_pages + FTS5, wiki_links), reading_list
-  telegram/
-    bot.go           — Telegram бот
-    markdown.go      — Markdown → HTML конвертация
   news/              — парсер/менеджер RSS/Atom/JSON Feed
+docs/
+  multi-instance-guide.md  — как поднять несколько инстансов в Mattermost
+  roles/             — шаблоны конфигов для ролей (аналитик/разработчик/тестировщик)
 config.example.yaml  — пример конфигурации
 Makefile             — управление сервисом
 ```
@@ -129,6 +146,11 @@ Makefile             — управление сервисом
 - [x] **Личная вики** — иерархия путей (`/dev/golang`), `[[path]]` ссылки, cascade rename, backlinks; create/get/edit/delete/list/tree
 - [x] **Список для чтения** — сохранение URL (авто fetch), дайджест непрочитанного в утреннем брифинге
 - [x] **Unified поиск** по базе знаний — одновременный поиск по вики и reading list (FTS5 + LIKE fallback)
+- [x] **Транспорт-абстракция** — единый интерфейс `Transport`; Telegram и Mattermost работают через него
+- [x] **Mattermost-интерфейс** — REST + WebSocket бот, @-mention/DM, для одиночного или multi-agent режима
+- [x] **Multi-agent авторизация** — владелец-человек с полным доступом + whitelist ботов-коллег, реагирующих через @-mention
+- [x] **Предохранители петель** — self-skip, лимит итераций на тред (warn/suppress), rate-limit ответов
+- [x] **Роли инстансов** — разные `role.system_prompt` для разных «должностей» агента
 
 ## Инструмент pi_coder
 
@@ -233,3 +255,18 @@ monitor:
 - `digest` — дайджест непрочитанных статей; включён в утренний брифинг
 
 **knowledge_search** — единый поиск по вики и reading list одновременно (FTS5 + LIKE fallback).
+
+---
+
+## Multi-agent режим в Mattermost
+
+Один бинарник `agent-shatrov` может подниматься одновременно в нескольких ролях
+(аналитик, разработчик, тестировщик), общающихся через @-mentions в одном
+канале/DM без центрального оркестратора.
+
+- Выбор транспорта: `transport.type: mattermost` в конфиге роли.
+- Роли и системные промпты задаются секцией `role:`.
+- Безопасность: whitelist ботов-коллег (`mattermost.team_bots`), проверка
+  @-mentions, предохранители петель (`safeguards:`).
+
+Полное руководство и примеры конфигов: [`docs/multi-instance-guide.md`](docs/multi-instance-guide.md).

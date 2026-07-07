@@ -214,10 +214,10 @@ Whitelist имён ботов команды в конфиге; человек-�
 - Modify: `README.md`, `CLAUDE.md` — обновить секции архитектуры/возможностей
 - Move: этот план → `docs/plans/completed/` (когда всё выполнено)
 
-- [ ] обновить README: multi-agent/Mattermost как новый режим работы
-- [ ] обновить `.claude/CLAUDE.md`: транспорт-абстракция, MM-transport, safeguards
-- [ ] убедиться что `make lint test` проходит полностью
-- [ ] переместить план в `completed/`
+- [x] обновить README: multi-agent/Mattermost как новый режим работы
+- [x] обновить `.claude/CLAUDE.md`: транспорт-абстракция, MM-transport, safeguards
+- [x] убедиться что `make lint test` проходит полностью
+- [x] переместить план в `completed/`
 
 ## Post-Completion
 

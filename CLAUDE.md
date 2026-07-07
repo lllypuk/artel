@@ -6,7 +6,7 @@
 
 - **Go 1.26**
 - **LLM**: GLM-4.7 / GLM-4.7-Flash (Zhipu AI / z.ai) через OpenAI-compatible API
-- **Интерфейс**: Telegram Bot (long polling)
+- **Интерфейс**: Telegram Bot (long polling) · Mattermost Bot (REST + WebSocket)
 - **Хранилище**: SQLite (`data/agent.db`)
 - **Прокси**: `HTTPS_PROXY=http://127.0.0.1:2080`
 
@@ -60,6 +60,15 @@ internal/
   telegram/
     bot.go           — Telegram bot: long polling, auth по chat_id, обработка команд
     markdown.go      — Markdown → HTML конвертация для Telegram
+    transport.go     — реализация интерфейса `Transport` для Telegram
+  mattermost/
+    client.go        — REST + WebSocket клиент Mattermost
+    transport.go     — реализация интерфейса `Transport` для Mattermost
+  transport/
+    transport.go     — общий интерфейс `Transport`: Send/Messages/Close/Run
+    auth.go          — gate авторизации: owner + team_bots + @-mention
+  safeguards/
+    safeguards.go    — loop-detection и rate-limit для multi-agent диалогов
   news/
     parser.go        — парсер фидов (RSS/Atom/JSON Feed)
     feed.go          — структура фида
@@ -71,7 +80,10 @@ internal/
     errors.go        — ошибки пакета news
 data/                — БД и логи (в .gitignore)
 config.yaml          — конфиг с секретами (в .gitignore)
-config.example.yaml  — пример конфига без секретов
+config.example.yaml  — пример конфига без секретов (transport, role, mattermost, safeguards)
+docs/
+  multi-instance-guide.md — руководство по запуску нескольких инстансов в Mattermost
+  roles/             — шаблоны конфигов ролей: analyst, developer, tester
 Makefile             — команды для управления сервисом
 ```
 
@@ -259,6 +271,66 @@ export GLM_API_KEY="..."
 против схемы из `tool.Parameters()`. Невалидные payloads отклоняются до вызова инструмента — нет
 nil-pointer паник от неправильных аргументов.
 
+## Интерфейс Transport
+
+Общий транспорт-интерфейс изолирует ядро (`internal/agent`) от конкретного мессенджера.
+
+```go
+type Transport interface {
+    Run(ctx context.Context) error
+    Send(ctx context.Context, m Message) error
+    Messages() <-chan InboundMessage
+    Close() error
+}
+```
+
+- `internal/transport/transport.go` — интерфейс и нормализованные типы сообщений.
+- `internal/telegram/transport.go` — реализация для Telegram; long-polling остаётся в `bot.go`.
+- `internal/mattermost/transport.go` — реализация для Mattermost (REST + WebSocket).
+- `cmd/agent/main.go` выбирает транспорт по `config.transport.type` (`telegram` или `mattermost`).
+
+## Mattermost transport
+
+Реализован в `internal/mattermost/`:
+
+- REST-клиент для отправки сообщений и получения информации о каналах/пользователях.
+- WebSocket-клиент, слушающий события `posted`, и адаптирующий их в `transport.InboundMessage`.
+- Авторизация по токену бота; необходимо задать `mattermost.server_url`, `token`, `bot_username`.
+- DM детектируется по `channel_type`; @-mentions парсятся в `Mentions`.
+
+## Multi-agent авторизация
+
+Gate авторизации живёт в `internal/transport/auth.go` и используется транспортным слоем
+(или диспетчером) при получении входящих сообщений:
+
+- `owner_user_id` — человек-супервизор, полный доступ.
+- `team_bots` — whitelist ботов-коллег; сообщение от них разрешено только при @-mention.
+- Боты вне whitelist игнорируются.
+- Собственные сообщения (`sender_id == self_bot_id`) пропускаются предохранителем.
+
+## Предохранители петель
+
+Пакет `internal/safeguards` защищает от бесконечных бот-в-бот диалогов:
+
+1. **Self-skip** — не отвечать самому себе.
+2. **Лимит итераций на тред** — `warn` после `loop_warn_bot_messages`, `suppress`
+   после `loop_suppress_bot_messages` с эскалацией человеку; reset на сообщение человека.
+3. **Rate-limit** — `max_replies_per_minute` на тред (скользящее окно 1 минута).
+
+## Роли инстансов
+
+Секция `role:` позволяет одному бинарнику работать под разными «должностями»:
+
+```yaml
+role:
+  name: "developer"
+  system_prompt: |
+    Ты — разработчик команды. ...
+```
+
+`role.name` используется в логах/`/status`, `role.system_prompt` переопределяет
+встроенный системный промпт. Роли используются в основном в multi-agent режиме Mattermost.
+
 ## Добавление нового инструмента
 
 1. Создать файл `internal/tools/mytool.go` реализующий интерфейс `Tool`:
@@ -384,6 +456,11 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 - [x] OpenTelemetry трассировка — agent.run, agent.iteration, llm.complete, tool.execute; OTLP HTTP + stdout exporters
 - [x] JSON Schema валидация аргументов инструментов — проверка до вызова Execute(), защита от невалидных tool_calls
 - [x] Юнит-тесты ReAct loop — max_iterations, unknown tool, tool error, OTel spans
+- [x] **Транспорт-абстракция** — общий `Transport` интерфейс; Telegram и Mattermost реализации
+- [x] **Mattermost transport** — REST/WebSocket клиент, @-mention/DM, DM vs channel
+- [x] **Multi-agent авторизация** — `transport.AuthGate`: owner + team_bots whitelist + @-mention
+- [x] **Предохранители петель** — `safeguards.Guard`: self-skip, loop warn/suppress, rate-limit
+- [x] **Роли инстансов** — `role.name` + `role.system_prompt` для multi-agent команды
 
 ## Инструмент news
 
