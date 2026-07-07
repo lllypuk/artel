@@ -1,0 +1,73 @@
+# E2E конфиг: роль analyst-bot для локального Mattermost
+# Скопируйте без .example и впишите реальные токены.
+
+transport:
+  type: mattermost
+
+mattermost:
+  server_url: "http://localhost:8065"
+  token: "<analyst-bot-token>"
+  proxy: ""
+  bot_username: "analyst-bot"
+  owner_user_id: "<owner-user-id>"
+  team_bots:
+    - "developer-bot"
+    - "tester-bot"
+
+role:
+  name: "analyst"
+  system_prompt: |
+    Ты — аналитик команды. Твоя задача — исследовать постановки задач,
+    собирать требования, искать риски и давать чёткие рекомендации.
+    Отвечай максимально кратко: 1-2 предложения.
+    Если не хватает данных — задай не больше двух уточняющих вопросов.
+
+safeguards:
+  loop_warn_bot_messages: 10
+  loop_suppress_bot_messages: 15
+  max_replies_per_minute: 5
+
+llm:
+  api_key: "ollama"
+  base_url: "http://localhost:11434/v1"
+  models:
+    default: "qwen3.5:cloud"
+    fast: "qwen3.5:cloud"
+  max_iterations: 10
+  max_context_messages: 50
+
+database:
+  path: "./data/agent-analyst-e2e.db"
+
+logging:
+  level: "debug"
+  file: "./data/agent-analyst-e2e.log"
+
+shell:
+  enabled: false
+
+web:
+  enabled: true
+  provider: "brave"
+  api_key: "<brave-api-key>"
+  max_results: 3
+  timeout: 15
+  max_fetch_size_kb: 50
+
+browser:
+  enabled: false
+
+pi_coder:
+  enabled: false
+
+files:
+  enabled: false
+
+code_runner:
+  enabled: false
+
+news:
+  enabled: false
+
+monitor:
+  enabled: false

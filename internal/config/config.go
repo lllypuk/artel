@@ -10,7 +10,11 @@ import (
 )
 
 type Config struct {
+	Transport  TransportConfig  `yaml:"transport"`
+	Role       RoleConfig       `yaml:"role"`
 	Telegram   TelegramConfig   `yaml:"telegram"`
+	Mattermost MattermostConfig `yaml:"mattermost"`
+	Safeguards SafeguardsConfig `yaml:"safeguards"`
 	Proactive  ProactiveConfig  `yaml:"proactive"`
 	LLM        LLMConfig        `yaml:"llm"`
 	Database   DatabaseConfig   `yaml:"database"`
@@ -27,6 +31,35 @@ type Config struct {
 	Notes      NotesConfig      `yaml:"notes"`
 	Otel       OtelConfig       `yaml:"otel"`
 	Logging    LoggingConfig    `yaml:"logging"`
+}
+
+type TransportConfig struct {
+	Type string `yaml:"type"` // "telegram" or "mattermost"
+}
+
+// RoleConfig defines the identity/persona of a single agent instance.
+// Used for multi-instance teams where the same binary serves different roles.
+type RoleConfig struct {
+	Name         string `yaml:"name"`          // role identifier, e.g. "analyst" (used in logs/status)
+	SystemPrompt string `yaml:"system_prompt"` // overrides default system prompt; empty = built-in
+}
+
+// SafeguardsConfig configures loop-detection and rate-limiting for autonomous
+// multi-agent conversations.
+type SafeguardsConfig struct {
+	LoopWarnBotMessages     int `yaml:"loop_warn_bot_messages"`     // default: 10
+	LoopSuppressBotMessages int `yaml:"loop_suppress_bot_messages"` // default: 15
+	MaxRepliesPerMinute     int `yaml:"max_replies_per_minute"`     // default: 5
+}
+
+// MattermostConfig configures the Mattermost transport and multi-agent auth.
+type MattermostConfig struct {
+	ServerURL   string   `yaml:"server_url"`    // e.g. https://mattermost.example.com
+	Token       string   `yaml:"token"`         // bot access token
+	Proxy       string   `yaml:"proxy"`         // optional HTTP proxy
+	BotUsername string   `yaml:"bot_username"`  // agent's own username, without @
+	OwnerUserID string   `yaml:"owner_user_id"` // human supervisor user id (full access)
+	TeamBots    []string `yaml:"team_bots"`     // whitelisted bot teammate usernames/ids
 }
 
 type TelegramConfig struct {
@@ -231,12 +264,37 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-func (c *Config) validate() error {
-	if c.Telegram.Token == "" {
-		return fmt.Errorf("telegram.token is required")
+func (c *Config) validateTransport() error {
+	switch c.Transport.Type {
+	case "telegram":
+		if c.Telegram.Token == "" {
+			return fmt.Errorf("telegram.token is required")
+		}
+		if len(c.Telegram.AllowedUsers) == 0 {
+			return fmt.Errorf("telegram.allowed_users must have at least one user")
+		}
+	case "mattermost":
+		if c.Mattermost.ServerURL == "" {
+			return fmt.Errorf("mattermost.server_url is required")
+		}
+		if c.Mattermost.Token == "" {
+			return fmt.Errorf("mattermost.token is required")
+		}
+		if c.Mattermost.BotUsername == "" {
+			return fmt.Errorf("mattermost.bot_username is required")
+		}
 	}
-	if len(c.Telegram.AllowedUsers) == 0 {
-		return fmt.Errorf("telegram.allowed_users must have at least one user")
+	return nil
+}
+
+func (c *Config) validate() error {
+	c.setDefaults()
+
+	if c.Transport.Type != "telegram" && c.Transport.Type != "mattermost" {
+		return fmt.Errorf("transport.type must be 'telegram' or 'mattermost'")
+	}
+	if err := c.validateTransport(); err != nil {
+		return err
 	}
 	// api_key and base_url are required only when providers are not configured.
 	if len(c.LLM.Providers) == 0 && c.LLM.APIKey == "" {
@@ -253,6 +311,26 @@ func (c *Config) validate() error {
 		if p.APIKey == "" {
 			return fmt.Errorf("llm.providers[%d].api_key is required", i)
 		}
+	}
+	return nil
+}
+
+// setDefaults fills in missing configuration values.
+func (c *Config) setDefaults() {
+	if c.Transport.Type == "" {
+		c.Transport.Type = "telegram"
+	}
+	if c.Role.Name == "" {
+		c.Role.Name = "agent"
+	}
+	if c.Safeguards.LoopWarnBotMessages == 0 {
+		c.Safeguards.LoopWarnBotMessages = 10
+	}
+	if c.Safeguards.LoopSuppressBotMessages == 0 {
+		c.Safeguards.LoopSuppressBotMessages = 15
+	}
+	if c.Safeguards.MaxRepliesPerMinute == 0 {
+		c.Safeguards.MaxRepliesPerMinute = 5
 	}
 	if c.Database.Path == "" {
 		c.Database.Path = "./data/agent.db"
@@ -272,7 +350,6 @@ func (c *Config) validate() error {
 			"jpg", "jpeg", "png", "gif", "webp",
 		}
 	}
-	return nil
 }
 
 func (c *Config) applyEnvOverrides() {

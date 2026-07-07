@@ -9,6 +9,30 @@
 - Формат плана: чеклист задач (- [ ] / - [x]), примерная схема БД, пример конфига, зависимости между эпиками
 - При завершении задачи: обновить чекбокс в плане + прогресс в `backlog.md`
 
+## Архитектура транспорта и multi-agent
+
+- `internal/transport/transport.go` — общий интерфейс `Transport` и нормализованные
+  `InboundMessage`/`Message`. Позволяет ядру агента не знать о мессенджере.
+- `internal/telegram/transport.go` и `internal/mattermost/transport.go` — реализации.
+- `cmd/agent/main.go` выбирает транспорт по `config.transport.type`.
+- `internal/transport/auth.go` (`AuthGate`) решает, обрабатывать ли входящее сообщение:
+  - `owner_user_id` — человек-супервизор (полный доступ);
+  - `team_bots` — whitelist ботов-коллег, разрешённых звать через @-mention;
+  - боты вне whitelist и собственные сообщения игнорируются.
+- `internal/safeguards/safeguards.go` отвечает за предохранители:
+  - self-skip,
+  - лимит бот-сообщений в треде (warn/suppress + эскалация человеку),
+  - rate-limit ответов на тред.
+- `config.role` даёт инстансу идентичность/«должность» (name + system_prompt).
+- Руководство по multi-instance: `docs/multi-instance-guide.md`.
+- Шаблоны конфигов ролей: `docs/roles/{analyst,developer,tester}.yaml`.
+- `cmd/agent/dispatcher.go` — диспетчер входящих сообщений для Mattermost: auth/safeguards,
+  маппинг chat_id и вызов агента.
+- `internal/storage/chatids.go` — маппинг строковых внешних chat_id (Mattermost) к
+  внутренним integer id хранилища.
+- Первый позиционный аргумент `bin/agent` — путь к `config.yaml`;
+  так поднимаются разные роли multi-instance (`./bin/agent config-analyst.yaml`).
+
 ## Регистрация инструментов — два уровня
 
 **Always-on** (не требуют конфига, всегда активны):

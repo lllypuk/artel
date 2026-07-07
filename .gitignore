@@ -27,3 +27,9 @@ vendor/
 /bin/agent
 
 .agents/
+
+# E2E secrets
+tests/e2e/config-*.yaml
+config-*-e2e.yaml
+data/agent-*-e2e.*
+

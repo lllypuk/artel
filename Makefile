@@ -9,7 +9,7 @@ build:
 run: build
 	mkdir -p data
 	-pkill -x agent
-	nohup ./$(BINARY) > data/stdout.log 2>&1 &
+	nohup ./$(BINARY) $(CONFIG) > data/stdout.log 2>&1 &
 	sleep 1
 	tail -10 data/agent.log
 

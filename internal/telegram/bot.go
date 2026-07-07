@@ -10,16 +10,32 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/lllypuk/agent-shatrov/internal/agent"
 	"github.com/lllypuk/agent-shatrov/internal/config"
+	"github.com/lllypuk/agent-shatrov/internal/safeguards"
 	"github.com/lllypuk/agent-shatrov/internal/storage"
 	"github.com/lllypuk/agent-shatrov/internal/tools"
+	"github.com/lllypuk/agent-shatrov/internal/transport"
 )
+
+// Message is a normalized incoming message produced by the Telegram bot for an adapter.
+type Message struct {
+	ChatID     string
+	SenderID   string
+	SenderName string
+	IsBot      bool
+	Text       string
+	Mentions   []string
+	IsDM       bool
+	ReplyTo    string
+}
 
 // Bot is the Telegram bot interface.
 type Bot struct {
@@ -28,6 +44,7 @@ type Bot struct {
 	filesTool    *tools.FilesTool
 	allowedUsers map[int64]bool
 	logger       *slog.Logger
+	safeguards   *safeguards.Guard
 	// files config
 	maxFileSizeKB     int
 	allowedExtensions map[string]bool
@@ -117,7 +134,44 @@ func (b *Bot) SetStatusInfo(startTime time.Time, dbPath string, db *storage.DB) 
 	b.db = db
 }
 
-// Run starts the long-polling loop.
+// SetSafeguards installs the loop-detection / rate-limit guard.
+func (b *Bot) SetSafeguards(guard *safeguards.Guard) {
+	b.safeguards = guard
+	if guard != nil && b.api != nil && b.api.Self.ID != 0 {
+		guard.SetSelfID(strconv.FormatInt(b.api.Self.ID, 10))
+	}
+}
+
+// Messages returns nil for Telegram. Telegram updates are consumed
+// internally by Run/handleUpdate; calling GetUpdatesChan a second time would
+// conflict with the existing long-poller (Telegram API returns 409 Conflict).
+// Use the Mattermost transport if you need the dispatcher pattern.
+func (b *Bot) Messages() <-chan Message {
+	return nil
+}
+
+func extractMentions(msg *tgbotapi.Message) []string {
+	if msg.Entities == nil {
+		return nil
+	}
+	// Telegram message entities use UTF-16 code units for offsets/lengths.
+	textUTF16 := utf16.Encode([]rune(msg.Text))
+	var mentions []string
+	for _, e := range msg.Entities {
+		if e.Type != "mention" {
+			continue
+		}
+		end := e.Offset + e.Length
+		if e.Offset < 0 || end > len(textUTF16) {
+			continue
+		}
+		mentioned := string(utf16.Decode(textUTF16[e.Offset:end]))
+		mentions = append(mentions, strings.TrimPrefix(mentioned, "@"))
+	}
+	return mentions
+}
+
+// Run starts the long-polling loop and handles updates internally.
 func (b *Bot) Run(ctx context.Context) error {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -174,6 +228,31 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 
 	b.logger.Debug("message received", "chat_id", chatID, "text", truncateLog(text, 100))
 
+	inbound := transport.InboundMessage{
+		ChatID:     strconv.FormatInt(msg.Chat.ID, 10),
+		SenderID:   strconv.FormatInt(msg.From.ID, 10),
+		SenderName: msg.From.UserName,
+		IsBot:      msg.From.IsBot,
+		Text:       text,
+		Mentions:   extractMentions(msg),
+		IsDM:       msg.Chat.IsPrivate(),
+	}
+
+	if b.safeguards != nil {
+		decision := b.safeguards.BeforeHandle(inbound, time.Now())
+		if !decision.Allowed {
+			b.logger.Warn("safeguard blocked message", "reason", decision.Reason, "chat_id", chatID)
+			if decision.Escalate {
+				b.sendLongText(chatID, safeguards.EscalationText)
+				b.safeguards.RecordResponse(inbound, time.Now())
+			}
+			return
+		}
+		if decision.Warn {
+			b.logger.Warn("loop warning: approaching iteration limit", "chat_id", chatID)
+		}
+	}
+
 	// Handle commands
 	if strings.HasPrefix(text, "/") {
 		b.handleCommand(ctx, chatID, text)
@@ -184,16 +263,36 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 	typing := tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)
 	_, _ = b.api.Send(typing)
 
+	// Rate-limit applies to replies, not to inbound processing.
+	if b.safeguards != nil {
+		replyDecision := b.safeguards.AllowReply(inbound, time.Now())
+		if !replyDecision.Allowed {
+			b.logger.Warn("safeguard rate-limited reply", "reason", replyDecision.Reason, "chat_id", chatID)
+			return
+		}
+	}
+
 	// Process through agent
+	b.processAgentReply(ctx, chatID, text, inbound)
+}
+
+func (b *Bot) processAgentReply(ctx context.Context, chatID int64, text string, inbound transport.InboundMessage) {
 	resp, err := b.agent.HandleMessage(ctx, chatID, text)
 	if err != nil {
 		b.logger.Error("agent error", "error", err)
 		b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
+		if b.safeguards != nil {
+			b.safeguards.RecordResponse(inbound, time.Now())
+		}
 		return
 	}
 
 	// Send response (split if too long for Telegram)
 	b.sendLongText(chatID, resp.Text)
+
+	if b.safeguards != nil {
+		b.safeguards.RecordResponse(inbound, time.Now())
+	}
 
 	if resp.Usage != nil {
 		b.logger.Debug("usage",

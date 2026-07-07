@@ -12,6 +12,27 @@
 # МИНИМАЛЬНАЯ КОНФИГУРАЦИЯ (обязательно заполнить)
 # ============================================================
 
+transport:
+  type: telegram            # telegram | mattermost
+
+# ── Роль инстанса (для multi-agent команды в Mattermost) ─────────────────────
+role:
+  name: "personal-assistant"  # идентификатор роли (логи /status)
+  system_prompt: ""           # переопределяет встроенный промпт; пусто = умолчание
+
+# ── Mattermost (альтернатива Telegram) ──────────────────────────────────────
+# Раскомментируй и заполни при использовании transport.type = mattermost.
+# mattermost:
+#   server_url: "https://mattermost.example.com"
+#   token: ""              # токен бота Mattermost
+#   proxy: ""              # прокси для Mattermost (опционально)
+#   bot_username: "agent-shatrov"  # имя этого бота без @
+#   owner_user_id: ""      # user id человека-владельца (полный доступ)
+#   team_bots:             # белый список ботов-коллег (username или id)
+#     - "analyst-bot"
+#     - "developer-bot"
+#     - "tester-bot"
+
 telegram:
   token: ""              # ← ЗАПОЛНИ: токен от @BotFather
   allowed_users:         # ← ЗАПОЛНИ: твой chat_id (узнать: @userinfobot в Telegram)
@@ -32,6 +53,13 @@ llm:
 # ── Telegram ─────────────────────────────────────────────────────────────────
 # telegram:
 #   proxy: ""            # прокси только для Telegram, e.g. "http://127.0.0.1:2080"
+
+# ── Safeguards (предохранители петель для multi-agent режима) ───────────────
+# Работают для Telegram сейчас и готовы для Mattermost при multi-instance запуске.
+safeguards:
+  loop_warn_bot_messages: 10      # логировать предупреждение после N сообщений ботов
+  loop_suppress_bot_messages: 15  # остановить автоответы после N сообщений ботов
+  max_replies_per_minute: 5       # не больше N ответов агента в минуту на тред
 
 # ── LLM (дополнительные настройки) ───────────────────────────────────────────
 # llm:

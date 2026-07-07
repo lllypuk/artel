@@ -146,15 +146,15 @@ Whitelist имён ботов команды в конфиге; человек-�
 - Modify: `internal/telegram/bot.go` — реализовать интерфейс (без изменения поведения)
 - Modify: `cmd/agent/main.go` — выбор транспорта по `config.transport`
 
-- [ ] спроектировать `Transport`-интерфейс: `Send`, `Messages()`, `Close`; типы
+- [x] спроектировать `Transport`-интерфейс: `Send`, `Messages()`, `Close`; типы
   `InboundMessage` (ChatID/ChannelID, SenderID, SenderName, IsBot, Text, ThreadID,
   Mentions) и `Message` (TargetID, Text, ThreadID, ReplyTo)
-- [ ] привести `telegram.Bot` под интерфейс (вынести общую логику dispatch/agent-call
+- [x] привести `telegram.Bot` под интерфейс (вынести общую логику dispatch/agent-call
   за transport-границу, оставить в telegram только Telegram-специфику)
-- [ ] добавить `transport:` секцию в `config.go` + `config.example.yaml`
+- [x] добавить `transport:` секцию в `config.go` + `config.example.yaml`
   (`type: telegram|mattermost`)
-- [ ] тесты: убедиться что Telegram-путь работает как раньше (регрессии нет)
-- [ ] `make lint test`
+- [x] тесты: убедиться что Telegram-путь работает как раньше (регрессии нет)
+- [x] `make lint test`
 
 ### Task 2: MattermostTransport
 
@@ -163,12 +163,12 @@ Whitelist имён ботов команды в конфиге; человек-�
   `internal/mm/`)
 - Create: `internal/mattermost/transport.go` — реализация `Transport`
 
-- [ ] REST-клиент: post message, get channel, get thread; авторизация по bot token
-- [ ] WebSocket-клиент: подписка на `posted` events, парсинг @-mentions
-- [ ] реализовать `Transport` для Mattermost (`Send` / `Messages()` / `Close`)
-- [ ] DM-детекция по `channel_type` (DM vs channel) — влияет на тон ответа
-- [ ] тесты через httptest + mock WS
-- [ ] `make lint test`
+- [x] REST-клиент: post message, get channel, get thread; авторизация по bot token
+- [x] WebSocket-клиент: подписка на `posted` events, парсинг @-mentions
+- [x] реализовать `Transport` для Mattermost (`Send` / `Messages()` / `Close`)
+- [x] DM-детекция по `channel_type` (DM vs channel) — влияет на тон ответа
+- [x] тесты через httptest + mock WS
+- [x] `make lint test`
 
 ### Task 3: Multi-agent auth (@-mention от ботов)
 
@@ -177,11 +177,11 @@ Whitelist имён ботов команды в конфиге; человек-�
 - Modify: `internal/config/config.go` — `team_bots` whitelist имён/id ботов команды
 - Modify: `internal/mattermost/transport.go` — проброс `IsBot`, `Mentions`
 
-- [ ] реакция на @-mention не только от человека-владельца, но и от ботов из whitelist
-- [ ] человек-владелец остаётся супервизором (полный доступ)
-- [ ] игнор сообщений от ботов вне whitelist
-- [ ] тесты: триггер от соседа-бота / от человека / от чужого
-- [ ] `make lint test`
+- [x] реакция на @-mention не только от человека-владельца, но и от ботов из whitelist
+- [x] человек-владелец остаётся супервизором (полный доступ)
+- [x] игнор сообщений от ботов вне whitelist
+- [x] тесты: триггер от соседа-бота / от человека / от чужого
+- [x] `make lint test`
 
 ### Task 4: Предохранители от петель
 
@@ -189,12 +189,12 @@ Whitelist имён ботов команды в конфиге; человек-�
 - Create: `internal/safeguards/` — пакет с loop-detection и rate-limit
 - Modify: dispatcher/transport-слой — вызов предохранителей перед обработкой
 
-- [ ] **№1 self-skip**: `sender_id == self_bot_id` → игнор (не отвечать себе)
-- [ ] **№2 лимит итераций на тред**: счётчик бот-сообщений в треде; ~10 → warn в лог,
+- [x] **№1 self-skip**: `sender_id == self_bot_id` → игнор (не отвечать себе)
+- [x] **№2 лимит итераций на тред**: счётчик бот-сообщений в треде; ~10 → warn в лог,
   ~15 → suppress (перестать отвечать), reset на сообщение человека
-- [ ] **№3 rate-limit**: не чаще N ответов/мин на тред (configurable)
-- [ ] тесты: табличные сценарии для каждого предохранителя + reset
-- [ ] `make lint test`
+- [x] **№3 rate-limit**: не чаще N ответов/мин на тред (configurable)
+- [x] тесты: табличные сценарии для каждого предохранителя + reset
+- [x] `make lint test`
 
 ### Task 5: Конфигурация ролей (инстансов)
 
@@ -204,9 +204,9 @@ Whitelist имён ботов команды в конфиге; человек-�
 - Modify: `config.example.yaml` — пример двух ролей (аналитик, разработчик)
 - Create: `docs/` — короткое руководство «как поднять второй инстанс»
 
-- [ ] документировать сценарий «2–3 инстанса»: отдельный конфиг + токен на роль
-- [ ] пример конфигов для ролей аналитик / разработчик / тестировщик
-- [ ] `make lint test`
+- [x] документировать сценарий «2–3 инстанса»: отдельный конфиг + токен на роль
+- [x] пример конфигов для ролей аналитик / разработчик / тестировщик
+- [x] `make lint test`
 
 ### Task 6: Финальная проверка и документация
 
@@ -214,10 +214,10 @@ Whitelist имён ботов команды в конфиге; человек-�
 - Modify: `README.md`, `CLAUDE.md` — обновить секции архитектуры/возможностей
 - Move: этот план → `docs/plans/completed/` (когда всё выполнено)
 
-- [ ] обновить README: multi-agent/Mattermost как новый режим работы
-- [ ] обновить `.claude/CLAUDE.md`: транспорт-абстракция, MM-transport, safeguards
-- [ ] убедиться что `make lint test` проходит полностью
-- [ ] переместить план в `completed/`
+- [x] обновить README: multi-agent/Mattermost как новый режим работы
+- [x] обновить `.claude/CLAUDE.md`: транспорт-абстракция, MM-transport, safeguards
+- [x] убедиться что `make lint test` проходит полностью
+- [x] переместить план в `completed/`
 
 ## Post-Completion
 

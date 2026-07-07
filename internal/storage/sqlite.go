@@ -352,6 +352,18 @@ func (s *DB) migrate(ctx context.Context) error {
 			UNIQUE(note_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_note_embeddings_note ON note_embeddings(note_id)`,
+		// External-to-internal chat ID mapping, required for transports that use
+		// string identifiers (Mattermost) while the rest of the storage layer
+		// remains keyed by integer chat IDs.
+		`CREATE TABLE IF NOT EXISTS chat_id_mapping (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			platform TEXT NOT NULL,
+			external_id TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(platform, external_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_id_mapping_lookup ON chat_id_mapping(platform, external_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_id_mapping_reverse ON chat_id_mapping(id)`,
 	}
 
 	// Execute core migrations (required)

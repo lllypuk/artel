@@ -156,6 +156,38 @@ func TestHandleMessageNoChoices(t *testing.T) {
 	}
 }
 
+func TestSetSystemPromptOverridesDefault(t *testing.T) {
+	var capturedReq llm.ChatRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&capturedReq) //nolint:errcheck
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(llm.ChatResponse{ //nolint:errcheck
+			Choices: []llm.Choice{{Message: llm.Message{Role: "assistant", Content: "ok"}}},
+		})
+	}))
+	defer srv.Close()
+
+	a := newAgent(t, srv)
+	a.SetSystemPrompt("Ты — тестировщик команды.")
+
+	if got := a.SystemPrompt(); got != "Ты — тестировщик команды." {
+		t.Errorf("SystemPrompt(): got %q, want custom prompt", got)
+	}
+
+	_, err := a.HandleMessage(context.Background(), 1, "проверь задачу")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(capturedReq.Messages) == 0 || capturedReq.Messages[0].Role != "system" {
+		t.Fatal("first message is not system prompt")
+	}
+	if capturedReq.Messages[0].Content != "Ты — тестировщик команды." {
+		t.Errorf("system prompt in request: got %q, want custom prompt",
+			capturedReq.Messages[0].Content)
+	}
+}
+
 // ── ReAct loop ────────────────────────────────────────────────────────────────
 
 func TestHandleMessageToolCallLoop(t *testing.T) {
