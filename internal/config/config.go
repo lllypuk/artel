@@ -10,6 +10,7 @@ import (
 )
 
 type Config struct {
+	Transport  TransportConfig  `yaml:"transport"`
 	Telegram   TelegramConfig   `yaml:"telegram"`
 	Proactive  ProactiveConfig  `yaml:"proactive"`
 	LLM        LLMConfig        `yaml:"llm"`
@@ -27,6 +28,10 @@ type Config struct {
 	Notes      NotesConfig      `yaml:"notes"`
 	Otel       OtelConfig       `yaml:"otel"`
 	Logging    LoggingConfig    `yaml:"logging"`
+}
+
+type TransportConfig struct {
+	Type string `yaml:"type"` // "telegram" or "mattermost"
 }
 
 type TelegramConfig struct {
@@ -232,6 +237,12 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	if c.Transport.Type == "" {
+		c.Transport.Type = "telegram"
+	}
+	if c.Transport.Type != "telegram" && c.Transport.Type != "mattermost" {
+		return fmt.Errorf("transport.type must be 'telegram' or 'mattermost'")
+	}
 	if c.Telegram.Token == "" {
 		return fmt.Errorf("telegram.token is required")
 	}

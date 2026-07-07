@@ -17,6 +17,7 @@ import (
 	"github.com/lllypuk/agent-shatrov/internal/telegram"
 	"github.com/lllypuk/agent-shatrov/internal/telemetry"
 	"github.com/lllypuk/agent-shatrov/internal/tools"
+	"github.com/lllypuk/agent-shatrov/internal/transport"
 )
 
 func main() {
@@ -94,19 +95,35 @@ func main() {
 	ag := agent.New(llmProvider, cfg.LLM.Models.Default, cfg.LLM.MaxIterations, toolRegistry, db, logger)
 	setupAgent(ag, cfg)
 
-	bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.Proxy, cfg.Telegram.AllowedUsers, ag, logger)
-	if err != nil {
-		logger.Error("create telegram bot", "error", err)
+	var tr transport.Transport
+	switch cfg.Transport.Type {
+	case "telegram", "":
+		bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.Proxy, cfg.Telegram.AllowedUsers, ag, logger)
+		if err != nil {
+			logger.Error("create telegram bot", "error", err)
+			os.Exit(1)
+		}
+		setupBot(bot, cfg, toolRegistry)
+
+		bot.SetNotificationHandler()
+		bot.SetStatusInfo(startTime, cfg.Database.Path, db)
+
+		notifier := bot.GetNotifier()
+		if cfg.Transport.Type == "" || cfg.Transport.Type == "telegram" {
+			go runReminderScheduler(ctx, db, notifier, logger)
+			go runProactiveScheduler(ctx, cfg.Proactive, ag, notifier, cfg.Telegram.AllowedUsers, db, cfg.Weather.Enabled, cfg.News.Enabled, cfg.Stocks.Enabled, logger)
+			startMonitorLoop(ctx, &cfg.Monitor, db, notifier, cfg.Telegram.AllowedUsers, logger)
+		}
+
+		tr = telegram.NewTransport(bot)
+	case "mattermost":
+		// Mattermost support is implemented in later tasks; fail clearly here.
+		logger.Error("mattermost transport not yet implemented")
+		os.Exit(1)
+	default:
+		logger.Error("unknown transport type", "type", cfg.Transport.Type)
 		os.Exit(1)
 	}
-	setupBot(bot, cfg, toolRegistry)
-
-	bot.SetNotificationHandler()
-	bot.SetStatusInfo(startTime, cfg.Database.Path, db)
-
-	go runReminderScheduler(ctx, db, bot.GetNotifier(), logger)
-	go runProactiveScheduler(ctx, cfg.Proactive, ag, bot.GetNotifier(), cfg.Telegram.AllowedUsers, db, cfg.Weather.Enabled, cfg.News.Enabled, cfg.Stocks.Enabled, logger)
-	startMonitorLoop(ctx, &cfg.Monitor, db, bot.GetNotifier(), cfg.Telegram.AllowedUsers, logger)
 
 	if cfg.News.Enabled {
 		if _, nm := setupNews(ctx, cfg, db, toolRegistry, logger); nm != nil {
@@ -125,10 +142,11 @@ func main() {
 	logger.Info("agent-shatrov starting",
 		"model", cfg.LLM.Models.Default,
 		"db", cfg.Database.Path,
+		"transport", cfg.Transport.Type,
 	)
 
-	if err := bot.Run(ctx); err != nil && err != context.Canceled {
-		logger.Error("bot stopped with error", "error", err)
+	if err := tr.Run(ctx); err != nil && err != context.Canceled {
+		logger.Error("transport stopped with error", "error", err)
 		os.Exit(1)
 	}
 

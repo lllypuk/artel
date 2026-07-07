@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,18 @@ import (
 	"github.com/lllypuk/agent-shatrov/internal/storage"
 	"github.com/lllypuk/agent-shatrov/internal/tools"
 )
+
+// Message is a normalized incoming message produced by the Telegram bot for an adapter.
+type Message struct {
+	ChatID     string
+	SenderID   string
+	SenderName string
+	IsBot      bool
+	Text       string
+	Mentions   []string
+	IsDM       bool
+	ReplyTo    string
+}
 
 // Bot is the Telegram bot interface.
 type Bot struct {
@@ -117,7 +130,60 @@ func (b *Bot) SetStatusInfo(startTime time.Time, dbPath string, db *storage.DB) 
 	b.db = db
 }
 
-// Run starts the long-polling loop.
+// Messages returns normalized inbound messages as a channel.
+// This allows a transport adapter to consume Telegram updates without direct
+// knowledge of tgbotapi types.
+func (b *Bot) Messages() <-chan Message {
+	out := make(chan Message)
+	go b.forwardMessages(out)
+	return out
+}
+
+func (b *Bot) forwardMessages(out chan<- Message) {
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 60
+	updates := b.api.GetUpdatesChan(u)
+	for update := range updates {
+		if update.Message == nil || update.Message.Text == "" {
+			continue
+		}
+		msg := update.Message
+		replyTo := ""
+		if msg.ReplyToMessage != nil {
+			replyTo = strconv.Itoa(msg.ReplyToMessage.MessageID)
+		}
+		out <- Message{
+			ChatID:     strconv.FormatInt(msg.Chat.ID, 10),
+			SenderID:   strconv.FormatInt(msg.From.ID, 10),
+			SenderName: msg.From.UserName,
+			IsBot:      msg.From.IsBot,
+			Text:       strings.TrimSpace(msg.Text),
+			Mentions:   extractMentions(msg),
+			IsDM:       msg.Chat.IsPrivate(),
+			ReplyTo:    replyTo,
+		}
+	}
+}
+
+func extractMentions(msg *tgbotapi.Message) []string {
+	if msg.Entities == nil {
+		return nil
+	}
+	var mentions []string
+	for _, e := range msg.Entities {
+		if e.Type != "mention" {
+			continue
+		}
+		mentioned := msg.Text[e.Offset:]
+		if len(mentioned) > e.Length {
+			mentioned = mentioned[:e.Length]
+		}
+		mentions = append(mentions, strings.TrimPrefix(mentioned, "@"))
+	}
+	return mentions
+}
+
+// Run starts the long-polling loop and handles updates internally.
 func (b *Bot) Run(ctx context.Context) error {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60

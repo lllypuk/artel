@@ -12,6 +12,9 @@
 # МИНИМАЛЬНАЯ КОНФИГУРАЦИЯ (обязательно заполнить)
 # ============================================================
 
+transport:
+  type: telegram            # telegram | mattermost
+
 telegram:
   token: ""              # ← ЗАПОЛНИ: токен от @BotFather
   allowed_users:         # ← ЗАПОЛНИ: твой chat_id (узнать: @userinfobot в Telegram)

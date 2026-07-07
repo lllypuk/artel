@@ -146,15 +146,15 @@ Whitelist имён ботов команды в конфиге; человек-�
 - Modify: `internal/telegram/bot.go` — реализовать интерфейс (без изменения поведения)
 - Modify: `cmd/agent/main.go` — выбор транспорта по `config.transport`
 
-- [ ] спроектировать `Transport`-интерфейс: `Send`, `Messages()`, `Close`; типы
+- [x] спроектировать `Transport`-интерфейс: `Send`, `Messages()`, `Close`; типы
   `InboundMessage` (ChatID/ChannelID, SenderID, SenderName, IsBot, Text, ThreadID,
   Mentions) и `Message` (TargetID, Text, ThreadID, ReplyTo)
-- [ ] привести `telegram.Bot` под интерфейс (вынести общую логику dispatch/agent-call
+- [x] привести `telegram.Bot` под интерфейс (вынести общую логику dispatch/agent-call
   за transport-границу, оставить в telegram только Telegram-специфику)
-- [ ] добавить `transport:` секцию в `config.go` + `config.example.yaml`
+- [x] добавить `transport:` секцию в `config.go` + `config.example.yaml`
   (`type: telegram|mattermost`)
-- [ ] тесты: убедиться что Telegram-путь работает как раньше (регрессии нет)
-- [ ] `make lint test`
+- [x] тесты: убедиться что Telegram-путь работает как раньше (регрессии нет)
+- [x] `make lint test`
 
 ### Task 2: MattermostTransport
 
