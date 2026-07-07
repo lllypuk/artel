@@ -65,7 +65,8 @@ type Agent struct {
 	mu                 sync.RWMutex
 	models             map[string]string // alias → model name, e.g. "fast" → "glm-4.7-flash"
 	maxIterations      int
-	maxContextMessages int // sliding context window (0 = no limit)
+	maxContextMessages int    // sliding context window (0 = no limit)
+	systemPrompt       string // overrides default prompt when non-empty
 	tools              *tools.Registry
 	db                 *storage.DB
 	logger             *slog.Logger
@@ -126,6 +127,24 @@ func (a *Agent) Models() map[string]string {
 	result := make(map[string]string, len(a.models))
 	maps.Copy(result, a.models)
 	return result
+}
+
+// SetSystemPrompt overrides the built-in system prompt for this agent instance.
+// Pass an empty string to restore the default prompt.
+func (a *Agent) SetSystemPrompt(prompt string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.systemPrompt = prompt
+}
+
+// SystemPrompt returns the active system prompt (custom or default).
+func (a *Agent) SystemPrompt() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.systemPrompt != "" {
+		return a.systemPrompt
+	}
+	return systemPrompt
 }
 
 // SetNotifier sets the notification callback for long-running operations.
@@ -255,7 +274,7 @@ func (a *Agent) handleMessage(ctx context.Context, chatID int64, userMessage str
 
 	// Build messages for LLM
 	messages := make([]llm.Message, 0, len(contextMsgs)+2)
-	messages = append(messages, llm.Message{Role: "system", Content: systemPrompt})
+	messages = append(messages, llm.Message{Role: "system", Content: a.SystemPrompt()})
 	messages = append(messages, contextMsgs...)
 
 	// Add user message (multi-modal when image attachments are present)

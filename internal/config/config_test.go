@@ -637,6 +637,56 @@ llm:
 	}
 }
 
+func TestRoleConfigParsed(t *testing.T) {
+	path := writeTempConfig(t, `
+transport:
+  type: mattermost
+mattermost:
+  server_url: "https://mm.example.com"
+  token: "mm-token"
+  bot_username: "analyst-bot"
+  owner_user_id: "owner-1"
+  team_bots: ["dev-bot", "test-bot"]
+role:
+  name: "analyst"
+  system_prompt: "Ты — аналитик команды."
+llm:
+  api_key: "key"
+  base_url: "https://api.example.com"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Role.Name != "analyst" {
+		t.Errorf("Role.Name: got %q, want \"analyst\"", cfg.Role.Name)
+	}
+	if cfg.Role.SystemPrompt != "Ты — аналитик команды." {
+		t.Errorf("Role.SystemPrompt: got %q, want custom prompt", cfg.Role.SystemPrompt)
+	}
+}
+
+func TestRoleConfigDefaults(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+  base_url: "https://api.example.com"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Role.Name != "agent" {
+		t.Errorf("Role.Name default: got %q, want \"agent\"", cfg.Role.Name)
+	}
+	if cfg.Role.SystemPrompt != "" {
+		t.Errorf("Role.SystemPrompt default: got %q, want empty", cfg.Role.SystemPrompt)
+	}
+}
+
 func TestLLMAPIKeyWarningInMultiProviderMode(t *testing.T) {
 	path := writeTempConfig(t, `
 telegram:

@@ -15,6 +15,11 @@
 transport:
   type: telegram            # telegram | mattermost
 
+# ── Роль инстанса (для multi-agent команды в Mattermost) ─────────────────────
+role:
+  name: "personal-assistant"  # идентификатор роли (логи /status)
+  system_prompt: ""           # переопределяет встроенный промпт; пусто = умолчание
+
 # ── Mattermost (альтернатива Telegram) ──────────────────────────────────────
 # Раскомментируй и заполни при использовании transport.type = mattermost.
 # mattermost:

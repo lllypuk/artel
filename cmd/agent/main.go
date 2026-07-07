@@ -151,6 +151,7 @@ func main() {
 		"model", cfg.LLM.Models.Default,
 		"db", cfg.Database.Path,
 		"transport", cfg.Transport.Type,
+		"role", cfg.Role.Name,
 	)
 
 	if err := tr.Run(ctx); err != nil && err != context.Canceled {
@@ -174,7 +175,7 @@ func createDirectories(cfg *config.Config) error {
 	return nil
 }
 
-// setupAgent configures model aliases and context window on the agent.
+// setupAgent configures model aliases, context window and role/persona on the agent.
 func setupAgent(ag *agent.Agent, cfg *config.Config) {
 	modelAliases := map[string]string{"default": cfg.LLM.Models.Default}
 	if cfg.LLM.Models.Fast != "" {
@@ -183,6 +184,9 @@ func setupAgent(ag *agent.Agent, cfg *config.Config) {
 	ag.SetModels(modelAliases)
 	if cfg.LLM.MaxContextMessages > 0 {
 		ag.SetMaxContextMessages(cfg.LLM.MaxContextMessages)
+	}
+	if cfg.Role.SystemPrompt != "" {
+		ag.SetSystemPrompt(cfg.Role.SystemPrompt)
 	}
 }
 

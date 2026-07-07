@@ -11,6 +11,7 @@ import (
 
 type Config struct {
 	Transport  TransportConfig  `yaml:"transport"`
+	Role       RoleConfig       `yaml:"role"`
 	Telegram   TelegramConfig   `yaml:"telegram"`
 	Mattermost MattermostConfig `yaml:"mattermost"`
 	Safeguards SafeguardsConfig `yaml:"safeguards"`
@@ -34,6 +35,13 @@ type Config struct {
 
 type TransportConfig struct {
 	Type string `yaml:"type"` // "telegram" or "mattermost"
+}
+
+// RoleConfig defines the identity/persona of a single agent instance.
+// Used for multi-instance teams where the same binary serves different roles.
+type RoleConfig struct {
+	Name         string `yaml:"name"`          // role identifier, e.g. "analyst" (used in logs/status)
+	SystemPrompt string `yaml:"system_prompt"` // overrides default system prompt; empty = built-in
 }
 
 // SafeguardsConfig configures loop-detection and rate-limiting for autonomous
@@ -280,20 +288,10 @@ func (c *Config) validateTransport() error {
 }
 
 func (c *Config) validate() error {
-	if c.Transport.Type == "" {
-		c.Transport.Type = "telegram"
-	}
+	c.setDefaults()
+
 	if c.Transport.Type != "telegram" && c.Transport.Type != "mattermost" {
 		return fmt.Errorf("transport.type must be 'telegram' or 'mattermost'")
-	}
-	if c.Safeguards.LoopWarnBotMessages == 0 {
-		c.Safeguards.LoopWarnBotMessages = 10
-	}
-	if c.Safeguards.LoopSuppressBotMessages == 0 {
-		c.Safeguards.LoopSuppressBotMessages = 15
-	}
-	if c.Safeguards.MaxRepliesPerMinute == 0 {
-		c.Safeguards.MaxRepliesPerMinute = 5
 	}
 	if err := c.validateTransport(); err != nil {
 		return err
@@ -314,6 +312,26 @@ func (c *Config) validate() error {
 			return fmt.Errorf("llm.providers[%d].api_key is required", i)
 		}
 	}
+	return nil
+}
+
+// setDefaults fills in missing configuration values.
+func (c *Config) setDefaults() {
+	if c.Transport.Type == "" {
+		c.Transport.Type = "telegram"
+	}
+	if c.Role.Name == "" {
+		c.Role.Name = "agent"
+	}
+	if c.Safeguards.LoopWarnBotMessages == 0 {
+		c.Safeguards.LoopWarnBotMessages = 10
+	}
+	if c.Safeguards.LoopSuppressBotMessages == 0 {
+		c.Safeguards.LoopSuppressBotMessages = 15
+	}
+	if c.Safeguards.MaxRepliesPerMinute == 0 {
+		c.Safeguards.MaxRepliesPerMinute = 5
+	}
 	if c.Database.Path == "" {
 		c.Database.Path = "./data/agent.db"
 	}
@@ -332,7 +350,6 @@ func (c *Config) validate() error {
 			"jpg", "jpeg", "png", "gif", "webp",
 		}
 	}
-	return nil
 }
 
 func (c *Config) applyEnvOverrides() {
