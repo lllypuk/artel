@@ -85,7 +85,7 @@ func TestAuthGateAllowTeamBotMention(t *testing.T) {
 	g := NewAuthGate(AuthConfig{SelfID: "bot1", SelfUsername: "bot", OwnerIDs: []string{"owner"}, TeamBots: []string{"helper-bot"}})
 
 	allowed, reason := g.Allowed(InboundMessage{
-		SenderID:   "helper",
+		SenderID:   "helper-id-123",
 		SenderName: "helper-bot",
 		IsBot:      true,
 		Text:       "@bot check this",
@@ -93,6 +93,23 @@ func TestAuthGateAllowTeamBotMention(t *testing.T) {
 	})
 	if !allowed || reason != "team_mention" {
 		t.Fatalf("expected team bot mention allowed, got allowed=%v reason=%q", allowed, reason)
+	}
+}
+
+func TestAuthGateTeamBotMatchesBySenderNameNotID(t *testing.T) {
+	g := NewAuthGate(AuthConfig{SelfID: "bot1", SelfUsername: "bot", OwnerIDs: []string{"owner"}, TeamBots: []string{"helper-bot"}})
+
+	// SenderID accidentally equals a whitelisted username, but the real
+	// SenderName is different — gate must not treat this as a team bot.
+	allowed, reason := g.Allowed(InboundMessage{
+		SenderID:   "helper-bot",
+		SenderName: "impostor-bot",
+		IsBot:      true,
+		Text:       "@bot do bad",
+		Mentions:   []string{"bot"},
+	})
+	if allowed {
+		t.Fatalf("expected sender id match ignored for team bot, got allowed reason=%q", reason)
 	}
 }
 

@@ -139,6 +139,166 @@ func TestTransportEndToEnd(t *testing.T) {
 	_ = tr.Close()
 }
 
+func TestAdaptInboundNormalizesSenderName(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+	wsConnected := make(chan struct{})
+	upgradeCh := make(chan *websocket.Conn, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/websocket":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			require.NoError(t, err)
+			upgradeCh <- conn
+
+			var auth wsAuthChallenge
+			require.NoError(t, conn.ReadJSON(&auth))
+			require.NoError(t, conn.WriteJSON(map[string]any{"status": "OK", "seq_reply": 1}))
+			close(wsConnected)
+
+			postJSON, _ := json.Marshal(Post{ID: "p1", ChannelID: "c1", UserID: "u1", Message: "@bot hi"})
+			event := wsEvent{
+				Event: "posted",
+				Seq:   1,
+				Data: json.RawMessage(func() []byte {
+					b, _ := json.Marshal(map[string]string{
+						"post":         string(postJSON),
+						"channel_type": ChannelTypePublic,
+						"sender_name":  "@helper-bot",
+					})
+					return b
+				}()),
+			}
+			require.NoError(t, conn.WriteJSON(event))
+
+			ctx := r.Context()
+			<-ctx.Done()
+			return
+		case "/api/v4/users/me":
+			require.NoError(t, json.NewEncoder(w).Encode(User{ID: "self", Username: "bot", IsBot: true}))
+		case "/api/v4/users/u1":
+			require.NoError(t, json.NewEncoder(w).Encode(User{ID: "u1", Username: "helper-bot", IsBot: true}))
+		case "/api/v4/users/self":
+			require.NoError(t, json.NewEncoder(w).Encode(User{ID: "self", Username: "bot", IsBot: true}))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	tr, err := NewTransport(server.URL, "token", "", logger)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() {
+		_ = tr.Run(ctx)
+	}()
+
+	select {
+	case <-wsConnected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("websocket did not connect")
+	}
+
+	var msg transport.InboundMessage
+	select {
+	case msg = <-tr.Messages():
+	case <-time.After(2 * time.Second):
+		t.Fatal("did not receive inbound message")
+	}
+
+	assert.Equal(t, "u1", msg.SenderID)
+	assert.Equal(t, "helper-bot", msg.SenderName)
+	assert.True(t, msg.IsBot)
+
+	cancel()
+	conn := <-upgradeCh
+	_ = conn.Close()
+	_ = tr.Close()
+}
+
+func TestAdaptInboundTrimsAtWhenUserLookupFails(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+	wsConnected := make(chan struct{})
+	upgradeCh := make(chan *websocket.Conn, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/websocket":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			require.NoError(t, err)
+			upgradeCh <- conn
+
+			var auth wsAuthChallenge
+			require.NoError(t, conn.ReadJSON(&auth))
+			require.NoError(t, conn.WriteJSON(map[string]any{"status": "OK", "seq_reply": 1}))
+			close(wsConnected)
+
+			postJSON, _ := json.Marshal(Post{ID: "p1", ChannelID: "c1", UserID: "u1", Message: "@bot hi"})
+			event := wsEvent{
+				Event: "posted",
+				Seq:   1,
+				Data: json.RawMessage(func() []byte {
+					b, _ := json.Marshal(map[string]string{
+						"post":         string(postJSON),
+						"channel_type": ChannelTypePublic,
+						"sender_name":  "@unknown-bot",
+					})
+					return b
+				}()),
+			}
+			require.NoError(t, conn.WriteJSON(event))
+
+			ctx := r.Context()
+			<-ctx.Done()
+			return
+		case "/api/v4/users/me":
+			require.NoError(t, json.NewEncoder(w).Encode(User{ID: "self", Username: "bot", IsBot: true}))
+		case "/api/v4/users/u1":
+			w.WriteHeader(http.StatusNotFound)
+		case "/api/v4/users/self":
+			require.NoError(t, json.NewEncoder(w).Encode(User{ID: "self", Username: "bot", IsBot: true}))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	tr, err := NewTransport(server.URL, "token", "", logger)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() {
+		_ = tr.Run(ctx)
+	}()
+
+	select {
+	case <-wsConnected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("websocket did not connect")
+	}
+
+	var msg transport.InboundMessage
+	select {
+	case msg = <-tr.Messages():
+	case <-time.After(2 * time.Second):
+		t.Fatal("did not receive inbound message")
+	}
+
+	assert.Equal(t, "u1", msg.SenderID)
+	assert.Equal(t, "unknown-bot", msg.SenderName)
+	assert.False(t, msg.IsBot)
+
+	cancel()
+	conn := <-upgradeCh
+	_ = conn.Close()
+	_ = tr.Close()
+}
+
 func TestTransportSendRequiresTarget(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	tr, err := NewTransport("http://localhost:9999", "token", "", logger)

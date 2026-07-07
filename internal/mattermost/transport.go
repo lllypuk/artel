@@ -130,12 +130,13 @@ func (t *Transport) Close() error {
 // reject unverified team-bot-looking senders in the auth gate.
 func (t *Transport) adaptInbound(ctx context.Context, ev PostedEvent) transport.InboundMessage {
 	u := t.userInfo(ctx, ev.UserID)
-	senderName := ev.Username
+	// WebSocket posted events sometimes include a leading '@' in the sender
+	// name, while config values and REST user records use the bare username.
+	senderName := strings.TrimPrefix(ev.Username, "@")
 	isBot := false
 	if u != nil {
-		if senderName == "" {
-			senderName = u.Username
-		}
+		// Prefer the authoritative username from the REST profile.
+		senderName = u.Username
 		isBot = u.IsBot
 	}
 
@@ -148,7 +149,6 @@ func (t *Transport) adaptInbound(ctx context.Context, ev PostedEvent) transport.
 		Text:       strings.TrimSpace(ev.Message),
 		Mentions:   extractMentions(ev.Message),
 		IsDM:       ev.ChannelType == ChannelTypeDirect,
-		ReplyTo:    "",
 	}
 }
 

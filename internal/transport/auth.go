@@ -105,7 +105,7 @@ func (g *AuthGate) isTeamBot(m InboundMessage) bool {
 	if !m.IsBot {
 		return false
 	}
-	return containsCI(g.cfg.TeamBots, m.SenderID) || containsCI(g.cfg.TeamBots, m.SenderName)
+	return containsCI(g.cfg.TeamBots, m.SenderName)
 }
 
 func (g *AuthGate) mentionsSelf(m InboundMessage) bool {
