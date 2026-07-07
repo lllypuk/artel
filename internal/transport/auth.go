@@ -18,6 +18,12 @@ type AuthConfig struct {
 	// TeamBots are known bot teammates. They are allowed to trigger the agent
 	// only when they @-mention it (or in a DM, depending on transport rules).
 	TeamBots []string
+	// StrictBotWhitelist fails closed: a message from a bot whose real IsBot
+	// status cannot be verified, but whose username/name matches TeamBots, is
+	// rejected. When false, the gate conservatively treats unverified bot-matching
+	// senders as regular users (less safe, mainly for transports with no bot
+	// metadata).
+	StrictBotWhitelist bool
 }
 
 // AuthGate decides whether an inbound message should be passed to the agent.
@@ -33,54 +39,65 @@ func NewAuthGate(cfg AuthConfig) *AuthGate {
 // Allowed returns true when the message is authorized to trigger the agent.
 // The reason string is for diagnostics and tests only.
 func (g *AuthGate) Allowed(m InboundMessage) (allowed bool, reason string) {
-	if g.IsSelf(m) {
+	if g.isSelf(m) {
 		return false, "self"
 	}
-	if g.IsOwner(m) {
+	if g.isOwner(m) {
 		return true, "owner"
 	}
+	if g.isUnverifiedTeamBot(m) {
+		return false, "unverified_bot"
+	}
 	if m.IsBot {
-		if g.IsTeamBot(m) && g.MentionsSelf(m) {
+		if g.isTeamBot(m) && g.mentionsSelf(m) {
 			return true, "team_mention"
 		}
 		return false, "unknown_bot"
 	}
-	if m.IsDM || g.MentionsSelf(m) {
+	if m.IsDM || g.mentionsSelf(m) {
 		return true, "direct_or_mention"
 	}
 	return false, "not_addressed"
 }
 
-// IsSelf reports whether the message was sent by this agent itself.
-func (g *AuthGate) IsSelf(m InboundMessage) bool {
+// isUnverifiedTeamBot reports whether the sender looks like a team bot but IsBot
+// is false. Such senders are treated conservatively to prevent a non-bot account
+// whose username matches a whitelisted bot name from triggering the agent.
+func (g *AuthGate) isUnverifiedTeamBot(m InboundMessage) bool {
+	if !g.cfg.StrictBotWhitelist {
+		return false
+	}
+	if m.IsBot {
+		return false
+	}
+	return containsCI(g.cfg.TeamBots, m.SenderID) || containsCI(g.cfg.TeamBots, m.SenderName)
+}
+
+func (g *AuthGate) isSelf(m InboundMessage) bool {
 	if g.cfg.SelfID == "" {
 		return false
 	}
 	return m.SenderID == g.cfg.SelfID
 }
 
-// IsOwner reports whether the sender is a configured human supervisor.
+// isOwner reports whether the sender is a configured human supervisor.
 // Owner identity may be expressed as a sender ID or as a chat/channel ID,
 // depending on the transport.
-func (g *AuthGate) IsOwner(m InboundMessage) bool {
-	if g.contains(g.cfg.OwnerIDs, m.SenderID) {
+func (g *AuthGate) isOwner(m InboundMessage) bool {
+	if slices.Contains(g.cfg.OwnerIDs, m.SenderID) {
 		return true
 	}
-	return g.cfg.SelfID != "" && g.contains(g.cfg.OwnerIDs, m.ChatID)
+	return slices.Contains(g.cfg.OwnerIDs, m.ChatID)
 }
 
-// IsTeamBot reports whether the sender is a whitelisted bot teammate.
-func (g *AuthGate) IsTeamBot(m InboundMessage) bool {
+func (g *AuthGate) isTeamBot(m InboundMessage) bool {
 	if !m.IsBot {
 		return false
 	}
-	return g.containsCI(g.cfg.TeamBots, m.SenderID) || g.containsCI(g.cfg.TeamBots, m.SenderName)
+	return containsCI(g.cfg.TeamBots, m.SenderID) || containsCI(g.cfg.TeamBots, m.SenderName)
 }
 
-// MentionsSelf reports whether the message mentions the agent.
-// For direct messages this is always considered true if the message is not
-// from a disallowed bot.
-func (g *AuthGate) MentionsSelf(m InboundMessage) bool {
+func (g *AuthGate) mentionsSelf(m InboundMessage) bool {
 	if g.cfg.SelfUsername == "" {
 		return false
 	}
@@ -92,11 +109,7 @@ func (g *AuthGate) MentionsSelf(m InboundMessage) bool {
 	return false
 }
 
-func (g *AuthGate) contains(list []string, value string) bool {
-	return slices.Contains(list, value)
-}
-
-func (g *AuthGate) containsCI(list []string, value string) bool {
+func containsCI(list []string, value string) bool {
 	if value == "" {
 		return false
 	}

@@ -131,19 +131,30 @@ func TestWSClientReceivesPostedEvent(t *testing.T) {
 	defer server.Close()
 
 	ws := NewWSClient(server.URL, "token", nil, nil)
+	var mu sync.Mutex
 	var received PostedEvent
-	ws.OnPosted(func(ev PostedEvent) { received = ev })
+	ws.OnPosted(func(ev PostedEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		received = ev
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	require.NoError(t, ws.Connect(ctx))
 
-	require.Eventually(t, func() bool { return received.PostID != "" }, 2*time.Second, 50*time.Millisecond)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return received.PostID != ""
+	}, 2*time.Second, 50*time.Millisecond)
+	mu.Lock()
 	assert.Equal(t, "p1", received.PostID)
 	assert.Equal(t, "c1", received.ChannelID)
 	assert.Equal(t, "u1", received.UserID)
 	assert.Equal(t, "hi @dev", received.Message)
 	assert.Equal(t, "alice", received.Username)
+	mu.Unlock()
 
 	conn := <-upgradeCh
 	_ = conn.Close()

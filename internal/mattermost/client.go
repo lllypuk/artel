@@ -7,11 +7,21 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
-const maxPostLength = 3900 // Mattermost allows ~4000 chars; leave margin.
+const (
+	maxPostLength = 3900 // Mattermost allows ~4000 chars; leave margin.
+
+	// maxErrBody limits how many bytes we read from a failed HTTP response so
+	// that a malicious or broken server cannot cause an OOM.
+	maxErrBody = 4096
+	// defaultHTTPTimeout is used when the caller passes an http.Client with no
+	// explicit timeout.
+	defaultHTTPTimeout = 30 * time.Second
+)
 
 // RESTClient is a Mattermost REST API client.
 type RESTClient struct {
@@ -23,7 +33,10 @@ type RESTClient struct {
 // NewRESTClient creates a new Mattermost REST client.
 func NewRESTClient(baseURL, token string, httpClient *http.Client) *RESTClient {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+		httpClient = &http.Client{}
+	}
+	if httpClient.Timeout == 0 {
+		httpClient.Timeout = defaultHTTPTimeout
 	}
 	return &RESTClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
@@ -60,8 +73,11 @@ func (c *RESTClient) doJSON(ctx context.Context, method, urlPath string, body, d
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("mattermost: %s %s returned %d: %s", method, urlPath, resp.StatusCode, string(bodyBytes))
+		// Read a small prefix of the body for diagnostics, but cap it to avoid
+		// OOM if the server returns a huge error payload.
+		limited := io.LimitReader(resp.Body, maxErrBody)
+		_, _ = io.Copy(io.Discard, limited)
+		return fmt.Errorf("mattermost: %s %s returned %d", method, urlPath, resp.StatusCode)
 	}
 
 	if dst != nil {
@@ -84,27 +100,29 @@ func (c *RESTClient) GetMe(ctx context.Context) (*User, error) {
 // GetUser returns a Mattermost user by ID.
 func (c *RESTClient) GetUser(ctx context.Context, userID string) (*User, error) {
 	var u User
-	path := fmt.Sprintf("/api/v4/users/%s", userID)
+	path := fmt.Sprintf("/api/v4/users/%s", url.PathEscape(userID))
 	if err := c.doJSON(ctx, http.MethodGet, path, nil, &u); err != nil {
 		return nil, err
 	}
 	return &u, nil
 }
 
-// GetChannel returns a channel by ID, including its type field.
-func (c *RESTClient) GetChannel(ctx context.Context, channelID string) (*Channel, error) {
+// getChannel returns a channel by ID, including its type field.
+func (c *RESTClient) getChannel(ctx context.Context, channelID string) (*Channel, error) {
 	var ch Channel
-	path := fmt.Sprintf("/api/v4/channels/%s", channelID)
+	path := fmt.Sprintf("/api/v4/channels/%s", url.PathEscape(channelID))
 	if err := c.doJSON(ctx, http.MethodGet, path, nil, &ch); err != nil {
 		return nil, err
 	}
 	return &ch, nil
 }
 
-// GetPostThread returns the posts in a thread by its root ID.
-func (c *RESTClient) GetPostThread(ctx context.Context, rootID string) (*ThreadResponse, error) {
+// getPostThread returns the posts in a thread by its root ID.
+//
+//nolint:unused
+func (c *RESTClient) getPostThread(ctx context.Context, rootID string) (*ThreadResponse, error) {
 	var tr ThreadResponse
-	path := fmt.Sprintf("/api/v4/posts/%s/thread", rootID)
+	path := fmt.Sprintf("/api/v4/posts/%s/thread", url.PathEscape(rootID))
 	if err := c.doJSON(ctx, http.MethodGet, path, nil, &tr); err != nil {
 		return nil, err
 	}

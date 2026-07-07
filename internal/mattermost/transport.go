@@ -15,7 +15,9 @@ import (
 	"github.com/lllypuk/agent-shatrov/internal/transport"
 )
 
-var mentionRe = regexp.MustCompile(`@[A-Za-z0-9_.\-]+`)
+// mentionRe matches Mattermost @-mentions. Mention names consist of letters,
+// digits, dots, dashes and underscores and stop on a word boundary.
+var mentionRe = regexp.MustCompile(`\B@[A-Za-z0-9_.\-]+\b`)
 
 // Transport implements transport.Transport for Mattermost.
 type Transport struct {
@@ -51,9 +53,13 @@ func NewTransport(serverURL, token, proxyURL string, logger *slog.Logger) (*Tran
 	}, nil
 }
 
-// Run starts the WebSocket read loop and blocks until the context is cancelled.
-func (t *Transport) Run(ctx context.Context) error {
-	defer t.Close() //nolint:errcheck
+// Identify fetches the bot's own Mattermost user record. It is idempotent and
+// safe to call before Run so the rest of the application can know SelfID and
+// SelfUsername (for auth/safeguards) before the WebSocket loop starts.
+func (t *Transport) Identify(ctx context.Context) error {
+	if t.selfID != "" {
+		return nil
+	}
 
 	me, err := t.rest.GetMe(ctx)
 	if err != nil {
@@ -64,6 +70,16 @@ func (t *Transport) Run(ctx context.Context) error {
 	t.cacheUser(me)
 
 	t.logger.Info("mattermost transport authorized", "username", me.Username, "bot", me.IsBot)
+	return nil
+}
+
+// Run starts the WebSocket read loop and blocks until the context is cancelled.
+func (t *Transport) Run(ctx context.Context) error {
+	defer t.Close() //nolint:errcheck
+
+	if err := t.Identify(ctx); err != nil {
+		return err
+	}
 
 	t.ws.OnPosted(func(ev PostedEvent) {
 		select {
@@ -108,6 +124,10 @@ func (t *Transport) Close() error {
 	return err
 }
 
+// adaptInbound converts a Mattermost posted event to the transport-neutral
+// format. It caches user metadata to avoid repeating REST calls. If the user
+// lookup fails, IsBot remains false; callers with StrictBotWhitelist will
+// reject unverified team-bot-looking senders in the auth gate.
 func (t *Transport) adaptInbound(ctx context.Context, ev PostedEvent) transport.InboundMessage {
 	u := t.userInfo(ctx, ev.UserID)
 	senderName := ev.Username

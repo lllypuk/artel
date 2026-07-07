@@ -53,15 +53,55 @@ make run
 ## Команды
 
 ```bash
-make run      # собрать и запустить
-make stop     # остановить
-make restart  # перезапустить
-make logs     # смотреть логи в реальном времени
-make build    # только сборка
-make lint     # статический анализ (golangci-lint)
-make test     # запуск тестов
-make clean    # удалить бинарник
+make run                    # собрать и запустить с config.yaml
+make run CONFIG=config.yaml # передать другой конфиг при сборке через Makefile (если поддерживается)
+./bin/agent config-analyst.yaml  # запустить указанной конфигурацией (multi-instance)
+make stop                   # остановить
+make restart                # перезапустить
+make logs                   # смотреть логи в реальном времени
+make build                  # только сборка
+make lint                   # статический анализ (golangci-lint)
+make test                   # запуск тестов
+make clean                  # удалить бинарник
 ```
+
+> **CLI:** первый позиционный аргумент `bin/agent` — путь к `config.yaml`. По умолчанию используется `config.yaml`. Для multi-instance в Mattermost каждая роль запускается со своим конфигом (см. `docs/multi-instance-guide.md`).
+
+## Конфигурация
+
+Минимальный Telegram-вариант:
+
+```yaml
+transport:
+  type: telegram
+telegram:
+  token: "..."
+  allowed_users: [123456]
+llm:
+  api_key: "..."
+```
+
+Для Mattermost multi-agent:
+
+```yaml
+transport:
+  type: mattermost
+mattermost:
+  server_url: "https://mm.example.com"
+  token: "..."
+  bot_username: "analyst-bot"
+  owner_user_id: "u-..."
+  team_bots: ["developer-bot", "tester-bot"]
+role:
+  name: analyst
+  system_prompt: "Ты — аналитик команды..."
+safeguards:
+  loop_warn_bot_messages: 10
+  loop_suppress_bot_messages: 15
+  max_replies_per_minute: 5
+```
+
+Подробности и описание всех секций — в `config.example.yaml`. Полное руководство по multi-instance: `docs/multi-instance-guide.md`.
 
 ## Структура
 

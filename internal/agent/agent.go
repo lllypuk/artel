@@ -153,6 +153,13 @@ func (a *Agent) SetNotifier(notify tools.Notifier) {
 	a.tools.SetNotifier(notify)
 }
 
+// GetNotifier returns the current notifier callback, or nil if none is set.
+func (a *Agent) GetNotifier() tools.Notifier {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.notify
+}
+
 // ToolRegistry returns the tool registry.
 func (a *Agent) ToolRegistry() *tools.Registry {
 	return a.tools

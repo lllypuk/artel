@@ -13,6 +13,7 @@ import (
 	"github.com/lllypuk/agent-shatrov/internal/agent"
 	"github.com/lllypuk/agent-shatrov/internal/config"
 	"github.com/lllypuk/agent-shatrov/internal/llm"
+	"github.com/lllypuk/agent-shatrov/internal/mattermost"
 	"github.com/lllypuk/agent-shatrov/internal/safeguards"
 	"github.com/lllypuk/agent-shatrov/internal/storage"
 	"github.com/lllypuk/agent-shatrov/internal/telegram"
@@ -102,34 +103,9 @@ func main() {
 		MaxRepliesPerMinute: cfg.Safeguards.MaxRepliesPerMinute,
 	})
 
-	var tr transport.Transport
-	switch cfg.Transport.Type {
-	case "telegram", "":
-		bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.Proxy, cfg.Telegram.AllowedUsers, ag, logger)
-		if err != nil {
-			logger.Error("create telegram bot", "error", err)
-			os.Exit(1)
-		}
-		bot.SetSafeguards(guard)
-		setupBot(bot, cfg, toolRegistry)
-
-		bot.SetNotificationHandler()
-		bot.SetStatusInfo(startTime, cfg.Database.Path, db)
-
-		notifier := bot.GetNotifier()
-		if cfg.Transport.Type == "" || cfg.Transport.Type == "telegram" {
-			go runReminderScheduler(ctx, db, notifier, logger)
-			go runProactiveScheduler(ctx, cfg.Proactive, ag, notifier, cfg.Telegram.AllowedUsers, db, cfg.Weather.Enabled, cfg.News.Enabled, cfg.Stocks.Enabled, logger)
-			startMonitorLoop(ctx, &cfg.Monitor, db, notifier, cfg.Telegram.AllowedUsers, logger)
-		}
-
-		tr = telegram.NewTransport(bot)
-	case "mattermost":
-		// Mattermost support is implemented in later tasks; fail clearly here.
-		logger.Error("mattermost transport not yet implemented")
-		os.Exit(1)
-	default:
-		logger.Error("unknown transport type", "type", cfg.Transport.Type)
+	tr, transportStarted, err := buildTransport(ctx, cfg, ag, guard, db, toolRegistry, startTime, cancel, logger)
+	if err != nil {
+		logger.Error("build transport", "error", err)
 		os.Exit(1)
 	}
 
@@ -154,10 +130,16 @@ func main() {
 		"role", cfg.Role.Name,
 	)
 
-	if err := tr.Run(ctx); err != nil && err != context.Canceled {
-		logger.Error("transport stopped with error", "error", err)
-		os.Exit(1)
+	if !transportStarted {
+		go func() {
+			if err := tr.Run(ctx); err != nil && err != context.Canceled {
+				logger.Error("transport stopped with error", "error", err)
+				cancel()
+			}
+		}()
 	}
+
+	<-ctx.Done()
 
 	logger.Info("agent-shatrov stopped")
 }
@@ -258,4 +240,83 @@ func buildLLMProvider(cfg *config.Config, logger *slog.Logger) llm.Provider {
 
 	logger.Info("multi-provider LLM enabled", "providers", len(providers))
 	return llm.NewMultiClient(providers, multiCfg, logger)
+}
+
+// buildTransport selects and initializes the configured message transport.
+// For Mattermost it also starts the WebSocket loop and dispatcher; the returned
+// transportStarted flag tells main not to call tr.Run again.
+func buildTransport(ctx context.Context, cfg *config.Config, ag *agent.Agent, guard *safeguards.Guard, db *storage.DB, registry *tools.Registry, startTime time.Time, cancel context.CancelFunc, logger *slog.Logger) (transport.Transport, bool, error) {
+	switch cfg.Transport.Type {
+	case "telegram", "":
+		tr, err := buildTelegramTransport(ctx, cfg, ag, guard, db, registry, startTime, logger)
+		return tr, false, err
+	case "mattermost":
+		tr, err := buildMattermostTransport(ctx, cfg, ag, guard, db, cancel, logger)
+		return tr, true, err
+	default:
+		return nil, false, fmt.Errorf("unknown transport type %q", cfg.Transport.Type)
+	}
+}
+
+func buildTelegramTransport(ctx context.Context, cfg *config.Config, ag *agent.Agent, guard *safeguards.Guard, db *storage.DB, registry *tools.Registry, startTime time.Time, logger *slog.Logger) (transport.Transport, error) {
+	bot, err := telegram.New(cfg.Telegram.Token, cfg.Telegram.Proxy, cfg.Telegram.AllowedUsers, ag, logger)
+	if err != nil {
+		return nil, fmt.Errorf("create telegram bot: %w", err)
+	}
+	bot.SetSafeguards(guard)
+	setupBot(bot, cfg, registry)
+
+	bot.SetNotificationHandler()
+	bot.SetStatusInfo(startTime, cfg.Database.Path, db)
+
+	notifier := bot.GetNotifier()
+	startBackgroundLoops(ctx, cfg, db, ag, notifier, cfg.Telegram.AllowedUsers, logger)
+
+	return telegram.NewTransport(bot), nil
+}
+
+func buildMattermostTransport(ctx context.Context, cfg *config.Config, ag *agent.Agent, guard *safeguards.Guard, db *storage.DB, cancel context.CancelFunc, logger *slog.Logger) (transport.Transport, error) {
+	mmTr, err := mattermost.NewTransport(cfg.Mattermost.ServerURL, cfg.Mattermost.Token, cfg.Mattermost.Proxy, logger)
+	if err != nil {
+		return nil, fmt.Errorf("create mattermost transport: %w", err)
+	}
+	if err := mmTr.Identify(ctx); err != nil {
+		return nil, fmt.Errorf("identify mattermost bot: %w", err)
+	}
+	guard.SetSelfID(mmTr.SelfID())
+
+	ownerIDs := make([]string, 0, 1)
+	if cfg.Mattermost.OwnerUserID != "" {
+		ownerIDs = append(ownerIDs, cfg.Mattermost.OwnerUserID)
+	}
+	authGate := transport.NewAuthGate(transport.AuthConfig{
+		SelfID:             mmTr.SelfID(),
+		SelfUsername:       cfg.Mattermost.BotUsername,
+		OwnerIDs:           ownerIDs,
+		TeamBots:           cfg.Mattermost.TeamBots,
+		StrictBotWhitelist: true,
+	})
+
+	ag.SetNotifier(mattermostNotifier(mmTr, db, logger))
+
+	startBackgroundLoops(ctx, cfg, db, ag, ag.GetNotifier(), []int64{}, logger)
+
+	go func() {
+		if err := mmTr.Run(ctx); err != nil && err != context.Canceled {
+			logger.Error("mattermost transport stopped with error", "error", err)
+			cancel()
+		}
+	}()
+	go runMattermostDispatcher(ctx, mmTr, ag, authGate, guard, db, logger)
+
+	return mmTr, nil
+}
+
+// startBackgroundLoops starts reminder, proactive digest and monitor loops
+// using the supplied notifier and allowed-user list (empty for Mattermost,
+// explicit for Telegram).
+func startBackgroundLoops(ctx context.Context, cfg *config.Config, db *storage.DB, ag *agent.Agent, notifier tools.Notifier, allowedUsers []int64, logger *slog.Logger) {
+	go runReminderScheduler(ctx, db, notifier, logger)
+	go runProactiveScheduler(ctx, cfg.Proactive, ag, notifier, allowedUsers, db, cfg.Weather.Enabled, cfg.News.Enabled, cfg.Stocks.Enabled, logger)
+	startMonitorLoop(ctx, &cfg.Monitor, db, notifier, allowedUsers, logger)
 }

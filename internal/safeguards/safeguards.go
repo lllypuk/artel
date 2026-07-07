@@ -9,9 +9,9 @@ import (
 	"github.com/lllypuk/agent-shatrov/internal/transport"
 )
 
-// EscalationMessage is sent to the conversation thread when the bot loop
+// EscalationText is sent to the conversation thread when the bot loop
 // suppress threshold is reached, asking for human intervention.
-const EscalationMessage = "⚠️ Автономный диалог ботов остановлен: превышен лимит итераций. Нужен человек."
+const EscalationText = "⚠️ Автономный диалог ботов остановлен: превышен лимит итераций. Нужен человек."
 
 // Config configures the safeguard thresholds.
 type Config struct {
@@ -39,9 +39,10 @@ type Decision struct {
 // Guard tracks per-thread bot message counters and reply rate windows to prevent
 // runaway bot-to-bot conversations.
 type Guard struct {
-	cfg     Config
-	mu      sync.Mutex
-	threads map[string]*threadState
+	cfg         Config
+	mu          sync.Mutex
+	threads     map[string]*threadState
+	lastCleanup time.Time
 }
 
 type threadState struct {
@@ -50,6 +51,11 @@ type threadState struct {
 	warned     bool
 	replies    []time.Time
 }
+
+const (
+	threadTTL       = 24 * time.Hour
+	cleanupInterval = 10 * time.Minute
+)
 
 // New creates a Guard from the supplied config, applying safe defaults for any
 // zero threshold.
@@ -64,8 +70,9 @@ func New(cfg Config) *Guard {
 		cfg.MaxRepliesPerMinute = 5
 	}
 	return &Guard{
-		cfg:     cfg,
-		threads: make(map[string]*threadState),
+		cfg:         cfg,
+		threads:     make(map[string]*threadState),
+		lastCleanup: time.Now(),
 	}
 }
 
@@ -78,8 +85,9 @@ func (g *Guard) SetSelfID(selfID string) {
 }
 
 // BeforeHandle decides whether an incoming message should be processed.
-// It updates per-thread counters, resets on human messages, and checks the rate
-// limit before the agent replies.
+// It updates per-thread counters, resets on human messages, and issues loop
+// warnings/suppressions. It does NOT enforce the per-thread rate-limit; callers
+// must use RecordResponse/AllowReply for reply-side throttling.
 func (g *Guard) BeforeHandle(m transport.InboundMessage, now time.Time) Decision {
 	if g.cfg.SelfID != "" && m.SenderID == g.cfg.SelfID {
 		return Decision{Allowed: false, Reason: "self_skip"}
@@ -108,13 +116,10 @@ func (g *Guard) BeforeHandle(m transport.InboundMessage, now time.Time) Decision
 
 	state.lastUpdate = now
 
-	// Check rate limit first so a busy thread is throttled even before the
-	// loop counter crosses the suppress threshold.
-	if g.cfg.MaxRepliesPerMinute > 0 {
-		state.replies = filterWindow(state.replies, now.Add(-time.Minute))
-		if len(state.replies) >= g.cfg.MaxRepliesPerMinute {
-			return Decision{Allowed: false, Reason: "rate_limited"}
-		}
+	// Evict stale thread state periodically to avoid unbounded memory growth.
+	if now.Sub(g.lastCleanup) >= cleanupInterval {
+		g.cleanupLocked(now)
+		g.lastCleanup = now
 	}
 
 	// Loop suppression.
@@ -132,6 +137,32 @@ func (g *Guard) BeforeHandle(m transport.InboundMessage, now time.Time) Decision
 	return Decision{Allowed: true, Reason: "ok", Warn: warn}
 }
 
+// AllowReply reports whether the agent is allowed to send a reply in the
+// message's thread. It checks the per-thread rate-limit window and returns the
+// outcome. Does not mutate loop counters.
+func (g *Guard) AllowReply(m transport.InboundMessage, now time.Time) Decision {
+	if g.cfg.MaxRepliesPerMinute <= 0 {
+		return Decision{Allowed: true, Reason: "unlimited"}
+	}
+
+	key := threadKey(m)
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	state := g.threads[key]
+	if state == nil {
+		state = &threadState{}
+		g.threads[key] = state
+	}
+
+	state.replies = filterWindow(state.replies, now.Add(-time.Minute))
+	if len(state.replies) >= g.cfg.MaxRepliesPerMinute {
+		return Decision{Allowed: false, Reason: "rate_limited"}
+	}
+	return Decision{Allowed: true, Reason: "ok"}
+}
+
 // RecordResponse records that the agent sent a response in the message's thread.
 // It is used for the per-thread rate-limit window.
 func (g *Guard) RecordResponse(m transport.InboundMessage, now time.Time) {
@@ -146,10 +177,7 @@ func (g *Guard) RecordResponse(m transport.InboundMessage, now time.Time) {
 		g.threads[key] = state
 	}
 
-	if g.cfg.MaxRepliesPerMinute > 0 {
-		state.replies = filterWindow(state.replies, now.Add(-time.Minute))
-		state.replies = append(state.replies, now)
-	}
+	state.replies = append(state.replies, now)
 	state.lastUpdate = now
 }
 
@@ -171,6 +199,14 @@ func (g *Guard) State(threadKey string) (botCount, replyCount int) {
 	}
 
 	return state.botCount, replies
+}
+
+func (g *Guard) cleanupLocked(now time.Time) {
+	for k, st := range g.threads {
+		if now.Sub(st.lastUpdate) > threadTTL {
+			delete(g.threads, k)
+		}
+	}
 }
 
 func threadKey(m transport.InboundMessage) string {

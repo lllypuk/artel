@@ -26,6 +26,12 @@
 - `config.role` даёт инстансу идентичность/«должность» (name + system_prompt).
 - Руководство по multi-instance: `docs/multi-instance-guide.md`.
 - Шаблоны конфигов ролей: `docs/roles/{analyst,developer,tester}.yaml`.
+- `cmd/agent/dispatcher.go` — диспетчер входящих сообщений для Mattermost: auth/safeguards,
+  маппинг chat_id и вызов агента.
+- `internal/storage/chatids.go` — маппинг строковых внешних chat_id (Mattermost) к
+  внутренним integer id хранилища.
+- Первый позиционный аргумент `bin/agent` — путь к `config.yaml`;
+  так поднимаются разные роли multi-instance (`./bin/agent config-analyst.yaml`).
 
 ## Регистрация инструментов — два уровня
 

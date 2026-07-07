@@ -153,16 +153,21 @@ func TestRateLimitBlocksAfterThreshold(t *testing.T) {
 	// Three replies fit inside the limit.
 	m := humanMessage(0, 1, "go")
 	for i := range 3 {
-		d := g.BeforeHandle(m, base)
-		assert.True(t, d.Allowed, "request %d should be allowed", i)
+		d := g.AllowReply(m, base)
+		assert.True(t, d.Allowed, "reply %d should be allowed", i)
+		assert.Equal(t, "ok", d.Reason)
 		g.RecordResponse(m, base)
 	}
 
-	// Fourth request in the same minute is rate-limited.
-	d := g.BeforeHandle(m, base)
+	// Fourth reply in the same minute is rate-limited.
+	d := g.AllowReply(m, base)
 	assert.False(t, d.Allowed)
 	assert.Equal(t, "rate_limited", d.Reason)
 	assert.False(t, d.Escalate)
+
+	// Inbound messages are never rate-limited.
+	inbound := g.BeforeHandle(m, base)
+	assert.True(t, inbound.Allowed)
 }
 
 func TestRateLimitWindowSlides(t *testing.T) {
@@ -175,13 +180,13 @@ func TestRateLimitWindowSlides(t *testing.T) {
 	g.RecordResponse(m, base.Add(-30*time.Second))
 
 	// At base time, the two old replies are still inside the one-minute window.
-	d := g.BeforeHandle(m, base)
+	d := g.AllowReply(m, base)
 	assert.False(t, d.Allowed)
 	assert.Equal(t, "rate_limited", d.Reason)
 
-	// After the window slides past the oldest reply, the request is allowed again.
+	// After the window slides past the oldest reply, the reply is allowed again.
 	later := base.Add(31 * time.Second)
-	d = g.BeforeHandle(m, later)
+	d = g.AllowReply(m, later)
 	assert.True(t, d.Allowed)
 }
 
@@ -223,8 +228,8 @@ func TestRateLimitPerThread(t *testing.T) {
 	g.RecordResponse(threadA, base)
 
 	// Thread A is throttled.
-	assert.False(t, g.BeforeHandle(threadA, base).Allowed)
+	assert.False(t, g.AllowReply(threadA, base).Allowed)
 
 	// Thread B is still allowed.
-	assert.True(t, g.BeforeHandle(threadB, base).Allowed)
+	assert.True(t, g.AllowReply(threadB, base).Allowed)
 }

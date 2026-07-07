@@ -117,3 +117,17 @@ func TestAuthGateOwnerByChatID(t *testing.T) {
 		t.Fatalf("expected owner by chat id allowed, got allowed=%v reason=%q", allowed, reason)
 	}
 }
+
+func TestAuthGateOwnerByChatIDWithoutSelfID(t *testing.T) {
+	// Owner recognition by ChatID must work even when SelfID is not yet known.
+	g := NewAuthGate(AuthConfig{OwnerIDs: []string{"chat-42"}})
+
+	allowed, reason := g.Allowed(InboundMessage{
+		ChatID:   "chat-42",
+		SenderID: "someone",
+		Text:     "do it",
+	})
+	if !allowed || reason != "owner" {
+		t.Fatalf("expected owner by chat id allowed without self id, got allowed=%v reason=%q", allowed, reason)
+	}
+}

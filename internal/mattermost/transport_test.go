@@ -23,6 +23,9 @@ func TestExtractMentions(t *testing.T) {
 	assert.Nil(t, extractMentions("hello"))
 	assert.Equal(t, []string{"alice", "bob"}, extractMentions("hi @alice and @bob"))
 	assert.Equal(t, []string{"dev_1"}, extractMentions("@dev_1 ping"))
+	assert.Equal(t, []string{"bot"}, extractMentions("@bot. please check"))
+	assert.Equal(t, []string{"user"}, extractMentions("contact user@example.com and @user here"))
+	assert.Equal(t, []string{"a", "b"}, extractMentions("@a,@b"))
 }
 
 func TestTransportEndToEnd(t *testing.T) {

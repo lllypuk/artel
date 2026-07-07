@@ -1,6 +1,6 @@
 # agent-shatrov
 
-Персональный AI-агент с Telegram-интерфейсом для личного использования на локальном компьютере.
+Персональный AI-агент с Telegram/Mattermost-интерфейсами для личного использования на локальном компьютере.
 
 ## Стек
 
@@ -15,6 +15,7 @@
 ```
 cmd/agent/
   main.go            — точка входа, wiring всех зависимостей
+  dispatcher.go      — Mattermost: диспетчер входящих сообщений + auth/safeguards
   tools.go           — регистрация инструментов (registerOptionalTools)
   news.go            — setup новостей и цикл обновления фидов
   reminders.go       — планировщик напоминаний
@@ -98,6 +99,9 @@ make build    # только сборка бинарника → bin/agent
 make clean    # удалить бинарник
 make lint     # статический анализ (golangci-lint)
 make test     # запуск тестов
+
+# Первый позиционный аргумент — путь к config.yaml (для multi-instance)
+./bin/agent config-analyst.yaml
 ```
 
 ## Обязательно после каждой доработки
@@ -415,6 +419,7 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 | Пакет                                                | Назначение                |
 |------------------------------------------------------|---------------------------|
 | `github.com/go-telegram-bot-api/telegram-bot-api/v5` | Telegram Bot API               |
+| `github.com/gorilla/websocket`                              | WebSocket клиент Mattermost  |
 | `modernc.org/sqlite`                                 | SQLite (pure Go, без CGO)      |
 | `gopkg.in/yaml.v3`                                   | парсинг конфига                |
 | `github.com/mmcdole/gofeed`                          | RSS/Atom/JSON Feed парсер      |

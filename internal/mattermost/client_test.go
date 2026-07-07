@@ -113,7 +113,33 @@ func TestRESTClientGetChannel(t *testing.T) {
 	defer server.Close()
 
 	client := NewRESTClient(server.URL, "token", server.Client())
-	ch, err := client.GetChannel(context.Background(), "ch1")
+	ch, err := client.getChannel(context.Background(), "ch1")
 	require.NoError(t, err)
 	assert.Equal(t, ChannelTypeDirect, ch.Type)
+}
+
+func TestRESTClientPathEscape(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v4/users/user%2Fpath", r.URL.EscapedPath())
+		require.NoError(t, json.NewEncoder(w).Encode(User{ID: "user/path", Username: "alice"}))
+	}))
+	defer server.Close()
+
+	client := NewRESTClient(server.URL, "token", server.Client())
+	u, err := client.GetUser(context.Background(), "user/path")
+	require.NoError(t, err)
+	assert.Equal(t, "user/path", u.ID)
+}
+
+func TestRESTClientErrorStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("{\"status\": \"Unauthorized\"}"))
+	}))
+	defer server.Close()
+
+	client := NewRESTClient(server.URL, "token", server.Client())
+	_, err := client.GetMe(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "returned 401")
 }

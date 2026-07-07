@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
@@ -180,15 +181,18 @@ func extractMentions(msg *tgbotapi.Message) []string {
 	if msg.Entities == nil {
 		return nil
 	}
+	// Telegram message entities use UTF-16 code units for offsets/lengths.
+	textUTF16 := utf16.Encode([]rune(msg.Text))
 	var mentions []string
 	for _, e := range msg.Entities {
 		if e.Type != "mention" {
 			continue
 		}
-		mentioned := msg.Text[e.Offset:]
-		if len(mentioned) > e.Length {
-			mentioned = mentioned[:e.Length]
+		end := e.Offset + e.Length
+		if e.Offset < 0 || end > len(textUTF16) {
+			continue
 		}
+		mentioned := string(utf16.Decode(textUTF16[e.Offset:end]))
 		mentions = append(mentions, strings.TrimPrefix(mentioned, "@"))
 	}
 	return mentions
@@ -266,7 +270,7 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 		if !decision.Allowed {
 			b.logger.Warn("safeguard blocked message", "reason", decision.Reason, "chat_id", chatID)
 			if decision.Escalate {
-				b.sendLongText(chatID, safeguards.EscalationMessage)
+				b.sendLongText(chatID, safeguards.EscalationText)
 				b.safeguards.RecordResponse(inbound, time.Now())
 			}
 			return
@@ -286,11 +290,27 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 	typing := tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)
 	_, _ = b.api.Send(typing)
 
+	// Rate-limit applies to replies, not to inbound processing.
+	if b.safeguards != nil {
+		replyDecision := b.safeguards.AllowReply(inbound, time.Now())
+		if !replyDecision.Allowed {
+			b.logger.Warn("safeguard rate-limited reply", "reason", replyDecision.Reason, "chat_id", chatID)
+			return
+		}
+	}
+
 	// Process through agent
+	b.processAgentReply(ctx, chatID, text, inbound)
+}
+
+func (b *Bot) processAgentReply(ctx context.Context, chatID int64, text string, inbound transport.InboundMessage) {
 	resp, err := b.agent.HandleMessage(ctx, chatID, text)
 	if err != nil {
 		b.logger.Error("agent error", "error", err)
 		b.sendText(chatID, fmt.Sprintf("❌ Ошибка: %s", err.Error()))
+		if b.safeguards != nil {
+			b.safeguards.RecordResponse(inbound, time.Now())
+		}
 		return
 	}
 
