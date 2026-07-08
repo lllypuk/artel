@@ -55,15 +55,14 @@
 ### Task 4: Конфиги ботов
 
 **Файлы:** `configs/analyst-bot.yaml.example`, `configs/developer-bot.yaml.example`, `configs/tester-bot.yaml.example`, `configs/.gitignore`
-
-- [ ] analyst-bot.yaml.example: mattermost + role analyst + llm qwen3.5:cloud + pi_coder kimi-k2.7-code:cloud + projects_dir /home/projects
-- [ ] developer-bot.yaml.example: role developer + те же настройки
-- [ ] tester-bot.yaml.example: role tester + те же настройки
-- [ ] Все с плейсхолдерами для токенов (<analyst-bot-token> и т.д.)
-- [ ] server_url: "http://host-gateway:8065", base_url: "http://host-gateway:11434/v1"
-- [ ] pi_coder.projects_dir: "/home/projects", exclude_projects: ["test-project","nanoGPT"]
-- [ ] database.path: "/home/agent/data/agent.db", logging.file: "/home/agent/data/agent.log"
-- [ ] configs/.gitignore: реальные конфиги без .example
+- [x] analyst-bot.yaml.example: mattermost + role analyst + llm qwen3.5:cloud + pi_coder kimi-k2.7-code:cloud + projects_dir /home/projects
+- [x] developer-bot.yaml.example: role developer + те же настройки
+- [x] tester-bot.yaml.example: role tester + те же настройки
+- [x] Все с плейсхолдерами для токенов (<analyst-bot-token> и т.д.)
+- [x] server_url: "http://host-gateway:8065", base_url: "http://host-gateway:11434/v1"
+- [x] pi_coder.projects_dir: "/home/projects", exclude_projects: ["test-project","nanoGPT"]
+- [x] database.path: "/home/agent/data/agent.db", logging.file: "/home/agent/data/agent.log"
+- [x] configs/.gitignore: реальные конфиги без .example
 
 ### Task 5: systemd service + автозапуск
 
