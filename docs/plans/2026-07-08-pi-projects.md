@@ -46,16 +46,16 @@ agent-shatrov уже имеет multi-agent режим (Mattermost) и инст�
 
 **Файлы:** `internal/tools/pi_coder.go`, `internal/tools/pi_coder_test.go`
 
-- [ ] `PiCoderTool` хранит `*projects.Registry`, `defaultModel`, `defaultTimeout`
-- [ ] `PiCoderConfig` (tool config) меняется: `Registry`, `DefaultModel`, `DefaultTimeout`, `RestartFunc`
-- [ ] `Parameters()`: `project` — обязательный, `enum` из `registry.Names()`
-- [ ] `Description()`: включает список имён проектов, указание какой self
-- [ ] `Execute()`: найти проект по имени → определить model/timeout (per-project override → default) → запустить pi в `project.Path`
-- [ ] `Execute()`: non-self + `restart=true` → игнорировать, предупреждение в выводе
-- [ ] `Execute()`: non-self + `rebuild=true` → игнорировать, предупреждение в выводе
-- [ ] `Execute()`: self + `rebuild`/`restart` → как сейчас (make build / syscall.Exec)
-- [ ] Убрать старые поля `projectDir`, `model`, `timeout` из структуры
-- [ ] Тесты: valid project → pi в правильной директории; unknown project → error; non-self + restart → игнор; per-project model override; project обязателен
+- [x] `PiCoderTool` хранит `*projects.Registry`, `defaultModel`, `defaultTimeout`
+- [x] `PiCoderConfig` (tool config) меняется: `Registry`, `DefaultModel`, `DefaultTimeout`, `RestartFunc`
+- [x] `Parameters()`: `project` — обязательный, `enum` из `registry.Names()`
+- [x] `Description()`: включает список имён проектов, указание какой self
+- [x] `Execute()`: найти проект по имени → определить model/timeout (per-project override → default) → запустить pi в `project.Path`
+- [x] `Execute()`: non-self + `restart=true` → игнорировать, предупреждение в выводе
+- [x] `Execute()`: non-self + `rebuild=true` → игнорировать, предупреждение в выводе
+- [x] `Execute()`: self + `rebuild`/`restart` → как сейчас (make build / syscall.Exec)
+- [x] Убрать старые поля `projectDir`, `model`, `timeout` из структуры
+- [x] Тесты: valid project → pi в правильной директории; unknown project → error; non-self + restart → игнор; per-project model override; project обязателен
 
 ### Task 4: Wiring — tools.go + main.go
 

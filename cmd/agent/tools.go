@@ -5,20 +5,22 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/lllypuk/agent-shatrov/internal/config"
+	"github.com/lllypuk/agent-shatrov/internal/projects"
 	"github.com/lllypuk/agent-shatrov/internal/storage"
 	"github.com/lllypuk/agent-shatrov/internal/tools"
 )
 
 // registerOptionalTools регистрирует инструменты, включённые в конфиге.
-func registerOptionalTools(cfg *config.Config, registry *tools.Registry, logger *slog.Logger, db *storage.DB) {
+func registerOptionalTools(cfg *config.Config, registry *tools.Registry, logger *slog.Logger, db *storage.DB, agentDir string) {
 	if cfg.Web.Enabled {
 		registerWebTools(cfg, registry, logger)
 	}
 
 	if cfg.PiCoder.Enabled {
-		registerPiCoderTool(cfg, registry, logger)
+		registerPiCoderTool(cfg, registry, logger, agentDir)
 	}
 
 	if cfg.Shell.Enabled {
@@ -156,23 +158,19 @@ func registerWeatherTool(cfg *config.Config, registry *tools.Registry, logger *s
 	logger.Info("Weather tool enabled", "timeout", timeout)
 }
 
-func registerPiCoderTool(cfg *config.Config, registry *tools.Registry, logger *slog.Logger) {
-	// Temporary: use first project path. Full Registry wiring in Task 4.
-	projectDir := "."
+func registerPiCoderTool(cfg *config.Config, registry *tools.Registry, logger *slog.Logger, agentDir string) {
 	model := cfg.PiCoder.Model
 	if model == "" {
 		model = "glm-4.7"
 	}
-	if len(cfg.PiCoder.Projects) > 0 {
-		projectDir = cfg.PiCoder.Projects[0].Path
-	}
+	projRegistry := projects.NewRegistry(cfg.PiCoder.Projects, agentDir, logger)
 	registry.Register(tools.NewPiCoderTool(tools.PiCoderConfig{
-		ProjectDir:     projectDir,
-		Model:          model,
-		TimeoutSeconds: cfg.PiCoder.TimeoutSeconds,
+		Registry:       projRegistry,
+		DefaultModel:   model,
+		DefaultTimeout: time.Duration(cfg.PiCoder.TimeoutSeconds) * time.Second,
 		RestartFunc:    makeRestartFunc(logger),
 	}))
-	logger.Info("PiCoder tool enabled", "project_dir", projectDir, "model", model)
+	logger.Info("PiCoder tool enabled", "projects", projRegistry.Names(), "model", model)
 }
 
 func registerMonitorTool(cfg *config.Config, registry *tools.Registry, logger *slog.Logger, db *storage.DB) {

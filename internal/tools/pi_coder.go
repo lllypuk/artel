@@ -5,51 +5,56 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
+
+	"github.com/lllypuk/agent-shatrov/internal/projects"
 )
 
-// PiCoderTool запускает pi (AI coding agent) для модификации исходного кода агента.
+// PiCoderTool запускает pi (AI coding agent) для работы с проектами.
+// Оперирует списком проектов из Registry — один из них может быть кодом самого агента (SelfProject).
 type PiCoderTool struct {
-	projectDir   string
-	model        string
-	timeout      time.Duration
-	restartFunc  func()        // вызывается в goroutine после успешной пересборки
-	restartDelay time.Duration // задержка перед перезапуском (default: 5s)
+	registry       *projects.Registry
+	defaultModel   string
+	defaultTimeout time.Duration
+	restartFunc    func()        // вызывается в goroutine после успешной пересборки (только для SelfProject)
+	restartDelay   time.Duration // задержка перед перезапуском (default: 5s)
 }
 
 // PiCoderConfig содержит конфигурацию инструмента pi_coder.
 type PiCoderConfig struct {
-	ProjectDir     string
-	Model          string
-	TimeoutSeconds int
-	RestartFunc    func()        // callback для перезапуска процесса агента
-	RestartDelay   time.Duration // задержка перед перезапуском; если 0 — используется 5s
+	Registry       *projects.Registry
+	DefaultModel   string
+	DefaultTimeout time.Duration
+	RestartFunc    func()        // callback для перезапуска агента (только для SelfProject)
+	RestartDelay   time.Duration // задержка перед перезапуском; если 0 — 5s
 }
 
 // NewPiCoderTool создаёт инструмент для запуска pi.
 func NewPiCoderTool(cfg PiCoderConfig) *PiCoderTool {
-	model := cfg.Model
-	if model == "" {
-		model = "glm-4.7"
+	defaultModel := cfg.DefaultModel
+	if defaultModel == "" {
+		defaultModel = "glm-4.7"
 	}
-	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
-	if timeout == 0 {
-		timeout = 5 * time.Minute
+	defaultTimeout := cfg.DefaultTimeout
+	if defaultTimeout == 0 {
+		defaultTimeout = 5 * time.Minute
 	}
 	restartDelay := cfg.RestartDelay
 	if restartDelay == 0 {
 		restartDelay = 5 * time.Second
 	}
 	return &PiCoderTool{
-		projectDir:   cfg.ProjectDir,
-		model:        model,
-		timeout:      timeout,
-		restartFunc:  cfg.RestartFunc,
-		restartDelay: restartDelay,
+		registry:       cfg.Registry,
+		defaultModel:   defaultModel,
+		defaultTimeout: defaultTimeout,
+		restartFunc:    cfg.RestartFunc,
+		restartDelay:   restartDelay,
 	}
 }
 
 type piCoderArgs struct {
+	Project string `json:"project"`
 	Task    string `json:"task"`
 	Rebuild bool   `json:"rebuild"`
 	Restart bool   `json:"restart"`
@@ -58,33 +63,65 @@ type piCoderArgs struct {
 func (p *PiCoderTool) Name() string { return "pi_coder" }
 
 func (p *PiCoderTool) Description() string {
-	return "Запустить pi (AI coding agent) для доработки исходного кода самого агента. " +
-		"Используй этот инструмент когда нужно: добавить новую функцию, исправить баг, " +
-		"изменить логику или рефакторить код агента. " +
-		"Параметр rebuild=true пересобирает бинарник после изменений (make build). " +
-		"Параметр restart=true перезапускает агента после успешной пересборки (автоматически включает rebuild). " +
-		"Используй restart=true чтобы применить изменения без ручного make restart. " +
-		"ВНИМАНИЕ: изменения применяются к реальному коду — формулируй задачу точно."
+	names := p.registry.Names()
+	var desc strings.Builder
+	desc.WriteString("Запустить pi (AI coding agent) для анализа, разработки или тестирования проекта. " +
+		"Параметр project обязателен — выбери один из доступных проектов. " +
+		"Доступные проекты: " + joinNames(names) + ". ")
+
+	// Indicate which project is the agent itself (supports rebuild/restart).
+	for _, name := range names {
+		proj, err := p.registry.Get(name)
+		if err != nil {
+			continue
+		}
+		if proj.SelfProject {
+			fmt.Fprintf(&desc, "Проект %q — это код самого агента: rebuild/restart доступны. ", name)
+			break
+		}
+	}
+
+	desc.WriteString("ВНИМАНИЕ: изменения применяются к реальному коду — формулируй задачу точно.")
+	return desc.String()
+}
+
+func joinNames(names []string) string {
+	if len(names) == 0 {
+		return "(нет проектов)"
+	}
+	var result strings.Builder
+	for i, n := range names {
+		if i > 0 {
+			result.WriteString(", ")
+		}
+		result.WriteString(n)
+	}
+	return result.String()
 }
 
 func (p *PiCoderTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
+			"project": map[string]any{
+				"type":        "string",
+				"enum":        p.registry.Names(),
+				"description": "Имя проекта для работы через pi",
+			},
 			"task": map[string]any{
 				"type":        "string",
-				"description": "Задача для pi — подробное описание того, что нужно изменить в коде агента",
+				"description": "Задача для pi — анализ, разработка, тестирование, рефакторинг",
 			},
 			"rebuild": map[string]any{
 				"type":        "boolean",
-				"description": "Пересобрать агента после изменений кода (выполнить make build). По умолчанию false.",
+				"description": "Пересобрать проект после изменений (только для self-проекта). По умолчанию false.",
 			},
 			"restart": map[string]any{
 				"type":        "boolean",
-				"description": "Перезапустить агента после успешной пересборки (автоматически включает rebuild=true). Агент будет недоступен несколько секунд, затем возобновит работу.",
+				"description": "Перезапустить агента после пересборки (только для self-проекта, автоматически включает rebuild).",
 			},
 		},
-		"required": []string{"task"},
+		"required": []string{"project", "task"},
 	}
 }
 
@@ -93,42 +130,75 @@ func (p *PiCoderTool) Execute(ctx context.Context, args json.RawMessage) (string
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "", fmt.Errorf("parse args: %w", err)
 	}
+	if a.Project == "" {
+		return "", fmt.Errorf("project is required, available: %v", p.registry.Names())
+	}
 	if a.Task == "" {
 		return "", fmt.Errorf("task is required")
 	}
 
-	// Запускаем pi в non-interactive режиме
-	piCtx, piCancel := context.WithTimeout(ctx, p.timeout)
+	proj, err := p.registry.Get(a.Project)
+	if err != nil {
+		return "", err
+	}
+
+	// Determine model: per-project override → default.
+	model := proj.Model
+	if model == "" {
+		model = p.defaultModel
+	}
+
+	// Determine timeout: per-project override → default.
+	timeout := p.defaultTimeout
+	if proj.TimeoutSec > 0 {
+		timeout = time.Duration(proj.TimeoutSec) * time.Second
+	}
+
+	// restart requires rebuild.
+	if a.Restart {
+		a.Rebuild = true
+	}
+
+	// For non-self projects, ignore rebuild/restart with a warning.
+	warnings := ""
+	if !proj.SelfProject {
+		if a.Rebuild {
+			warnings += "\n⚠️ rebuild игнорируется: проект не является кодом агента."
+			a.Rebuild = false
+		}
+		if a.Restart {
+			warnings += "\n⚠️ restart игнорируется: проект не является кодом агента."
+			a.Restart = false
+		}
+	}
+
+	// Запускаем pi в non-interactive режиме.
+	piCtx, piCancel := context.WithTimeout(ctx, timeout)
 	defer piCancel()
 
-	//nolint:gosec // task приходит от доверенного пользователя (whitelist Telegram)
+	//nolint:gosec // task comes from trusted user (whitelist Telegram / Mattermost owner)
 	cmd := exec.CommandContext(piCtx, "pi",
 		"--print",
-		"--model", p.model,
+		"--model", model,
 		"--no-session",
 		a.Task,
 	)
-	cmd.Dir = p.projectDir
+	cmd.Dir = proj.Path
 
 	output, err := cmd.CombinedOutput()
 	result := string(output)
 
 	if piCtx.Err() == context.DeadlineExceeded {
-		return result, fmt.Errorf("pi timed out after %s", p.timeout)
+		return result, fmt.Errorf("pi timed out after %s", timeout)
 	}
 	if err != nil {
 		// pi может вернуть ненулевой код, но всё равно выполнить задачу
-		return fmt.Sprintf("pi завершился с кодом ошибки (%v)\n\n%s", err, result), nil
+		result = fmt.Sprintf("pi завершился с кодом ошибки (%v)\n\n%s", err, result)
 	}
 
-	// restart требует rebuild
-	if a.Restart {
-		a.Rebuild = true
-	}
-
-	// Опциональная пересборка
+	// Опциональная пересборка (только для self-проекта).
 	if a.Rebuild {
-		buildOutput, buildOK := p.runBuild()
+		buildOutput, buildOK := p.runBuild(proj.Path)
 		result += "\n\n" + buildOutput
 
 		if a.Restart {
@@ -144,7 +214,10 @@ func (p *PiCoderTool) Execute(ctx context.Context, args json.RawMessage) (string
 		}
 	}
 
-	// Обрезаем очень большой вывод
+	// Добавляем предупреждения об игнорировании rebuild/restart.
+	result += warnings
+
+	// Обрезаем очень большой вывод.
 	const maxLen = 8192
 	if len(result) > maxLen {
 		result = result[:maxLen] + "\n... (вывод обрезан)"
@@ -164,12 +237,12 @@ func (p *PiCoderTool) scheduleRestart() {
 
 // runBuild выполняет make build в директории проекта.
 // Возвращает вывод и флаг успеха.
-func (p *PiCoderTool) runBuild() (string, bool) {
+func (p *PiCoderTool) runBuild(projectDir string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "make", "build")
-	cmd.Dir = p.projectDir
+	cmd.Dir = projectDir
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
