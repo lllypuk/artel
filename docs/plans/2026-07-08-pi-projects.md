@@ -34,13 +34,13 @@ agent-shatrov уже имеет multi-agent режим (Mattermost) и инст�
 
 **Файлы:** `internal/projects/projects.go`, `internal/projects/projects_test.go` (новые)
 
-- [ ] Структура `Project{Name, Path, Model, TimeoutSec, SelfProject}`
-- [ ] Структура `Registry{projects map, order []string}`
-- [ ] `NewRegistry(configProjects, agentDir)` — резолв путей, автоопределение self, проверка существования директорий
-- [ ] `Get(name) (*Project, error)` — error со списком доступных имён при miss
-- [ ] `Names() []string` — стабильный порядок из конфига
-- [ ] `List() []*Project`
-- [ ] Тесты: валидные проекты, несуществующая директория (исключается), `"."` → SelfProject, дубликат имён, Get miss
+- [x] Структура `Project{Name, Path, Model, TimeoutSec, SelfProject}`
+- [x] Структура `Registry{projects map, order []string}`
+- [x] `NewRegistry(configProjects, agentDir)` — резолв путей, автоопределение self, проверка существования директорий
+- [x] `Get(name) (*Project, error)` — error со списком доступных имён при miss
+- [x] `Names() []string` — стабильный порядок из конфига
+- [x] `List() []*Project`
+- [x] Тесты: валидные проекты, несуществующая директория (исключается), `"."` → SelfProject, дубликат имён, Get miss
 
 ### Task 3: PiCoderTool — зависимость от Registry
 
