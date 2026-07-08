@@ -21,10 +21,10 @@ func defaultTestRegistry(t *testing.T) (reg *projects.Registry, agentDir string)
 	t.Helper()
 	agentDir = t.TempDir()
 	projDir := t.TempDir()
-	reg = projects.NewRegistry([]config.ProjectConfig{
+	reg = projects.NewRegistry(config.PiCoderConfig{Projects: []config.ProjectConfig{
 		{Name: "agent", Path: agentDir},
 		{Name: "ext", Path: projDir, Model: "custom-model", TimeoutSec: 600},
-	}, agentDir, nil)
+	}}, agentDir, nil)
 	return reg, agentDir
 }
 
@@ -332,7 +332,7 @@ func BenchmarkPiCoderTool_Parameters(b *testing.B) {
 func mustTestRegistry(t *testing.T) *projects.Registry {
 	t.Helper()
 	agentDir := t.TempDir()
-	return projects.NewRegistry([]config.ProjectConfig{
+	return projects.NewRegistry(config.PiCoderConfig{Projects: []config.ProjectConfig{
 		{Name: "agent", Path: agentDir},
-	}, agentDir, nil)
+	}}, agentDir, nil)
 }

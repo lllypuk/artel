@@ -134,10 +134,12 @@ type BrowserConfig struct {
 }
 
 type PiCoderConfig struct {
-	Enabled        bool            `yaml:"enabled"`
-	Model          string          `yaml:"model"`    // default model for all projects (overridable per-project)
-	TimeoutSeconds int             `yaml:"timeout"`  // default timeout in seconds
-	Projects       []ProjectConfig `yaml:"projects"` // list of projects available to the bot
+	Enabled         bool            `yaml:"enabled"`
+	Model           string          `yaml:"model"`            // default model for all projects (overridable per-project)
+	TimeoutSeconds  int             `yaml:"timeout"`          // default timeout in seconds
+	Projects        []ProjectConfig `yaml:"projects"`         // explicit list of projects available to the bot
+	ProjectsDir     string          `yaml:"projects_dir"`     // directory to auto-discover git repos as projects
+	ExcludeProjects []string        `yaml:"exclude_projects"` // project names to exclude from auto-discovery
 }
 
 // ProjectConfig defines a single project that pi_coder can work on.
@@ -322,8 +324,8 @@ func (c *Config) validate() error {
 	}
 	// Validate pi_coder projects.
 	if c.PiCoder.Enabled {
-		if len(c.PiCoder.Projects) == 0 {
-			return fmt.Errorf("pi_coder.enabled is true but no pi_coder.projects configured")
+		if len(c.PiCoder.Projects) == 0 && c.PiCoder.ProjectsDir == "" {
+			return fmt.Errorf("pi_coder.enabled is true but no pi_coder.projects or pi_coder.projects_dir configured")
 		}
 		seen := make(map[string]bool)
 		for i, p := range c.PiCoder.Projects {
