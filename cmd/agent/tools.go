@@ -157,13 +157,14 @@ func registerWeatherTool(cfg *config.Config, registry *tools.Registry, logger *s
 }
 
 func registerPiCoderTool(cfg *config.Config, registry *tools.Registry, logger *slog.Logger) {
-	projectDir := cfg.PiCoder.ProjectDir
-	if projectDir == "" {
-		projectDir = "."
-	}
+	// Temporary: use first project path. Full Registry wiring in Task 4.
+	projectDir := "."
 	model := cfg.PiCoder.Model
 	if model == "" {
 		model = "glm-4.7"
+	}
+	if len(cfg.PiCoder.Projects) > 0 {
+		projectDir = cfg.PiCoder.Projects[0].Path
 	}
 	registry.Register(tools.NewPiCoderTool(tools.PiCoderConfig{
 		ProjectDir:     projectDir,

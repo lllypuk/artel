@@ -134,10 +134,18 @@ type BrowserConfig struct {
 }
 
 type PiCoderConfig struct {
-	Enabled        bool   `yaml:"enabled"`
-	ProjectDir     string `yaml:"project_dir"`
-	Model          string `yaml:"model"`
-	TimeoutSeconds int    `yaml:"timeout"`
+	Enabled        bool            `yaml:"enabled"`
+	Model          string          `yaml:"model"`    // default model for all projects (overridable per-project)
+	TimeoutSeconds int             `yaml:"timeout"`  // default timeout in seconds
+	Projects       []ProjectConfig `yaml:"projects"` // list of projects available to the bot
+}
+
+// ProjectConfig defines a single project that pi_coder can work on.
+type ProjectConfig struct {
+	Name       string `yaml:"name"`    // identifier for the bot, e.g. "unit-control"
+	Path       string `yaml:"path"`    // path to project directory (absolute or relative to config dir)
+	Model      string `yaml:"model"`   // optional: overrides pi_coder.model for this project
+	TimeoutSec int    `yaml:"timeout"` // optional: overrides pi_coder.timeout for this project
 }
 
 // FilesConfig holds settings for the file-upload feature.
@@ -310,6 +318,25 @@ func (c *Config) validate() error {
 		}
 		if p.APIKey == "" {
 			return fmt.Errorf("llm.providers[%d].api_key is required", i)
+		}
+	}
+	// Validate pi_coder projects.
+	if c.PiCoder.Enabled {
+		if len(c.PiCoder.Projects) == 0 {
+			return fmt.Errorf("pi_coder.enabled is true but no pi_coder.projects configured")
+		}
+		seen := make(map[string]bool)
+		for i, p := range c.PiCoder.Projects {
+			if p.Name == "" {
+				return fmt.Errorf("pi_coder.projects[%d].name is required", i)
+			}
+			if p.Path == "" {
+				return fmt.Errorf("pi_coder.projects[%d].path is required", i)
+			}
+			if seen[p.Name] {
+				return fmt.Errorf("pi_coder.projects[%d].name %q is not unique", i, p.Name)
+			}
+			seen[p.Name] = true
 		}
 	}
 	return nil

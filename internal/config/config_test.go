@@ -717,3 +717,167 @@ llm:
 		t.Errorf("expected warning about LLM_API_KEY in multi-provider mode, got stderr: %q", stderr)
 	}
 }
+
+func TestPiCoderProjectsParsed(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+  base_url: "https://api.example.com"
+pi_coder:
+  enabled: true
+  model: "glm-4.7"
+  timeout: 300
+  projects:
+    - name: "agent-shatrov"
+      path: "."
+    - name: "my-project"
+      path: "/path/to/my-project"
+      model: "glm-4.7-flash"
+      timeout: 600
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.PiCoder.Enabled {
+		t.Error("PiCoder.Enabled: want true")
+	}
+	if len(cfg.PiCoder.Projects) != 2 {
+		t.Fatalf("expected 2 projects, got %d", len(cfg.PiCoder.Projects))
+	}
+	p0 := cfg.PiCoder.Projects[0]
+	if p0.Name != "agent-shatrov" {
+		t.Errorf("Projects[0].Name: got %q, want 'agent-shatrov'", p0.Name)
+	}
+	if p0.Path != "." {
+		t.Errorf("Projects[0].Path: got %q, want '.'", p0.Path)
+	}
+	p1 := cfg.PiCoder.Projects[1]
+	if p1.Name != "my-project" {
+		t.Errorf("Projects[1].Name: got %q, want 'my-project'", p1.Name)
+	}
+	if p1.Path != "/path/to/my-project" {
+		t.Errorf("Projects[1].Path: got %q, want '/path/to/my-project'", p1.Path)
+	}
+	if p1.Model != "glm-4.7-flash" {
+		t.Errorf("Projects[1].Model: got %q, want 'glm-4.7-flash'", p1.Model)
+	}
+	if p1.TimeoutSec != 600 {
+		t.Errorf("Projects[1].TimeoutSec: got %d, want 600", p1.TimeoutSec)
+	}
+}
+
+func TestPiCoderEnabledWithoutProjectsError(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+  base_url: "https://api.example.com"
+pi_coder:
+  enabled: true
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error for pi_coder enabled without projects")
+	}
+	if !strings.Contains(err.Error(), "pi_coder.projects") {
+		t.Errorf("expected error to mention 'pi_coder.projects', got: %v", err)
+	}
+}
+
+func TestPiCoderProjectRequiresName(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+  base_url: "https://api.example.com"
+pi_coder:
+  enabled: true
+  projects:
+    - path: "/some/path"
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error for project without name")
+	}
+	if !strings.Contains(err.Error(), "name is required") {
+		t.Errorf("expected error to mention 'name is required', got: %v", err)
+	}
+}
+
+func TestPiCoderProjectRequiresPath(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+  base_url: "https://api.example.com"
+pi_coder:
+  enabled: true
+  projects:
+    - name: "my-project"
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error for project without path")
+	}
+	if !strings.Contains(err.Error(), "path is required") {
+		t.Errorf("expected error to mention 'path is required', got: %v", err)
+	}
+}
+
+func TestPiCoderDuplicateProjectNamesError(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+  base_url: "https://api.example.com"
+pi_coder:
+  enabled: true
+  projects:
+    - name: "dup"
+      path: "/path/a"
+    - name: "dup"
+      path: "/path/b"
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected error for duplicate project names")
+	}
+	if !strings.Contains(err.Error(), "not unique") {
+		t.Errorf("expected error to mention 'not unique', got: %v", err)
+	}
+}
+
+func TestPiCoderDisabledWithoutProjectsOK(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+  base_url: "https://api.example.com"
+pi_coder:
+  enabled: false
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.PiCoder.Enabled {
+		t.Error("PiCoder.Enabled: want false")
+	}
+	if len(cfg.PiCoder.Projects) != 0 {
+		t.Errorf("expected 0 projects, got %d", len(cfg.PiCoder.Projects))
+	}
+}
