@@ -44,13 +44,13 @@
 
 **Файлы:** `docker-compose.bots.yml`
 
-- [ ] 3 сервиса: analyst, developer, tester
-- [ ] Каждый: `build: .`, `restart: always`, `command: ["/usr/local/bin/agent", "/config.yaml"]`
-- [ ] Общие volumes: `~/Project:/home/projects:rw`, `~/.ssh:/home/agent/.ssh:ro`, `~/.pi:/home/agent/.pi:ro`
-- [ ] Per-service: свой config.yaml (:ro), свой named volume для data
-- [ ] `extra_hosts: ["host-gateway:host-gateway"]`
-- [ ] Environment: GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_*, LLM_BASE_URL, OLLAMA_BASE_URL, HOME=/home/agent
-- [ ] 3 named volumes: analyst_data, developer_data, tester_data
+- [x] 3 сервиса: analyst, developer, tester
+- [x] Каждый: `build: .`, `restart: always`, `command: ["/usr/local/bin/agent", "/config.yaml"]`
+- [x] Общие volumes: `~/Project:/home/projects:rw`, `~/.ssh:/home/agent/.ssh:ro`, `~/.pi:/home/agent/.pi:ro`
+- [x] Per-service: свой config.yaml (:ro), свой named volume для data
+- [x] `extra_hosts: ["host-gateway:host-gateway"]`
+- [x] Environment: GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_*, LLM_BASE_URL, OLLAMA_BASE_URL, HOME=/home/agent
+- [x] 3 named volumes: analyst_data, developer_data, tester_data
 
 ### Task 4: Конфиги ботов
 
