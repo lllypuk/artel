@@ -112,7 +112,7 @@ pi_coder:
 - [x] Сценарии координации: аналитик → разработчик → тестировщик → цикл
 - [x] Проверка safeguards (loop detection) при долгом bot-to-bot диалоге
 - [x] (manual test — требует запущенный Mattermost + Ollama + pi)
-- [ ] Отчёт `REPORT-pi-YYYY-MM-DD.md` по образцу `REPORT-2026-07-07.md`
+- [x] Отчёт `REPORT-pi-YYYY-MM-DD.md` по образцу `REPORT-2026-07-07.md`
 
 ## Зависимости
 
