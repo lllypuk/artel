@@ -61,10 +61,10 @@ agent-shatrov уже имеет multi-agent режим (Mattermost) и инст�
 
 **Файлы:** `cmd/agent/tools.go`, `cmd/agent/main.go`
 
-- [ ] `registerPiCoderTool` создаёт `projects.Registry`, передаёт в `PiCoderTool`
-- [ ] Вычислить `agentDir = filepath.Dir(configPath)` где configPath — первый аргумент или `"config.yaml"`
-- [ ] Передать `agentDir` в `registerOptionalTools` → `registerPiCoderTool` → `NewRegistry`
-- [ ] Убрать старый `projectDir` fallback
+- [x] `registerPiCoderTool` создаёт `projects.Registry`, передаёт в `PiCoderTool`
+- [x] Вычислить `agentDir = filepath.Dir(configPath)` где configPath — первый аргумент или `"config.yaml"`
+- [x] Передать `agentDir` в `registerOptionalTools` → `registerPiCoderTool` → `NewRegistry`
+- [x] Убрать старый `projectDir` fallback
 
 ### Task 5: Документация — README + CLAUDE.md + config.example.yaml
 
