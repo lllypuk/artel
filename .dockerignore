@@ -1,6 +1,7 @@
 data/
 bin/
 config.yaml
+configs/*.yaml
 *.db
 *.log
 .git/
@@ -14,3 +15,4 @@ agent
 .idea/
 .env
 .env.*
+tests/

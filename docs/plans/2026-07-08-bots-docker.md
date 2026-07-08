@@ -32,13 +32,13 @@
 
 **Файлы:** `Dockerfile`, `.dockerignore`
 
-- [ ] Stage 1: golang:1.26-alpine — сборка agent binary + копирование Go toolchain для runtime
-- [ ] Stage 2: alpine:3.20 — nodejs, npm, git, openssh-client, gcc, musl-dev, ca-certificates
-- [ ] Копировать Go toolchain в stage 2 (для go test/build внешних проектов)
-- [ ] Установить pi: `npm install -g @earendil-works/pi-coding-agent`
-- [ ] Копировать agent binary из stage 1
-- [ ] WORKDIR /home/agent
-- [ ] Проверить `docker build .` проходит
+- [x] Stage 1: golang:1.26-alpine — сборка agent binary + копирование Go toolchain для runtime
+- [x] Stage 2: alpine:3.20 — nodejs, npm, git, openssh-client, gcc, musl-dev, ca-certificates
+- [x] Копировать Go toolchain в stage 2 (для go test/build внешних проектов)
+- [x] Установить pi: `npm install -g @earendil-works/pi-coding-agent`
+- [x] Копировать agent binary из stage 1
+- [x] WORKDIR /home/agent
+- [x] Проверить `docker build .` проходит
 
 ### Task 3: docker-compose.bots.yml
 
