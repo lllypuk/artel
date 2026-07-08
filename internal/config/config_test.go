@@ -798,6 +798,9 @@ pi_coder:
 	if !strings.Contains(err.Error(), "pi_coder.projects") {
 		t.Errorf("expected error to mention 'pi_coder.projects', got: %v", err)
 	}
+	if !strings.Contains(err.Error(), "projects_dir") {
+		t.Errorf("expected error to mention 'projects_dir', got: %v", err)
+	}
 }
 
 func TestPiCoderEnabledWithProjectsDirOnlyOK(t *testing.T) {

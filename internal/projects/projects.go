@@ -117,7 +117,10 @@ func discoverProjects(r *Registry, scanDir, absAgentDir string, excludeSet, expl
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		// Use os.Stat to resolve symlinks — entry.IsDir() returns false for
+		// symlinks pointing to directories.
+		info, err := os.Stat(filepath.Join(scanDir, entry.Name()))
+		if err != nil || !info.IsDir() {
 			continue
 		}
 		name := entry.Name()

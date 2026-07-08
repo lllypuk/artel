@@ -75,11 +75,11 @@
 
 ### Task 6: Валидация — lint, test, build, docker
 
-- [ ] `make lint` — без ошибок
-- [ ] `make test` — все unit-тесты проходят
-- [ ] `make build` — собирается
-- [ ] `docker build -t agent-shatrov .` — образ собирается
-- [ ] `docker compose -f docker-compose.bots.yml config` — конфиг валиден
+- [x] `make lint` — без ошибок
+- [x] `make test` — все unit-тесты проходят
+- [x] `make build` — собирается
+- [x] `docker build -t agent-shatrov .` — образ собирается
+- [x] `docker compose -f docker-compose.bots.yml config` — конфиг валиден
 
 ## Зависимости
 

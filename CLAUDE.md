@@ -56,6 +56,9 @@ internal/
     news.go            — SQLite: новости, фиды, подписки
     monitor.go         — SQLite: мониторинг сайтов (monitor_checks, monitor_state)
     wiki.go            — SQLite: wiki (wiki_pages + FTS5, wiki_links); cascade rename в транзакции
+  projects/
+    projects.go        — реестр проектов: конфиг + автообнаружение git-репозиториев
+    projects_test.go   — тесты реестра (auto-discovery, exclude, override)
   telemetry/
     telemetry.go       — OpenTelemetry: InitOTLP/InitStdout/Init, tracers
   telegram/
@@ -81,10 +84,18 @@ internal/
     errors.go        — ошибки пакета news
 data/                — БД и логи (в .gitignore)
 config.yaml          — конфиг с секретами (в .gitignore)
-config.example.yaml  — пример конфига без секретов (transport, role, mattermost, safeguards)
+config.example.yaml  — пример конфига без секретов (transport, role, mattermost, safeguards, projects_dir)
+configs/             — примеры конфигов для Docker multi-bot (analyst/developer/tester)
+  .gitignore         — игнорировать реальные конфиги без .example
 docs/
   multi-instance-guide.md — руководство по запуску нескольких инстансов в Mattermost
+  headless-setup.md  — инструкция по установке Docker multi-bot на headless-сервере
   roles/             — шаблоны конфигов ролей: analyst, developer, tester
+scripts/
+  agent-bots.service — systemd user unit для автозапуска Docker multi-bot
+Dockerfile           — multi-stage сборка: Go toolchain + Node.js + pi
+docker-compose.bots.yml — 3 сервиса (analyst, developer, tester) для headless-сервера
+.dockerignore        — файлы, исключаемые из Docker-образа
 Makefile             — команды для управления сервисом
 ```
 
@@ -205,13 +216,15 @@ pi_coder:
   enabled: false
   model: "glm-4.7"               # модель по умолчанию
   timeout: 300                     # таймаут по умолчанию (сек)
-  projects:                        # список проектов
+  projects:                        # список проектов (явные)
     - name: "agent-shatrov"
       path: "."
     # - name: "my-project"
     #   path: "/path/to/my-project"
     #   model: "glm-4.7-flash"     # переопределение (опц.)
     #   timeout: 600               # переопределение (опц.)
+  # projects_dir: "/home/projects"   # автообнаружение git-репозиториев в каталоге
+  # exclude_projects: ["test-project", "nanoGPT"]  # исключить по имени
 
 weather:
   enabled: true                 # Open-Meteo, бесплатно, без API-ключа
@@ -367,8 +380,10 @@ registry.Register(tools.NewMyTool(cfg, logger))
 ## Инструмент pi_coder
 
 Позволяет агенту анализировать, разрабатывать и тестировать проекты через [pi](https://github.com/mariozechner/pi).
-Проекты задаются списком в конфигурации (`pi_coder.projects`). Один из проектов может быть кодом самого агента
-(self-project — автоопределение по совпадению пути с директорией агента).
+Проекты задаются списком в конфигурации (`pi_coder.projects`) или **автообнаруживаются** из каталога
+(`pi_coder.projects_dir` — сканирование на git-репозитории). Исключить проекты по имени можно через
+`pi_coder.exclude_projects`. Явные проекты из `pi_coder.projects` переопределяют автообнаруженные с тем же именем.
+Один из проектов может быть кодом самого агента (self-project — автоопределение по совпадению пути с директорией агента).
 
 | Параметр   | Тип    | Описание                                                                              |
 |------------|--------|---------------------------------------------------------------------------------------|
@@ -450,6 +465,7 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 - [x] Поиск в интернете (Brave / Serper / DuckDuckGo) + чтение страниц
 - [x] Мультипроектная разработка через `pi_coder` — список проектов в конфиге, per-project model/timeout, rebuild/restart только для self-project
   вмешательства (`restart=true` → `syscall.Exec`)
+- [x] **Автообнаружение проектов** — `pi_coder.projects_dir` сканирует каталог на git-репозитории; `exclude_projects` для исключения; явные `projects` переопределяют автообнаруженные
 - [x] Агрегация новостей (RSS/Atom/JSON Feed) — подписки, чтение, поиск, избранное
 - [x] Универсальная автоматизация браузера (agent-browser) — навигация, клики, формы, скриншоты, JS, snapshot
 - [x] Переключение модели и провайдера через Telegram (`/model fast`, `/provider openrouter`)
@@ -463,6 +479,7 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 - [x] Проактивные дайджесты — финансовая сводка (stocks) в утреннем брифинге; вечерний дайджест новостей (news) и
   вечерняя финансовая сводка рынков как отдельные большие сообщения; тикеры конфигурируются через `financial_tickers`
 - [x] Docker-образ (alpine, pure Go без CGO) и Docker Compose; CI/CD через GitHub Actions (lint + test + docker publish)
+- [x] **Docker multi-bot** — 3 бота (analyst, developer, tester) в Docker с автозапуском через systemd; `docker-compose.bots.yml`, `configs/*-bot.yaml.example`, `scripts/agent-bots.service`
 - [x] Мониторинг сайтов — фоновые HTTP-проверки с алертами в Telegram при смене состояния (🔴/✅); ручная проверка через инструмент `monitor`
 - [x] Личная вики — иерархия путей (`/dev/golang`), `[[path]]` ссылки с cascade rename, backlinks; create/get/edit/delete/list/tree
 - [x] Список для чтения — сохранение URL (fetch + контент), list/get/update/delete, дайджест непрочитанных в утреннем брифинге

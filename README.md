@@ -153,11 +153,19 @@ internal/
     news.go          — SQLite: новости, фиды, подписки
     monitor.go       — SQLite: мониторинг сайтов (monitor_checks, monitor_state)
     wiki.go          — SQLite: wiki (wiki_pages + FTS5, wiki_links), reading_list
+  projects/
+    projects.go      — реестр проектов: конфиг + автообнаружение git-репозиториев
   news/              — парсер/менеджер RSS/Atom/JSON Feed
 docs/
   multi-instance-guide.md  — как поднять несколько инстансов в Mattermost
+  headless-setup.md  — установка Docker multi-bot на headless-сервере
   roles/             — шаблоны конфигов для ролей (аналитик/разработчик/тестировщик)
+configs/             — примеры конфигов для Docker multi-bot (analyst/developer/tester)
+scripts/
+  agent-bots.service — systemd user unit для автозапуска Docker multi-bot
 config.example.yaml  — пример конфигурации
+Dockerfile           — multi-stage сборка: Go toolchain + Node.js + pi
+docker-compose.bots.yml — 3 сервиса (analyst, developer, tester) для headless-сервера
 Makefile             — управление сервисом
 ```
 
@@ -173,6 +181,7 @@ Makefile             — управление сервисом
 - [x] Поиск в интернете (Brave / Serper / DuckDuckGo) + чтение страниц
 - [x] Мультипроектная разработка через `pi_coder` — список проектов в конфиге, per-project model/timeout, rebuild/restart только для self-project
   вмешательства (`restart=true` → `syscall.Exec`)
+- [x] **Автообнаружение проектов** — `pi_coder.projects_dir` сканирует каталог на git-репозитории; `exclude_projects` для исключения; явные `projects` переопределяют автообнаруженные
 - [x] Агрегация новостей — подписки на RSS/Atom/JSON фиды, поиск, избранное
 - [x] Автоматизация браузера (agent-browser) — навигация, клики, формы, скриншоты, JS
 - [x] Прогноз погоды (Open-Meteo) — текущие условия, прогноз на 1–7 дней, геокодирование
@@ -182,6 +191,7 @@ Makefile             — управление сервисом
 - [x] Статистика токенов — учёт prompt/completion по дням через `/status`
 - [x] Переключение модели и провайдера через Telegram (`/model fast`, `/provider auto`)
 - [x] **Docker** — многоэтапный Dockerfile (alpine, pure Go); Docker Compose с named volume; CI/CD через GitHub Actions
+- [x] **Docker multi-bot** — 3 бота (analyst, developer, tester) в Docker с автозапуском через systemd; `docker-compose.bots.yml`, `configs/*-bot.yaml.example`, `scripts/agent-bots.service`
 - [x] **Мониторинг сайтов** — фоновые HTTP-проверки, алерты в Telegram при смене состояния (🔴/✅); ручная проверка через агент
 - [x] **Личная вики** — иерархия путей (`/dev/golang`), `[[path]]` ссылки, cascade rename, backlinks; create/get/edit/delete/list/tree
 - [x] **Список для чтения** — сохранение URL (авто fetch), дайджест непрочитанного в утреннем брифинге
@@ -195,7 +205,9 @@ Makefile             — управление сервисом
 ## Инструмент pi_coder
 
 Позволяет агенту анализировать, разрабатывать и тестировать проекты через [pi](https://github.com/mariozechner/pi).
-Проекты задаются списком в конфигурации. Один из проектов может быть кодом самого агента (self-project) — для него
+Проекты задаются списком в конфигурации или **автообнаруживаются** из каталога (`pi_coder.projects_dir` —
+сканирование на git-репозитории). Исключить проекты по имени можно через `pi_coder.exclude_projects`.
+Один из проектов может быть кодом самого агента (self-project) — для него
 доступны rebuild и restart.
 
 | Параметр   | Тип    | Описание                                                                      |
@@ -225,6 +237,9 @@ pi_coder:
       path: "/path/to/my-project"
       model: "glm-4.7-flash"       # переопределение модели (опц.)
       timeout: 600                 # переопределение таймаута (опц.)
+  # Автообнаружение: сканировать каталог на git-репозитории
+  # projects_dir: "/home/projects"
+  # exclude_projects: ["test-project", "nanoGPT"]  # исключить по имени
 ```
 
 Пример использования:

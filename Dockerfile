@@ -19,6 +19,9 @@ RUN apk add --no-cache \
     ca-certificates \
     tzdata
 
+# Allow git operations on mounted project directories (different UID)
+RUN git config --global --add safe.directory '*'
+
 # Copy Go toolchain from builder (for go test/build of external projects)
 COPY --from=builder /usr/local/go /usr/local/go
 ENV GOROOT=/usr/local/go

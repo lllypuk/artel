@@ -16,7 +16,7 @@ services:
     build: .
     image: agent-shatrov:latest
     restart: always
-    command: ["/usr/local/bin/agent", "/config.yaml"]
+    command: ["/config.yaml"]
     volumes:
       # Common volumes
       - ~/Project:/home/projects:rw
@@ -41,7 +41,7 @@ services:
     build: .
     image: agent-shatrov:latest
     restart: always
-    command: ["/usr/local/bin/agent", "/config.yaml"]
+    command: ["/config.yaml"]
     volumes:
       # Common volumes
       - ~/Project:/home/projects:rw
@@ -66,7 +66,7 @@ services:
     build: .
     image: agent-shatrov:latest
     restart: always
-    command: ["/usr/local/bin/agent", "/config.yaml"]
+    command: ["/config.yaml"]
     volumes:
       # Common volumes
       - ~/Project:/home/projects:rw
