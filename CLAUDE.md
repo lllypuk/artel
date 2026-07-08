@@ -38,7 +38,7 @@ internal/
     web_search.go      — инструмент: поиск в интернете (Brave/Serper/DuckDuckGo)
     web_fetch.go       — инструмент: чтение веб-страниц
     browser.go         — инструмент: автоматизация браузера (agent-browser)
-    pi_coder.go        — инструмент: доработка агента через pi
+    pi_coder.go        — инструмент: анализ/разработка проектов через pi
     news.go            — инструмент: агрегация новостей (RSS/Atom/JSON)
     weather.go         — инструмент: прогноз погоды (Open-Meteo)
     stocks.go          — инструмент: котировки акций и индексов (Yahoo Finance + MOEX ISS)
@@ -202,10 +202,16 @@ browser:
   proxy: ""                     # прокси для браузера (опционально)
 
 pi_coder:
-  enabled: true
-  project_dir: "/path/to/agent-shatrov"
-  model: "glm-4.7"
-  timeout: 300
+  enabled: false
+  model: "glm-4.7"               # модель по умолчанию
+  timeout: 300                     # таймаут по умолчанию (сек)
+  projects:                        # список проектов
+    - name: "agent-shatrov"
+      path: "."
+    # - name: "my-project"
+    #   path: "/path/to/my-project"
+    #   model: "glm-4.7-flash"     # переопределение (опц.)
+    #   timeout: 600               # переопределение (опц.)
 
 weather:
   enabled: true                 # Open-Meteo, бесплатно, без API-ключа
@@ -360,18 +366,22 @@ registry.Register(tools.NewMyTool(cfg, logger))
 
 ## Инструмент pi_coder
 
-Позволяет агенту изменять собственный исходный код через [pi](https://github.com/mariozechner/pi).
-Запускает `pi --print --model glm-4.7 --no-session <task>` в директории проекта.
+Позволяет агенту анализировать, разрабатывать и тестировать проекты через [pi](https://github.com/mariozechner/pi).
+Проекты задаются списком в конфигурации (`pi_coder.projects`). Один из проектов может быть кодом самого агента
+(self-project — автоопределение по совпадению пути с директорией агента).
 
-| Параметр  | Тип    | Описание                                                                               |
-|-----------|--------|----------------------------------------------------------------------------------------|
-| `task`    | string | Что нужно изменить в коде (обязательный)                                               |
-| `rebuild` | bool   | Пересобрать бинарник после изменений (`make build`)                                    |
-| `restart` | bool   | Безопасно перезапустить агента после успешной сборки; автоматически включает `rebuild` |
+| Параметр   | Тип    | Описание                                                                              |
+|------------|--------|---------------------------------------------------------------------------------------|
+| `project`  | string | Имя проекта из списка `pi_coder.projects` (обязательный)                              |
+| `task`     | string | Задача для pi: анализ, разработка, тестирование, рефакторинг (обязательный)          |
+| `rebuild`  | bool   | Пересобрать проект (`make build`) — только для self-project                           |
+| `restart`  | bool   | Перезапустить агента после успешной сборки — только для self-project (включает rebuild) |
 
-**Механизм безопасного перезапуска** (`restart=true`):
+Для внешних (non-self) проектов `rebuild` и `restart` игнорируются с предупреждением в выводе.
 
-1. `Execute()` запускает pi, затем `make build`
+**Механизм безопасного перезапуска** (`restart=true`, только для self-project):
+
+1. `Execute()` запускает pi в директории проекта, затем `make build`
 2. Если сборка успешна — запускается goroutine с задержкой 5 секунд
 3. `Execute()` возвращает ответ агенту → Telegram получает сообщение
 4. Через 5 сек: `syscall.Exec(os.Executable(), os.Args, os.Environ())` — замена процесса без fork, тот же PID
@@ -379,11 +389,11 @@ registry.Register(tools.NewMyTool(cfg, logger))
 
 Типичный сценарий:
 
-1. Пользователь просит добавить функцию через Telegram
-2. Агент вызывает `pi_coder` с `restart=true`
-3. pi редактирует файлы проекта
-4. `make build` пересобирает бинарник
-5. Агент отвечает «перезапускаюсь через 5 сек...» и заменяет процесс новым бинарником
+1. Пользователь просит проанализировать проект / добавить функцию
+2. Агент вызывает `pi_coder` с `project` и `task`
+3. pi запускается в директории указанного проекта
+4. Для self-project с `restart=true`: `make build` пересобирает, агент перезапускается
+5. Для non-self: pi работает, rebuild/restart игнорируются
 
 ## Безопасность shell
 
@@ -438,7 +448,7 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 - [x] Напоминания — create/list/delete/done, повторяющиеся (daily/weekly/Nm/Nh/Nd), уведомления в Telegram
 - [x] Безопасный shell (whitelist, blocked patterns, sandbox, таймаут)
 - [x] Поиск в интернете (Brave / Serper / DuckDuckGo) + чтение страниц
-- [x] Самообновление через `pi_coder` — агент изменяет, пересобирает и **перезапускает себя** без ручного
+- [x] Мультипроектная разработка через `pi_coder` — список проектов в конфиге, per-project model/timeout, rebuild/restart только для self-project
   вмешательства (`restart=true` → `syscall.Exec`)
 - [x] Агрегация новостей (RSS/Atom/JSON Feed) — подписки, чтение, поиск, избранное
 - [x] Универсальная автоматизация браузера (agent-browser) — навигация, клики, формы, скриншоты, JS, snapshot

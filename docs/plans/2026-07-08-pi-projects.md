@@ -70,10 +70,10 @@ agent-shatrov уже имеет multi-agent режим (Mattermost) и инст�
 
 **Файлы:** `README.md`, `CLAUDE.md`, `config.example.yaml`
 
-- [ ] Обновить секцию про `pi_coder` в README (новый формат конфига)
-- [ ] Обновить таблицу инструмента pi_coder
-- [ ] Обновить config.example.yaml комментарии
-- [ ] Обновить CLAUDE.md если есть упоминания pi_coder config
+- [x] Обновить секцию про `pi_coder` в README (новый формат конфига)
+- [x] Обновить таблицу инструмента pi_coder
+- [x] Обновить config.example.yaml комментарии
+- [x] Обновить CLAUDE.md если есть упоминания pi_coder config
 
 ### Task 6: Валидация — lint, test, build
 
