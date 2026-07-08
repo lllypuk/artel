@@ -211,7 +211,7 @@ func NewClient(baseURL, apiKey string, opts ...ClientOption) *Client {
 		}).DialContext,
 		TLSHandshakeTimeout:   10 * time.Second,
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
-		ResponseHeaderTimeout: 30 * time.Second,
+		ResponseHeaderTimeout: 120 * time.Second,
 		IdleConnTimeout:       90 * time.Second,
 	}
 

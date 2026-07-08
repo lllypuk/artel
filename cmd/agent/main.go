@@ -90,7 +90,7 @@ func main() {
 	toolRegistry.Register(tools.NewWikiTool(db))
 	toolRegistry.Register(tools.NewReadingListTool(db, tools.NewDefaultWebFetchTool()))
 	toolRegistry.Register(tools.NewKnowledgeSearchTool(db))
-	registerOptionalTools(cfg, toolRegistry, logger, db)
+	registerOptionalTools(cfg, toolRegistry, logger, db, filepath.Dir(cfgPath))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

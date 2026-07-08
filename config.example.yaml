@@ -266,10 +266,16 @@ browser:
   proxy: ""
 
 pi_coder:
-  enabled: false                   # включить для доработки агента через pi
-  project_dir: "."
-  model: "glm-4.7"
-  timeout: 300
+  enabled: false                   # включить для доработки проектов через pi
+  model: "glm-4.7"               # модель по умолчанию (можно переопределить per-project)
+  timeout: 300                     # таймаут по умолчанию в секундах
+  projects:                        # список доступных проектов
+    # - name: "agent-shatrov"      # идентификатор для бота
+    #   path: "."                  # путь к проекту (абсолютный или относительный конфигу)
+    # - name: "my-project"
+    #   path: "/path/to/my-project"
+    #   model: "glm-4.7-flash"     # переопределение модели (опц.)
+    #   timeout: 600               # переопределение таймаута (опц.)
 
 otel:
   endpoint: ""                     # OTLP HTTP endpoint для трассировки, напр. "http://localhost:4318"
