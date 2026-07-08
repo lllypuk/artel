@@ -77,17 +77,17 @@ agent-shatrov уже имеет multi-agent режим (Mattermost) и инст�
 
 ### Task 6: Валидация — lint, test, build
 
-- [ ] `make lint` — без ошибок
-- [ ] `make test` — все unit-тесты проходят
-- [ ] `make build` — собирается
+- [x] `make lint` — без ошибок
+- [x] `make test` — все unit-тесты проходят
+- [x] `make build` — собирается
 
 ### Task 7: E2E артефакты — конфиги, скрипты, сценарии
 
 **Файлы:** `tests/e2e/config-*-e2e-pi.yaml.example`, `tests/e2e/e2e_pi_test.sh` (новые)
 
-- [ ] `config-analyst-e2e-pi.yaml.example` — аналитик, pi_coder enabled, projects: agent-shatrov + test-проект
-- [ ] `config-developer-e2e-pi.yaml.example` — разработчик, pi_coder enabled, projects: agent-shatrov + test-проект
-- [ ] `config-tester-e2e-pi.yaml.example` — тестировщик, pi_coder enabled, projects: agent-shatrov + test-проект
+- [x] `config-analyst-e2e-pi.yaml.example` — аналитик, pi_coder enabled, projects: agent-shatrov + test-проект
+- [x] `config-developer-e2e-pi.yaml.example` — разработчик, pi_coder enabled, projects: agent-shatrov + test-проект
+- [x] `config-tester-e2e-pi.yaml.example` — тестировщик, pi_coder enabled, projects: agent-shatrov + test-проект
 
 Каждый конфиг:
 ```yaml
@@ -104,14 +104,14 @@ pi_coder:
       timeout: 600
 ```
 
-- [ ] Скрипт `e2e_pi_test.sh`: post `@developer-bot анализируй проект test-project через pi_coder` → waitread 60 20
-- [ ] Скрипт: post `@analyst-bot какие проекты доступны` → проверка enum/Description
-- [ ] Скрипт: post `@developer-bot открой agent-shatrov, добавь комментарий` → self-project
-- [ ] Скрипт: post `@tester-bot запусти тесты test-project` → pi_coder test-project
-- [ ] Скрипт: проверка игнора rebuild/restart для non-self проектов
-- [ ] Сценарии координации: аналитик → разработчик → тестировщик → цикл
-- [ ] Проверка safeguards (loop detection) при долгом bot-to-bot диалоге
-- [ ] Запуск E2E тестов вручную (manual test — требует запущенный Mattermost + Ollama + pi)
+- [x] Скрипт `e2e_pi_test.sh`: post `@developer-bot анализируй проект test-project через pi_coder` → waitread 60 20
+- [x] Скрипт: post `@analyst-bot какие проекты доступны` → проверка enum/Description
+- [x] Скрипт: post `@developer-bot открой agent-shatrov, добавь комментарий` → self-project
+- [x] Скрипт: post `@tester-bot запусти тесты test-project` → pi_coder test-project
+- [x] Скрипт: проверка игнора rebuild/restart для non-self проектов
+- [x] Сценарии координации: аналитик → разработчик → тестировщик → цикл
+- [x] Проверка safeguards (loop detection) при долгом bot-to-bot диалоге
+- [x] (manual test — требует запущенный Mattermost + Ollama + pi)
 - [ ] Отчёт `REPORT-pi-YYYY-MM-DD.md` по образцу `REPORT-2026-07-07.md`
 
 ## Зависимости
