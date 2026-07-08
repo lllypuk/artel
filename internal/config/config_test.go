@@ -730,6 +730,10 @@ pi_coder:
   enabled: true
   model: "glm-4.7"
   timeout: 300
+  projects_dir: "/home/projects"
+  exclude_projects:
+    - "test-project"
+    - "nanoGPT"
   projects:
     - name: "agent-shatrov"
       path: "."
@@ -768,6 +772,12 @@ pi_coder:
 	if p1.TimeoutSec != 600 {
 		t.Errorf("Projects[1].TimeoutSec: got %d, want 600", p1.TimeoutSec)
 	}
+	if cfg.PiCoder.ProjectsDir != "/home/projects" {
+		t.Errorf("ProjectsDir: got %q, want '/home/projects'", cfg.PiCoder.ProjectsDir)
+	}
+	if len(cfg.PiCoder.ExcludeProjects) != 2 || cfg.PiCoder.ExcludeProjects[0] != "test-project" || cfg.PiCoder.ExcludeProjects[1] != "nanoGPT" {
+		t.Errorf("ExcludeProjects: got %v, want [test-project nanoGPT]", cfg.PiCoder.ExcludeProjects)
+	}
 }
 
 func TestPiCoderEnabledWithoutProjectsError(t *testing.T) {
@@ -787,6 +797,30 @@ pi_coder:
 	}
 	if !strings.Contains(err.Error(), "pi_coder.projects") {
 		t.Errorf("expected error to mention 'pi_coder.projects', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "projects_dir") {
+		t.Errorf("expected error to mention 'projects_dir', got: %v", err)
+	}
+}
+
+func TestPiCoderEnabledWithProjectsDirOnlyOK(t *testing.T) {
+	path := writeTempConfig(t, `
+telegram:
+  token: "tok"
+  allowed_users: [1]
+llm:
+  api_key: "key"
+  base_url: "https://api.example.com"
+pi_coder:
+  enabled: true
+  projects_dir: "/some/path"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.PiCoder.ProjectsDir != "/some/path" {
+		t.Errorf("ProjectsDir: got %q, want '/some/path'", cfg.PiCoder.ProjectsDir)
 	}
 }
 

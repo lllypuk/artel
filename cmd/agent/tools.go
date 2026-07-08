@@ -163,7 +163,7 @@ func registerPiCoderTool(cfg *config.Config, registry *tools.Registry, logger *s
 	if model == "" {
 		model = "glm-4.7"
 	}
-	projRegistry := projects.NewRegistry(cfg.PiCoder.Projects, agentDir, logger)
+	projRegistry := projects.NewRegistry(cfg.PiCoder, agentDir, logger)
 	registry.Register(tools.NewPiCoderTool(tools.PiCoderConfig{
 		Registry:       projRegistry,
 		DefaultModel:   model,
