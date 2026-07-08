@@ -324,3 +324,16 @@ monitor:
   @-mentions, предохранители петель (`safeguards:`).
 
 Полное руководство и примеры конфигов: [`docs/multi-instance-guide.md`](docs/multi-instance-guide.md).
+
+## Docker multi-bot
+
+Для headless-сервера: 3 бота (аналитик, разработчик, тестер) в Docker-контейнерах
+с автозапуском через systemd. Каждый бот — отдельный контейнер со своим конфигом
+и data volume, общие volumes для проектов (`~/Project`), SSH-ключей и pi-конфига.
+
+- `docker-compose.bots.yml` — 3 сервиса (analyst, developer, tester).
+- `configs/*-bot.yaml.example` — шаблоны конфигов с плейсхолдерами для токенов.
+- `scripts/agent-bots.service` — systemd user unit для автозапуска при загрузке.
+- Автообнаружение проектов: `pi_coder.projects_dir` сканирует каталог на git-репозитории.
+
+Полная инструкция по установке: [`docs/headless-setup.md`](docs/headless-setup.md).

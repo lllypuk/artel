@@ -68,10 +68,10 @@
 
 **Файлы:** `scripts/agent-bots.service`, `docs/headless-setup.md`
 
-- [ ] agent-bots.service: systemd user unit, oneshot + RemainAfterExit, ExecStart=docker compose up -d
-- [ ] WantedBy=default.target
-- [ ] docs/headless-setup.md: инструкция по установке (enable-linger, enable docker, install service, configs, tokens)
-- [ ] Обновить README: секция "Docker multi-bot" с ссылкой на headless-setup.md
+- [x] agent-bots.service: systemd user unit, oneshot + RemainAfterExit, ExecStart=docker compose up -d
+- [x] WantedBy=default.target
+- [x] docs/headless-setup.md: инструкция по установке (enable-linger, enable docker, install service, configs, tokens)
+- [x] Обновить README: секция "Docker multi-bot" с ссылкой на headless-setup.md
 
 ### Task 6: Валидация — lint, test, build, docker
 
