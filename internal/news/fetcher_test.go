@@ -31,8 +31,8 @@ func TestHTTPFetcher_UserAgent(t *testing.T) {
 
 	f := news.NewHTTPFetcher(5 * time.Second)
 	_, _ = f.Fetch(context.Background(), srv.URL, "")
-	if !strings.Contains(gotUA, "agent-shatrov") {
-		t.Errorf("expected 'agent-shatrov' in User-Agent, got %q", gotUA)
+	if !strings.Contains(gotUA, "artel") {
+		t.Errorf("expected 'artel' in User-Agent, got %q", gotUA)
 	}
 }
 

@@ -61,7 +61,7 @@ func main() {
 	if cfg.Otel.Endpoint != "" {
 		serviceName := cfg.Otel.ServiceName
 		if serviceName == "" {
-			serviceName = "agent-shatrov"
+			serviceName = "artel"
 		}
 		shutdown, err := telemetry.InitOTLP(cfg.Otel.Endpoint, serviceName)
 		if err != nil {
@@ -124,7 +124,7 @@ func main() {
 		cancel()
 	}()
 
-	logger.Info("agent-shatrov starting",
+	logger.Info("artel starting",
 		"model", cfg.LLM.Models.Default,
 		"db", cfg.Database.Path,
 		"transport", cfg.Transport.Type,
@@ -135,7 +135,7 @@ func main() {
 
 	<-ctx.Done()
 
-	logger.Info("agent-shatrov stopped")
+	logger.Info("artel stopped")
 }
 
 // createDirectories ensures all required data directories exist.

@@ -29,7 +29,7 @@ func InitOTLP(endpoint, serviceName string) (func(context.Context) error, error)
 		return nil, fmt.Errorf("OTLP endpoint is empty")
 	}
 	if serviceName == "" {
-		serviceName = "agent-shatrov"
+		serviceName = "artel"
 	}
 
 	exp, err := otlptracehttp.New(context.Background(),

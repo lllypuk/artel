@@ -34,7 +34,7 @@ type HTTPFetcher struct {
 func NewHTTPFetcher(timeout time.Duration) *HTTPFetcher {
 	return &HTTPFetcher{
 		timeout:   timeout,
-		userAgent: "Mozilla/5.0 (compatible; agent-shatrov/1.0; +https://github.com/lllypuk/artel)",
+		userAgent: "Mozilla/5.0 (compatible; artel/1.0; +https://github.com/lllypuk/artel)",
 		logger:    slog.Default(),
 		clients:   make(map[string]*http.Client),
 	}

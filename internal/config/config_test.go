@@ -735,7 +735,7 @@ pi_coder:
     - "test-project"
     - "nanoGPT"
   projects:
-    - name: "agent-shatrov"
+    - name: "artel"
       path: "."
     - name: "my-project"
       path: "/path/to/my-project"
@@ -753,8 +753,8 @@ pi_coder:
 		t.Fatalf("expected 2 projects, got %d", len(cfg.PiCoder.Projects))
 	}
 	p0 := cfg.PiCoder.Projects[0]
-	if p0.Name != "agent-shatrov" {
-		t.Errorf("Projects[0].Name: got %q, want 'agent-shatrov'", p0.Name)
+	if p0.Name != "artel" {
+		t.Errorf("Projects[0].Name: got %q, want 'artel'", p0.Name)
 	}
 	if p0.Path != "." {
 		t.Errorf("Projects[0].Path: got %q, want '.'", p0.Path)
