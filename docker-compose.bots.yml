@@ -14,7 +14,7 @@
 services:
   analyst:
     build: .
-    image: agent-shatrov:latest
+    image: artel:latest
     restart: always
     command: ["/config.yaml"]
     volumes:
@@ -40,7 +40,7 @@ services:
 
   developer:
     build: .
-    image: agent-shatrov:latest
+    image: artel:latest
     restart: always
     command: ["/config.yaml"]
     volumes:
@@ -66,7 +66,7 @@ services:
 
   tester:
     build: .
-    image: agent-shatrov:latest
+    image: artel:latest
     restart: always
     command: ["/config.yaml"]
     volumes:

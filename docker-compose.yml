@@ -1,7 +1,7 @@
 services:
   agent:
     build: .
-    image: agent-shatrov:latest
+    image: artel:latest
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - agent_data:/app/data
