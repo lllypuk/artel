@@ -211,10 +211,10 @@ systemd одномоментно (он не упоминается в Go-код�
 
 ### Task 8: Финальная документация и закрытие
 
-- [ ] обновить `docs/backlog.md`: отметить переименование (не эпик, заметка в шапке или логе)
-- [ ] проверить `make lint test` финально
-- [ ] переместить этот план в `docs/plans/completed/` (внутри нового пути `artel`)
-- [ ] `git commit -m "docs: finalize rename to artel"`
+- [x] обновить `docs/backlog.md`: отметить переименование (не эпик, заметка в шапке или логе)
+- [x] проверить `make lint test` финально
+- [x] (deferred - harness moves plan after phases complete)
+- [x] `git commit -m "docs: finalize rename to artel"`
 
 ## Post-Completion
 
