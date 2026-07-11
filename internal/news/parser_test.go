@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/news"
+	"github.com/lllypuk/artel/internal/news"
 )
 
 // ── Sample feeds ──────────────────────────────────────────────────────────────

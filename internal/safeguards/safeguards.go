@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/transport"
+	"github.com/lllypuk/artel/internal/transport"
 )
 
 // EscalationText is sent to the conversation thread when the bot loop

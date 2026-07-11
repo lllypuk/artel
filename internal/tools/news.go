@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/news"
+	"github.com/lllypuk/artel/internal/news"
 )
 
 // NewsTool manages news subscriptions and reading.

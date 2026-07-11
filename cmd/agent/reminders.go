@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/storage"
-	"github.com/lllypuk/agent-shatrov/internal/tools"
+	"github.com/lllypuk/artel/internal/storage"
+	"github.com/lllypuk/artel/internal/tools"
 )
 
 func runReminderScheduler(ctx context.Context, db *storage.DB, notifier tools.Notifier, logger *slog.Logger) {

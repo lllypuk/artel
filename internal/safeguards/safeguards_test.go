@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/transport"
+	"github.com/lllypuk/artel/internal/transport"
 	"github.com/stretchr/testify/assert"
 )
 

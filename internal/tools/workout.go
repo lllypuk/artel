@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/storage"
+	"github.com/lllypuk/artel/internal/storage"
 )
 
 // WorkoutTool provides training log, templates and personal-record tracking.

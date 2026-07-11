@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/lllypuk/agent-shatrov/internal/tools"
+	"github.com/lllypuk/artel/internal/tools"
 )
 
 // mockTool is a test double for the Tool interface, shared across all

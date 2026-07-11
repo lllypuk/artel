@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/storage"
+	"github.com/lllypuk/artel/internal/storage"
 )
 
 // GoalsTool manages objectives and key results (OKR) plus long/medium-term goals.

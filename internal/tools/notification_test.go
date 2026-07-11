@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/lllypuk/agent-shatrov/internal/tools"
+	"github.com/lllypuk/artel/internal/tools"
 )
 
 func silentLogger() *slog.Logger {

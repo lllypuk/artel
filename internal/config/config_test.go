@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lllypuk/agent-shatrov/internal/config"
+	"github.com/lllypuk/artel/internal/config"
 )
 
 func writeTempConfig(t *testing.T, content string) string {

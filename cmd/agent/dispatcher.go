@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/agent"
-	"github.com/lllypuk/agent-shatrov/internal/safeguards"
-	"github.com/lllypuk/agent-shatrov/internal/storage"
-	"github.com/lllypuk/agent-shatrov/internal/transport"
+	"github.com/lllypuk/artel/internal/agent"
+	"github.com/lllypuk/artel/internal/safeguards"
+	"github.com/lllypuk/artel/internal/storage"
+	"github.com/lllypuk/artel/internal/transport"
 )
 
 const platformMattermost = "mattermost"

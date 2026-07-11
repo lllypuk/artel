@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/lllypuk/agent-shatrov/internal/transport"
+	"github.com/lllypuk/artel/internal/transport"
 )
 
 // Transport wraps Bot to implement the common transport.Transport interface.

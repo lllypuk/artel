@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/config"
-	"github.com/lllypuk/agent-shatrov/internal/storage"
-	"github.com/lllypuk/agent-shatrov/internal/tools"
+	"github.com/lllypuk/artel/internal/config"
+	"github.com/lllypuk/artel/internal/storage"
+	"github.com/lllypuk/artel/internal/tools"
 )
 
 func openMonitorDB(t *testing.T) *storage.DB {

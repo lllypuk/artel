@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/llm"
-	"github.com/lllypuk/agent-shatrov/internal/storage"
+	"github.com/lllypuk/artel/internal/llm"
+	"github.com/lllypuk/artel/internal/storage"
 )
 
 // ContextInfo holds statistics about the current conversation context.

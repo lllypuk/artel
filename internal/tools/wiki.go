@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/lllypuk/agent-shatrov/internal/storage"
+	"github.com/lllypuk/artel/internal/storage"
 )
 
 // WikiTool manages personal wiki pages.

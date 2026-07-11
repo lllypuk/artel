@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/storage"
+	"github.com/lllypuk/artel/internal/storage"
 )
 
 // moexIndexTickers lists known MOEX index tickers (uppercase).

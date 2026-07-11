@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/lllypuk/agent-shatrov/internal/storage"
+	"github.com/lllypuk/artel/internal/storage"
 )
 
 func openTestDB(t *testing.T) *storage.DB {

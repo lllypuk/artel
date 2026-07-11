@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/llm"
+	"github.com/lllypuk/artel/internal/llm"
 )
 
 func testLogger() *slog.Logger {

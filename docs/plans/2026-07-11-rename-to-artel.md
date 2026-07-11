@@ -104,11 +104,11 @@ systemd одномоментно (он не упоминается в Go-код�
 - Modify: `go.mod`
 - Modify: все `*.go` (≈93 файла с импортами `github.com/lllypuk/agent-shatrov/...`)
 
-- [ ] `go mod edit -module github.com/lllypuk/artel`
-- [ ] `grep -rl "github.com/lllypuk/agent-shatrov" --include="*.go" | xargs sed -i 's|github.com/lllypuk/agent-shatrov|github.com/lllypuk/artel|g'`
-- [ ] `go build ./...` — убедиться, что все импорты резолвятся
-- [ ] `make lint test` — должно быть чисто
-- [ ] зафиксировать: `git commit -m "refactor: rename go module agent-shatrov → artel"`
+- [x] `go mod edit -module github.com/lllypuk/artel`
+- [x] `grep -rl "github.com/lllypuk/agent-shatrov" --include="*.go" | xargs sed -i 's|github.com/lllypuk/agent-shatrov|github.com/lllypuk/artel|g'`
+- [x] `go build ./...` — убедиться, что все импорты резолвятся
+- [x] `make lint test` — должно быть чисто
+- [x] зафиксировать: `git commit -m "refactor: rename go module agent-shatrov → artel"`
 
 ### Task 2: Переименовать бинарник agent → artel (Makefile, Dockerfile)
 

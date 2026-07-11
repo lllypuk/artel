@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/lllypuk/agent-shatrov/internal/transport"
+	"github.com/lllypuk/artel/internal/transport"
 )
 
 // mentionRe matches Mattermost @-mentions. Mention names consist of letters,

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/news"
+	"github.com/lllypuk/artel/internal/news"
 )
 
 // NewsRepository defines the interface for news storage operations.

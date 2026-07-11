@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/lllypuk/agent-shatrov/internal/config"
+	"github.com/lllypuk/artel/internal/config"
 )
 
 // Project represents a single project that pi_coder can work on.

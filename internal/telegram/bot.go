@@ -17,12 +17,12 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"github.com/lllypuk/agent-shatrov/internal/agent"
-	"github.com/lllypuk/agent-shatrov/internal/config"
-	"github.com/lllypuk/agent-shatrov/internal/safeguards"
-	"github.com/lllypuk/agent-shatrov/internal/storage"
-	"github.com/lllypuk/agent-shatrov/internal/tools"
-	"github.com/lllypuk/agent-shatrov/internal/transport"
+	"github.com/lllypuk/artel/internal/agent"
+	"github.com/lllypuk/artel/internal/config"
+	"github.com/lllypuk/artel/internal/safeguards"
+	"github.com/lllypuk/artel/internal/storage"
+	"github.com/lllypuk/artel/internal/tools"
+	"github.com/lllypuk/artel/internal/transport"
 )
 
 // Message is a normalized incoming message produced by the Telegram bot for an adapter.

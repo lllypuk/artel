@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lllypuk/agent-shatrov/internal/llm"
+	"github.com/lllypuk/artel/internal/llm"
 )
 
 // ── Chat ──────────────────────────────────────────────────────────────────────

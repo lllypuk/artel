@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/config"
-	"github.com/lllypuk/agent-shatrov/internal/storage"
+	"github.com/lllypuk/artel/internal/config"
+	"github.com/lllypuk/artel/internal/storage"
 )
 
 // newTestScheduler creates a scheduler suitable for unit tests (no agent/send/users/db).

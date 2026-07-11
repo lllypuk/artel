@@ -7,10 +7,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/config"
-	"github.com/lllypuk/agent-shatrov/internal/projects"
-	"github.com/lllypuk/agent-shatrov/internal/storage"
-	"github.com/lllypuk/agent-shatrov/internal/tools"
+	"github.com/lllypuk/artel/internal/config"
+	"github.com/lllypuk/artel/internal/projects"
+	"github.com/lllypuk/artel/internal/storage"
+	"github.com/lllypuk/artel/internal/tools"
 )
 
 // registerOptionalTools регистрирует инструменты, включённые в конфиге.

@@ -11,16 +11,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/agent"
-	"github.com/lllypuk/agent-shatrov/internal/config"
-	"github.com/lllypuk/agent-shatrov/internal/llm"
-	"github.com/lllypuk/agent-shatrov/internal/mattermost"
-	"github.com/lllypuk/agent-shatrov/internal/safeguards"
-	"github.com/lllypuk/agent-shatrov/internal/storage"
-	"github.com/lllypuk/agent-shatrov/internal/telegram"
-	"github.com/lllypuk/agent-shatrov/internal/telemetry"
-	"github.com/lllypuk/agent-shatrov/internal/tools"
-	"github.com/lllypuk/agent-shatrov/internal/transport"
+	"github.com/lllypuk/artel/internal/agent"
+	"github.com/lllypuk/artel/internal/config"
+	"github.com/lllypuk/artel/internal/llm"
+	"github.com/lllypuk/artel/internal/mattermost"
+	"github.com/lllypuk/artel/internal/safeguards"
+	"github.com/lllypuk/artel/internal/storage"
+	"github.com/lllypuk/artel/internal/telegram"
+	"github.com/lllypuk/artel/internal/telemetry"
+	"github.com/lllypuk/artel/internal/tools"
+	"github.com/lllypuk/artel/internal/transport"
 )
 
 func main() {
