@@ -90,10 +90,11 @@ configs/             — примеры конфигов для Docker multi-bot
 docs/
   multi-instance-guide.md — руководство по запуску нескольких инстансов в Mattermost
   headless-setup.md  — инструкция по установке Docker multi-bot на headless-сервере
+  e2e-testing.md     — e2e тестирование: 4 уровня (smoke → pi_coder → multi-bot → Docker)
   roles/             — шаблоны конфигов ролей: analyst, developer, tester
 scripts/
   agent-bots.service — systemd user unit для автозапуска Docker multi-bot
-Dockerfile           — multi-stage сборка: Go toolchain + Node.js + pi
+Dockerfile           — multi-stage: golang builder + node:22-alpine runtime + Go toolchain + pi
 docker-compose.bots.yml — 3 сервиса (analyst, developer, tester) для headless-сервера
 .dockerignore        — файлы, исключаемые из Docker-образа
 Makefile             — команды для управления сервисом
@@ -125,6 +126,22 @@ make lint test
 
 Все найденные ошибки и предупреждения должны быть исправлены до завершения задачи. Коммитить код с ошибками lint или
 упавшими тестами нельзя.
+
+### E2E тестирование ботов
+
+После доработок, затрагивающих Docker/multi-bot/Mattermost/pi_coder, прогнать e2e тесты
+по инструкции: [`docs/e2e-testing.md`](docs/e2e-testing.md). Минимум — уровни 1-2
+(smoke-тест одного бота + pi_coder). Полная проверка — уровни 1-4 (включая Docker).
+
+Быстрая проверка (если нет времени на полный прогон):
+
+```bash
+# Build + unit tests
+make build && go test ./...
+
+# Smoke: бот запускается, WebSocket подключён, LLM отвечает
+./bin/agent configs/analyst-bot.yaml &; sleep 3; tail -3 data/analyst-bot.log; pkill -f "bin/agent"
+```
 
 ## ⚠️ Ключевое правило архитектуры: инструменты, не команды бота
 
@@ -638,6 +655,28 @@ s.maybeFireEvent(...)
 ```
 
 Нарушение этого принципа делает тест зелёным по ложной причине (`db == nil` защищает там, где должен защищать `0`).
+
+### E. Docker: known issues и решения
+
+При доработке Docker multi-bot следить за пятью Known issues:
+
+1. **Ollama на 127.0.0.1** — контейнеры не достучатся через `host-gateway`.
+   Фикс: `OLLAMA_HOST=0.0.0.0:11434` через systemd override.
+
+2. **pi models.json hardcoded 127.0.0.1** — `~/.pi/agent/models.json` хранит
+   `baseUrl: "http://127.0.0.1:11434/v1"`. Env-переменные `OLLAMA_HOST` не переопределяют.
+   Фикс: `sed -i 's|127.0.0.1:11434|host-gateway:11434|g' ~/.pi/agent/models.json`.
+
+3. **Версия pi ≠ хост** — расширения из `~/.pi/agent/` несовместимы с другой версией pi.
+   Фикс: фиксировать версию в Dockerfile (`@earendil-works/pi-coding-agent@0.80.6`).
+
+4. **~/.pi read-only** — pi не может создавать session-файлы и lock-файлы.
+   Фикс: монтировать как `:rw` в `docker-compose.bots.yml`.
+
+5. **Node.js версия** — pi 0.80.6 требует Node ≥22.9.0, alpine:3.20 даёт Node 20.15.1.
+   Фикс: использовать `node:22-alpine` как runtime-stage в Dockerfile.
+
+Подробности: `docs/e2e-testing.md` (раздел «Известные проблемы и решения»).
 
 ### E. FK-валидация до создания записи
 

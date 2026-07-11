@@ -159,6 +159,7 @@ internal/
 docs/
   multi-instance-guide.md  — как поднять несколько инстансов в Mattermost
   headless-setup.md  — установка Docker multi-bot на headless-сервере
+  e2e-testing.md     — e2e тестирование ботов (4 уровня: smoke → Docker)
   roles/             — шаблоны конфигов для ролей (аналитик/разработчик/тестировщик)
 configs/             — примеры конфигов для Docker multi-bot (analyst/developer/tester)
 scripts/
@@ -346,9 +347,20 @@ monitor:
 с автозапуском через systemd. Каждый бот — отдельный контейнер со своим конфигом
 и data volume, общие volumes для проектов (`~/Project`), SSH-ключей и pi-конфига.
 
+**Что нужно знать перед запуском:**
+
+- `Dockerfile` — multi-stage: Go toolchain + `node:22-alpine` + pi (фиксированная версия).
+- `~/.pi` монтируется как `:rw` — pi пишет session-файлы.
+- `~/.pi/agent/models.json` — Ollama endpoint должен быть `http://host-gateway:11434/v1` (не `127.0.0.1`).
+- Ollama должна слушать на `0.0.0.0:11434` (не `127.0.0.1`).
+- Версия pi в Dockerfile должна совпадать с версией pi на хосте.
+
+Файлы:
+
 - `docker-compose.bots.yml` — 3 сервиса (analyst, developer, tester).
 - `configs/*-bot.yaml.example` — шаблоны конфигов с плейсхолдерами для токенов.
 - `scripts/agent-bots.service` — systemd user unit для автозапуска при загрузке.
 - Автообнаружение проектов: `pi_coder.projects_dir` сканирует каталог на git-репозитории.
 
 Полная инструкция по установке: [`docs/headless-setup.md`](docs/headless-setup.md).
+E2E тестирование: [`docs/e2e-testing.md`](docs/e2e-testing.md).

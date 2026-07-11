@@ -8,10 +8,8 @@ ENV CGO_ENABLED=0
 RUN go build -o /app/agent ./cmd/agent
 
 # Stage 2: Runtime with Go toolchain + Node.js + pi
-FROM alpine:3.20
+FROM node:22-alpine
 RUN apk add --no-cache \
-    nodejs \
-    npm \
     git \
     openssh-client \
     gcc \
@@ -29,7 +27,7 @@ ENV GOPATH=/root/go
 ENV PATH="${PATH}:/usr/local/go/bin:/root/go/bin"
 
 # Install pi coding agent
-RUN npm install -g @earendil-works/pi-coding-agent
+RUN npm install -g @earendil-works/pi-coding-agent@0.80.6
 
 # Copy agent binary from builder
 COPY --from=builder /app/agent /usr/local/bin/agent

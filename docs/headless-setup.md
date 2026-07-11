@@ -9,10 +9,28 @@
 2. **docker compose** plugin доступен.
 3. **Git-репозиторий** agent-shatrov склонирован в `~/Project/agent-shatrov`.
 4. **Mattermost** сервер доступен по сети (например, на хосте, порт 8065).
-5. **Ollama** (или LLM API) доступен по сети (например, на хосте, порт 11434).
-6. **pi** — конфиг в `~/.pi/` для Ollama endpoint.
+5. **Ollama** слушает на `0.0.0.0:11434` (не `127.0.0.1` — нужен для Docker).
+6. **pi** — конфиг в `~/.pi/` для Ollama endpoint; версия pi на хосте должна совпадать с версией в Dockerfile.
 
-## Шаг 1. Enable linger для пользователя
+## Шаг 1. Ollama на 0.0.0.0
+
+Docker-контейнеры не могут достучаться до `127.0.0.1` хоста. Ollama должна слушать на всех интерфейсах:
+
+```bash
+sudo mkdir -p /etc/systemd/system/ollama.service.d
+echo '[Service]
+Environment="OLLAMA_HOST=0.0.0.0:11434"' | sudo tee /etc/systemd/system/ollama.service.d/override.conf
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+```
+
+Проверка:
+```bash
+ss -tlnp | grep 11434
+# Должно быть *:11434, а не 127.0.0.1:11434
+```
+
+## Шаг 2. Enable linger для пользователя
 
 Чтобы user-level systemd сервисы запускались до логина:
 
@@ -20,40 +38,21 @@
 loginctl enable-linger $USER
 ```
 
-Проверьте:
+Проверка:
 ```bash
 loginctl show-user $USER | grep Linger
 # Linger=yes
 ```
 
-## Шаг 2. Установить и включить Docker
+## Шаг 3. Установить и включить Docker
 
 ```bash
-# Убедитесь, что Docker установлен и демон запущен
 sudo systemctl enable docker
 sudo systemctl start docker
 
 # Добавьте пользователя в группу docker (если ещё не в группе)
 sudo usermod -aG docker $USER
 # Перелогиньтесь, чтобы изменения группы вступили в силу
-```
-
-## Шаг 3. Установить systemd service
-
-```bash
-# Копируем service file в user systemd directory
-mkdir -p ~/.config/systemd/user/
-cp ~/Project/agent-shatrov/scripts/agent-bots.service ~/.config/systemd/user/
-
-# Перезагрузить systemd, включить и запустить
-systemctl --user daemon-reload
-systemctl --user enable agent-bots.service
-systemctl --user start agent-bots.service
-```
-
-Проверьте статус:
-```bash
-systemctl --user status agent-bots.service
 ```
 
 ## Шаг 4. Подготовить конфиги ботов
@@ -70,47 +69,88 @@ cp configs/tester-bot.yaml.example configs/tester-bot.yaml
 Отредактируйте каждый конфиг:
 - Замените `<analyst-bot-token>`, `<developer-bot-token>`, `<tester-bot-token>` на реальные Mattermost токены ботов.
 - Проверьте `llm.api_key` — ключ для LLM API.
-- Убедитесь, что `server_url: "http://host-gateway:8065"` указывает на Mattermost.
-- Убедитесь, что `base_url: "http://host-gateway:11434/v1"` указывает на Ollama.
+- `server_url: "http://host-gateway:8065"` — Mattermost.
+- `base_url: "http://host-gateway:11434/v1"` — Ollama.
+- `owner_user_id` — ваш user ID в Mattermost (узнать через `curl -H "Authorization: Bearer <token>" http://localhost:8065/api/v4/users/me`).
 
-> `host-gateway` — это специальный Docker hostname, указывающий на хост-машину.
-> Он работает благодаря `extra_hosts: ["host-gateway:host-gateway"]` в `docker-compose.bots.yml`.
+> `host-gateway` — специальный Docker hostname, указывающий на хост-машину.
+> Работает благодаря `extra_hosts: ["host-gateway:host-gateway"]` в `docker-compose.bots.yml`.
 
-## Шаг 5. Проверитьpi конфиг
+## Шаг 5. Проверить pi конфиг
 
-pi использует `~/.pi/` для своих настроек (Ollama endpoint и т.д.).
-Эта директория монтируется в контейнер: `~/.pi:/home/agent/.pi:ro`.
+Pi использует `~/.pi/` для своих настроек. Эта директория монтируется в контейнер: `~/.pi:/home/agent/.pi:rw`
+(должна быть writable — pi создаёт session-файлы и lock-файлы).
 
-Убедитесь, что в `~/.pi/` есть нужные конфиги, например:
+**Важно:** `~/.pi/agent/models.json` хранит Ollama endpoint как `http://127.0.0.1:11434/v1`.
+В Docker `127.0.0.1` — это сам контейнер, а не хост. Замените один раз:
+
 ```bash
-cat ~/.pi/config.yaml
-# Должен содержать Ollama endpoint, модели и т.д.
+sed -i 's|http://127.0.0.1:11434|http://host-gateway:11434|g' ~/.pi/agent/models.json
 ```
 
-ОБратите внимание, что адрес Ollama в `~/.pi/config.yaml` (если он использует
-`localhost` или `127.0.0.1`) **не будет работать** из контейнера.
-Замените на `http://host-gateway:11434` или используйте IP хоста.
+Локальный pi продолжит работать (host-gateway резолвится и на хосте),
+а Docker-контейнеры получат правильный endpoint.
+
+**Версия pi:** проверьте, что версия pi в Dockerfile совпадает с версией pi на хосте:
+
+```bash
+pi --version  # на хосте
+grep "pi-coding-agent@" Dockerfile  # в Dockerfile
+# Должны совпадать!
+```
+
+Несовпадение версий → ошибки загрузки расширений из `~/.pi/agent/`.
 
 ## Шаг 6. SSH ключи
 
 Контейнеры монтируют `~/.ssh:/home/agent/.ssh:ro` — SSH ключи хоста доступны в Docker.
 Убедитесь, что ключи имеют права `chmod 600` и `~/.ssh` — `chmod 700`.
 
-## Шаг 7. Проверка запуска
+## Шаг 7. Собрать Docker образ
 
 ```bash
-# Ручной запуск для проверки
 cd ~/Project/agent-shatrov
+docker build -t agent-shatrov:latest .
+```
+
+## Шаг 8. Ручная проверка
+
+```bash
+# Запуск
 docker compose -f docker-compose.bots.yml up -d
 
-# Логи
-docker compose -f docker-compose.bots.yml logs -f analyst
+# Проверка что все 3 контейнера запущены
+docker ps --filter "name=agent-shatrov"
+
+# Логи (WebSocket подключён?)
+for c in analyst developer tester; do
+    echo "=== $c ==="
+    docker exec agent-shatrov-$c-1 cat /home/agent/data/agent.log | tail -3
+done
+
+# Ожидаемые строки:
+#   "mattermost: websocket connected" url=ws://host-gateway:8065/...
+#   "PiCoder tool enabled" projects=[...]
 
 # Остановить
 docker compose -f docker-compose.bots.yml down
 ```
 
-Если всё работает, systemd поднимет контейнеры при загрузке автоматически.
+## Шаг 9. Установить systemd service
+
+```bash
+mkdir -p ~/.config/systemd/user/
+cp ~/Project/agent-shatrov/scripts/agent-bots.service ~/.config/systemd/user/
+
+systemctl --user daemon-reload
+systemctl --user enable agent-bots.service
+systemctl --user start agent-bots.service
+```
+
+Проверка:
+```bash
+systemctl --user status agent-bots.service
+```
 
 ## Управление
 
@@ -118,7 +158,9 @@ docker compose -f docker-compose.bots.yml down
 # Статус
 systemctl --user status agent-bots.service
 
-# Перезапуск (после изменения конфигов)
+# Перезапуск (после изменения конфигов или обновления образа)
+docker compose -f docker-compose.bots.yml down
+docker build -t agent-shatrov:latest .
 systemctl --user restart agent-bots.service
 
 # Логи Docker контейнеров
@@ -135,8 +177,13 @@ systemctl --user daemon-reload
 
 ## Решение проблем
 
-- **Контейнеры не запускаются**: проверьте `journalctl --user -u agent-bots.service -f`.
-- **Mattermost недоступен**: проверьте, что Mattermost слушает на `0.0.0.0` или на IP хоста, а не только на `localhost`.
-- **Ollama недоступен**: та же проверка + в `~/.pi/config.yaml` замените `localhost` на `host-gateway` или IP хоста.
-- **Git не работает**: проверьте SSH-ключи и права доступа. Попробуйте `docker compose -f docker-compose.bots.yml exec analyst git ls-remote git@github.com:...`.
-- **Изменения в service file**: после правки выполните `systemctl --user daemon-reload`.
+- **Контейнеры не запускаются**: `journalctl --user -u agent-bots.service -f`.
+- **Mattermost недоступен**: проверьте, что Mattermost слушает на `0.0.0.0` или на IP хоста.
+- **Ollama недоступен**: проверьте `ss -tlnp | grep 11434` → должно быть `*:11434`.
+- **pi "Connection error"**: проверьте `~/.pi/agent/models.json` → `baseUrl` должен быть `http://host-gateway:11434/v1`.
+- **pi "Failed to load extension"**: версия pi в Dockerfile не совпадает с хостом. Обновите Dockerfile.
+- **pi read-only file system**: `~/.pi` монтирована как `:ro`. Исправьте на `:rw` в `docker-compose.bots.yml`.
+- **Git не работает**: проверьте SSH-ключи и права. `docker exec agent-shatrov-analyst-1 git ls-remote git@github.com:...`.
+- **Изменения в service file**: после правки `systemctl --user daemon-reload`.
+
+Полное руководство по e2e тестированию: [`docs/e2e-testing.md`](e2e-testing.md).
