@@ -116,13 +116,13 @@ systemd одномоментно (он не упоминается в Go-код�
 - Modify: `Makefile`
 - Modify: `Dockerfile`
 
-- [ ] `Makefile`: `BINARY=bin/agent` → `bin/artel`; `pkill -x agent` → `pkill -x artel` (×2)
-- [ ] `Dockerfile`: `/app/agent` → `/app/artel`; `COPY --from=builder /app/agent` → `/app/artel`;
+- [x] `Makefile`: `BINARY=bin/agent` → `bin/artel`; `pkill -x agent` → `pkill -x artel` (×2)
+- [x] `Dockerfile`: `/app/agent` → `/app/artel`; `COPY --from=builder /app/agent` → `/app/artel`;
       `/usr/local/bin/agent` → `/usr/local/bin/artel` (×2: COPY + ENTRYPOINT); `WORKDIR /home/agent` → `/home/artel`
-- [ ] `make build` — `bin/artel` создаётся
-- [ ] `make lint test` — чисто
-- [ ] smoke: `./bin/artel --help` (или запуск с конфигом) стартует
-- [ ] `git commit -m "refactor: rename binary agent → artel"`
+- [x] `make build` — `bin/artel` создаётся
+- [x] `make lint test` — чисто
+- [x] smoke: `./bin/artel --help` (или запуск с конфигом) стартует
+- [x] `git commit -m "refactor: rename binary agent → artel"`
 
 ### Task 3: Переименовать Docker-образы и compose-сервисы
 

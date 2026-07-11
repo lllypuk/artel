@@ -5,7 +5,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ENV CGO_ENABLED=0
-RUN go build -o /app/agent ./cmd/agent
+RUN go build -o /app/artel ./cmd/agent
 
 # Stage 2: Runtime with Go toolchain + Node.js + pi
 FROM node:22-alpine
@@ -30,11 +30,11 @@ ENV PATH="${PATH}:/usr/local/go/bin:/root/go/bin"
 RUN npm install -g @earendil-works/pi-coding-agent@0.80.6
 
 # Copy agent binary from builder
-COPY --from=builder /app/agent /usr/local/bin/agent
+COPY --from=builder /app/artel /usr/local/bin/artel
 
 # Copy example config for reference
 COPY config.example.yaml /app/config.example.yaml
 
-WORKDIR /home/agent
+WORKDIR /home/artel
 
-ENTRYPOINT ["/usr/local/bin/agent"]
+ENTRYPOINT ["/usr/local/bin/artel"]
