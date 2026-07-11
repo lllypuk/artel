@@ -1,4 +1,4 @@
-# agent-shatrov
+# Artel
 
 Персональный AI-агент с Telegram/Mattermost-интерфейсами для личного использования на локальном компьютере.
 
@@ -107,13 +107,13 @@ make run      # собрать и запустить сервис (с прокс
 make stop     # остановить сервис
 make restart  # перезапустить
 make logs     # tail -f data/agent.log
-make build    # только сборка бинарника → bin/agent
+make build    # только сборка бинарника → bin/artel
 make clean    # удалить бинарник
 make lint     # статический анализ (golangci-lint)
 make test     # запуск тестов
 
 # Первый позиционный аргумент — путь к config.yaml (для multi-instance)
-./bin/agent config-analyst.yaml
+./bin/artel config-analyst.yaml
 ```
 
 ## Обязательно после каждой доработки
@@ -140,7 +140,7 @@ make lint test
 make build && go test ./...
 
 # Smoke: бот запускается, WebSocket подключён, LLM отвечает
-./bin/agent configs/analyst-bot.yaml &; sleep 3; tail -3 data/analyst-bot.log; pkill -f "bin/agent"
+./bin/artel configs/analyst-bot.yaml &; sleep 3; tail -3 data/analyst-bot.log; pkill -f "bin/artel"
 ```
 
 ## ⚠️ Ключевое правило архитектуры: инструменты, не команды бота
@@ -234,7 +234,7 @@ pi_coder:
   model: "glm-4.7"               # модель по умолчанию
   timeout: 300                     # таймаут по умолчанию (сек)
   projects:                        # список проектов (явные)
-    - name: "agent-shatrov"
+    - name: "artel"
       path: "."
     # - name: "my-project"
     #   path: "/path/to/my-project"

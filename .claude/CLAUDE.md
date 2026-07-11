@@ -1,4 +1,4 @@
-# Local CLAUDE.md — agent-shatrov
+# Local CLAUDE.md — Artel
 
 Стратегические паттерны и архитектурные решения, обнаруженные в процессе разработки.
 
@@ -30,8 +30,8 @@
   маппинг chat_id и вызов агента.
 - `internal/storage/chatids.go` — маппинг строковых внешних chat_id (Mattermost) к
   внутренним integer id хранилища.
-- Первый позиционный аргумент `bin/agent` — путь к `config.yaml`;
-  так поднимаются разные роли multi-instance (`./bin/agent config-analyst.yaml`).
+- Первый позиционный аргумент `bin/artel` — путь к `config.yaml`;
+  так поднимаются разные роли multi-instance (`./bin/artel config-analyst.yaml`).
 
 ## Регистрация инструментов — два уровня
 

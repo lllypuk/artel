@@ -97,7 +97,7 @@ docker run -d \
   -e LLM_API_KEY \
   -e LLM_BASE_URL="https://api.z.ai/api/coding/paas/v4" \
   -v agent-username-data:/app/data \
-  ghcr.io/lllypuk/agent-shatrov:latest
+  ghcr.io/lllypuk/artel:latest
 ```
 
 ### Вариант B: через config.yaml
@@ -108,7 +108,7 @@ docker run -d \
   --restart unless-stopped \
   -v ./config.yaml:/app/config.yaml:ro \
   -v agent-username-data:/app/data \
-  ghcr.io/lllypuk/agent-shatrov:latest
+  ghcr.io/lllypuk/artel:latest
 ```
 
 ### Вариант C: docker-compose
@@ -118,7 +118,7 @@ docker run -d \
 ```yaml
 services:
   agent-username:
-    image: ghcr.io/lllypuk/agent-shatrov:latest
+    image: ghcr.io/lllypuk/artel:latest
     container_name: agent-username
     restart: unless-stopped
     volumes:
@@ -188,7 +188,7 @@ docker stop agent-username
 docker restart agent-username
 
 # Обновить образ
-docker pull ghcr.io/lllypuk/agent-shatrov:latest
+docker pull ghcr.io/lllypuk/artel:latest
 docker stop agent-username && docker rm agent-username
 # Запустить заново командой из Шага 4
 
@@ -242,8 +242,8 @@ telegram:
 ## Сборка из исходников (опционально)
 
 ```bash
-git clone https://github.com/lllypuk/agent-shatrov
-cd agent-shatrov
-docker build -t agent-shatrov:local .
-# Затем использовать agent-shatrov:local вместо ghcr.io/...
+git clone https://github.com/lllypuk/artel
+cd artel
+docker build -t artel:local .
+# Затем использовать artel:local вместо ghcr.io/...
 ```

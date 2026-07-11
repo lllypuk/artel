@@ -160,12 +160,12 @@ systemd одномоментно (он не упоминается в Go-код�
 - Modify: `docs/*.md` (упоминания)
 - Modify: `tests/e2e/README.md`, `.github/copilot-instructions.md`
 
-- [ ] `README.md`: заголовок → `# Artel`; под заголовком тэглайн *«A cooperative of AI agents, each with its own craft.»*;
+- [x] `README.md`: заголовок → `# Artel`; под заголовком тэглайн *«A cooperative of AI agents, each with its own craft.»*;
       сноска/абзац: *«Artel — a Russian word for a self-organizing cooperative of craftsmen»*; все `agent-shatrov` → `artel`
-- [ ] `CLAUDE.md` + `.claude/CLAUDE.md`: заголовок `# agent-shatrov` → `# Artel`; упоминания → `artel`
-- [ ] `DEPLOY.md`, `docs/*.md`, `tests/e2e/README.md`, `.github/copilot-instructions.md`: `agent-shatrov` → `artel`
-- [ ] `grep -rn "agent-shatrov" --include="*.md" .` (вне `docs/plans/`) — пусто
-- [ ] `git commit -m "docs: rebrand to Artel + tagline + cultural note"`
+- [x] `CLAUDE.md` + `.claude/CLAUDE.md`: заголовок `# agent-shatrov` → `# Artel`; упоминания → `artel`
+- [x] `DEPLOY.md`, `docs/*.md`, `tests/e2e/README.md`, `.github/copilot-instructions.md`: `agent-shatrov` → `artel`
+- [x] `grep -rn "agent-shatrov" --include="*.md" .` (вне `docs/plans/`) — пусто
+- [x] `git commit -m "docs: rebrand to Artel + tagline + cultural note"`
 
 ### Task 6: Переименовать директорию проекта + обновить systemd-юнит
 

@@ -1,4 +1,4 @@
-# Copilot Instructions for `agent-shatrov`
+# Copilot Instructions for `Artel`
 
 ## Build, test, and lint commands
 

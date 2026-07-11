@@ -1,7 +1,7 @@
 # E2E тестирование ботов
 
 Инструкция для end-to-end проверки multi-bot setup (analyst, developer, tester)
-при дальнейшей разработке agent-shatrov. Проверяет полную цепочку:
+при дальнейшей разработке Artel. Проверяет полную цепочку:
 Mattermost → WebSocket → AuthGate → LLM → pi_coder → ответ в Mattermost.
 
 ## Предусловия
@@ -25,7 +25,7 @@ Mattermost → WebSocket → AuthGate → LLM → pi_coder → ответ в Mat
 make build
 
 # 2. Запуск одного бота локально (без Docker)
-./bin/agent configs/analyst-bot.yaml &
+./bin/artel configs/analyst-bot.yaml &
 
 # 3. Проверка логов — WebSocket подключён
 sleep 3
@@ -61,7 +61,7 @@ curl -s -H "Authorization: Bearer $SASHA_TOKEN" \
 # Ожидание: бот отвечает списком доступных проектов
 
 # 6. Остановка
-pkill -f "bin/agent configs/analyst-bot.yaml"
+pkill -f "bin/artel configs/analyst-bot.yaml"
 ```
 
 **Критерий успеха:** бот отвечает в DM, в логе нет ошибок, auth gate
@@ -73,7 +73,7 @@ pkill -f "bin/agent configs/analyst-bot.yaml"
 
 ```bash
 # 1. Запустить бота (если не запущен из уровня 1)
-./bin/agent configs/analyst-bot.yaml &
+./bin/artel configs/analyst-bot.yaml &
 
 # 2. Отправить задачу на анализ проекта
 SASHA_TOKEN="<owner-token>"
@@ -104,9 +104,9 @@ curl -s -H "Authorization: Bearer $SASHA_TOKEN" \
 # 2. Добавить всех 3 ботов в канал Agent E2E через Mattermost API
 
 # 3. Запустить все 3 бота локально
-nohup bash -c './bin/agent configs/analyst-bot.yaml > data/analyst-stdout.log 2>&1' &>/dev/null &
-nohup bash -c './bin/agent configs/developer-bot.yaml > data/developer-stdout.log 2>&1' &>/dev/null &
-nohup bash -c './bin/agent configs/tester-bot.yaml > data/tester-stdout.log 2>&1' &>/dev/null &
+nohup bash -c './bin/artel configs/analyst-bot.yaml > data/analyst-stdout.log 2>&1' &>/dev/null &
+nohup bash -c './bin/artel configs/developer-bot.yaml > data/developer-stdout.log 2>&1' &>/dev/null &
+nohup bash -c './bin/artel configs/tester-bot.yaml > data/tester-stdout.log 2>&1' &>/dev/null &
 
 sleep 5
 ps aux | grep "[b]in/agent"
@@ -139,7 +139,7 @@ sleep 20
 tail -5 data/analyst-bot.log data/developer-bot.log data/tester-bot.log
 
 # 7. Остановка
-pkill -f "bin/agent configs"
+pkill -f "bin/artel configs"
 ```
 
 **Критерии успеха:**
@@ -154,10 +154,10 @@ pkill -f "bin/agent configs"
 
 ```bash
 # 1. Остановить локальных ботов
-pkill -f "bin/agent configs"
+pkill -f "bin/artel configs"
 
 # 2. Собрать образ
-docker build -t agent-shatrov:latest .
+docker build -t artel:latest .
 
 # 3. Обновить models.json для Docker (один раз после сборки)
 #    При первом запуске контейнеров нужно заменить 127.0.0.1 на host-gateway
@@ -167,10 +167,10 @@ docker build -t agent-shatrov:latest .
 docker compose -f docker-compose.bots.yml up -d
 
 # 5. Проверить что все 3 контейнера запущены и WebSocket подключён
-docker ps --filter "name=agent-shatrov"
+docker ps --filter "name=artel"
 for c in analyst developer tester; do
     echo "=== $c ==="
-    docker exec agent-shatrov-$c-1 cat /home/agent/data/agent.log | tail -3
+    docker exec artel-$c-1 cat /home/agent/data/agent.log | tail -3
 done
 
 # Ожидаемые строки:
@@ -231,7 +231,7 @@ Env-переменные `OLLAMA_HOST` / `OLLAMA_BASE_URL` не переопре
 Решение: после первого запуска контейнеров заменить в models.json:
 
 ```bash
-for c in agent-shatrov-analyst-1 agent-shatrov-developer-1 agent-shatrov-tester-1; do
+for c in artel-analyst-1 artel-developer-1 artel-tester-1; do
     docker exec $c sed -i 's|http://127.0.0.1:11434|http://host-gateway:11434|g' \
         /home/agent/.pi/agent/models.json
 done
@@ -257,7 +257,7 @@ done
 RUN npm install -g @earendil-works/pi-coding-agent@0.80.6
 ```
 
-Проверить: `docker exec agent-shatrov-analyst-1 pi --version`
+Проверить: `docker exec artel-analyst-1 pi --version`
 должен совпадать с `pi --version` на хосте.
 
 ### ~/.pi read-only
@@ -294,16 +294,16 @@ system prompt не объясняет, что @mention коллеги-бота �
 make build && go test ./...
 
 # Локальный smoke-тест
-./bin/agent configs/analyst-bot.yaml &
+./bin/artel configs/analyst-bot.yaml &
 sleep 3
 tail -3 data/analyst-bot.log  # WebSocket connected?
-pkill -f "bin/agent configs"
+pkill -f "bin/artel configs"
 
 # Docker
 docker compose -f docker-compose.bots.yml up -d
 sleep 5
 for c in analyst developer tester; do
-    docker exec agent-shatrov-$c-1 cat /home/agent/data/agent.log | tail -2
+    docker exec artel-$c-1 cat /home/agent/data/agent.log | tail -2
 done
 docker compose -f docker-compose.bots.yml logs --tail 5
 docker compose -f docker-compose.bots.yml down
@@ -313,21 +313,21 @@ docker compose -f docker-compose.bots.yml down
 
 ```bash
 # Просмотр логов контейнера
-docker exec agent-shatrov-analyst-1 cat /home/agent/data/agent.log | tail -20
+docker exec artel-analyst-1 cat /home/agent/data/agent.log | tail -20
 
 # Проверка доступности Ollama из контейнера
-docker exec agent-shatrov-analyst-1 wget -qO- http://host-gateway:11434/api/tags | head -20
+docker exec artel-analyst-1 wget -qO- http://host-gateway:11434/api/tags | head -20
 
 # Проверка доступности Mattermost из контейнера
-docker exec agent-shatrov-analyst-1 wget -qO- http://host-gateway:8065/api/v4/system/ping
+docker exec artel-analyst-1 wget -qO- http://host-gateway:8065/api/v4/system/ping
 
 # Проверка что pi видит модели
-docker exec agent-shatrov-analyst-1 pi --list-models 2>&1 | grep cloud
+docker exec artel-analyst-1 pi --list-models 2>&1 | grep cloud
 
 # Проверка volume mounts
-docker exec agent-shatrov-analyst-1 ls /home/projects/
-docker exec agent-shatrov-analyst-1 ls /home/agent/.ssh/
-docker exec agent-shatrov-analyst-1 ls /home/agent/data/
+docker exec artel-analyst-1 ls /home/projects/
+docker exec artel-analyst-1 ls /home/agent/.ssh/
+docker exec artel-analyst-1 ls /home/agent/data/
 
 # Полный рестарт
 docker compose -f docker-compose.bots.yml down

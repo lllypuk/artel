@@ -1,6 +1,6 @@
-# Запуск нескольких инстансов agent-shatrov (multi-agent режим)
+# Запуск нескольких инстансов Artel (multi-agent режим)
 
-Один и тот же бинарник `agent-shatrov` может работать одновременно под разными
+Один и тот же бинарник `artel` может работать одновременно под разными
 «должностями»: аналитик, разработчик, тестировщик и т.д. Каждый инстанс имеет
 свой конфиг, свой токен бота Mattermost и свой системный промпт.
 
@@ -44,10 +44,10 @@ role:
 
 ```bash
 # Первый инстанс
-./bin/agent config-analyst.yaml
+./bin/artel config-analyst.yaml
 
 # Второй инстанс (в другом терминале / systemd unit / Docker container)
-./bin/agent config-developer.yaml
+./bin/artel config-developer.yaml
 ```
 
 Каждый инстанс читает свой конфиг, пишет в свою БД (`database.path`) и

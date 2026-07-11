@@ -1,7 +1,7 @@
 # E2E тестирование Mattermost multi-agent
 
 Каталог с материалами для ручного end-to-end тестирования автономной команды
-агентов `agent-shatrov` в локальном Mattermost.
+агентов `artel` в локальном Mattermost.
 
 ## Что здесь
 
@@ -39,18 +39,18 @@
 2. Соберите бинарник в корне проекта:
 
    ```bash
-   cd /home/sasha/Project/agent-shatrov
+   cd /home/sasha/Project/artel
    make build
    ```
 
 3. Запустите три инстанса:
 
    ```bash
-   ./bin/agent tests/e2e/config-analyst.yaml
+   ./bin/artel tests/e2e/config-analyst.yaml
    # в другом терминале
-   ./bin/agent tests/e2e/config-developer.yaml
+   ./bin/artel tests/e2e/config-developer.yaml
    # в третьем терминале
-   ./bin/agent tests/e2e/config-tester.yaml
+   ./bin/artel tests/e2e/config-tester.yaml
    ```
 
 4. Запустите сценарии:
