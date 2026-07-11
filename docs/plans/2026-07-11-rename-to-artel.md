@@ -136,7 +136,7 @@ systemd одномоментно (он не упоминается в Go-код�
 - [x] `docker-publish.yml`: `images: ghcr.io/.../agent-shatrov` → `.../artel`; OCI label `agent-shatrov` → `artel`
 - [x] `docker compose -f docker-compose.bots.yml config` — валидируется без ошибок
 - [x] `docker compose -f docker-compose.bots.yml build` — образ `artel:latest` собирается (уровень 4 e2e, по возможности)
-- [ ] `git commit -m "refactor: rename docker image agent-shatrov → artel"`
+- [x] `git commit -m "refactor: rename docker image agent-shatrov → artel"`
 
 ### Task 4: Обновить конфиги и роли
 
