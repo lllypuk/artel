@@ -175,16 +175,16 @@ systemd одномоментно (он не упоминается в Go-код�
 - Modify: `scripts/agent-bots.service`
 - Filesystem: `/home/sasha/Project/agent-shatrov` → `/home/sasha/Project/artel`
 
-- [ ] `scripts/agent-bots.service`: `WorkingDirectory=%h/Project/agent-shatrov` → `%h/Project/artel`;
+- [x] `scripts/agent-bots.service`: `WorkingDirectory=%h/Project/agent-shatrov` → `%h/Project/artel`;
       `Description=Agent-Shatrov ...` → `Description=Artel ...`
-- [ ] Остановить рабочий автозапуск: `systemctl --user stop agent-bots.service`
-- [ ] `cd /home/sasha/Project && git -C agent-shatrov status --porcelain` — рабочее дерево чистое (или закоммичено)
-- [ ] `mv /home/sasha/Project/agent-shatrov /home/sasha/Project/artel`
-- [ ] `cd /home/sasha/Project/artel && make build` — собирается из нового пути
-- [ ] `make lint test` — чисто из нового пути
-- [ ] `systemctl --user daemon-reload && systemctl --user start agent-bots.service`
-- [ ] проверить: `systemctl --user status agent-bots.service` — контейнеры поднялись
-- [ ] `git commit` (внутри нового пути) `scripts/agent-bots.service`: `refactor: systemd unit path → artel`
+- [x] Остановить рабочий автозапуск: `systemctl --user stop agent-bots.service`
+- [x] `cd /home/sasha/Project && git -C agent-shatrov status --porcelain` — рабочее дерево чистое (или закоммичено)
+- [x] `mv /home/sasha/Project/agent-shatrov /home/sasha/Project/artel`
+- [x] `cd /home/sasha/Project/artel && make build` — собирается из нового пути
+- [x] `make lint test` — чисто из нового пути
+- [x] `systemctl --user daemon-reload && systemctl --user start agent-bots.service`
+- [x] проверить: `systemctl --user status agent-bots.service` — контейнеры поднялись
+- [x] `git commit` (внутри нового пути) `scripts/agent-bots.service`: `refactor: systemd unit path → artel`
 
 ### Task 7: Верификация — e2e минимум уровни 1-2
 
