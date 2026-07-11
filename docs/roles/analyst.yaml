@@ -1,7 +1,7 @@
-# agent-shatrov: конфигурация роли «аналитик»
+# artel: конфигурация роли «аналитик»
 #
 # Скопируйте файл, замените токены/URL/user-id, затем запустите:
-#   ./bin/agent config-analyst.yaml
+#   ./bin/artel config-analyst.yaml
 
 transport:
   type: mattermost

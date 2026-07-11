@@ -145,10 +145,10 @@ systemd одномоментно (он не упоминается в Go-код�
 - Modify: `configs/*-bot.yaml.example`
 - Modify: `docs/roles/*.yaml`
 
-- [ ] `grep -rn "agent-shatrov" config.example.yaml configs/ docs/roles/` → заменить на `artel` (пути/упоминания)
-- [ ] убедиться, что `agent-shatrov` как self-project-имя в примерах конфигов заменено на `artel`
-- [ ] `make lint test` — чисто (конфиги не влияют на сборку, но проверка целостности)
-- [ ] `git commit -m "refactor: rename config/role references agent-shatrov → artel"`
+- [x] `grep -rn "agent-shatrov" config.example.yaml configs/ docs/roles/` → заменить на `artel` (пути/упоминания)
+- [x] убедиться, что `agent-shatrov` как self-project-имя в примерах конфигов заменено на `artel`
+- [x] `make lint test` — чисто (конфиги не влияют на сборку, но проверка целостности)
+- [x] `git commit -m "refactor: rename config/role references agent-shatrov → artel"`
 
 ### Task 5: Обновить документацию (README, CLAUDE.md, docs, тэглайн, сноска)
 
