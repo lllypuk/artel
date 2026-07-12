@@ -62,7 +62,7 @@ pi_coder:
   model: "qwen3.5:cloud"
   timeout: 300
   projects:
-    - name: "agent-shatrov"
+    - name: "artel"
       path: "."
     - name: "test-project"
       path: "/home/sasha/Project/test-project"

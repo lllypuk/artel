@@ -225,7 +225,7 @@ type NotesEmbeddingConfig struct {
 // OtelConfig holds OpenTelemetry configuration.
 type OtelConfig struct {
 	Endpoint    string `yaml:"endpoint"`     // OTLP HTTP endpoint, e.g. "http://localhost:4318"
-	ServiceName string `yaml:"service_name"` // default: "agent-shatrov"
+	ServiceName string `yaml:"service_name"` // default: "artel"
 }
 
 type LoggingConfig struct {

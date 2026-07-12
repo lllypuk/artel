@@ -5,11 +5,11 @@
 # Переменные окружения:
 #   TELEGRAM_TOKEN   — токен бота от @BotFather (обязательный)
 #   LLM_API_KEY      — API-ключ LLM (обязательный)
-#   IMAGE            — образ Docker (по умолчанию: ghcr.io/lllypuk/agent-shatrov:latest)
+#   IMAGE            — образ Docker (по умолчанию: ghcr.io/lllypuk/artel:latest)
 
 set -euo pipefail
 
-IMAGE="${IMAGE:-ghcr.io/lllypuk/agent-shatrov:latest}"
+IMAGE="${IMAGE:-ghcr.io/lllypuk/artel:latest}"
 
 usage() {
     echo "Использование: TELEGRAM_TOKEN=... LLM_API_KEY=... $0 <username> <chat_id> <llm_base_url>"
@@ -21,7 +21,7 @@ usage() {
     echo "Переменные окружения (секреты):"
     echo "  TELEGRAM_TOKEN  — токен бота от @BotFather (обязательный)"
     echo "  LLM_API_KEY     — API-ключ LLM (обязательный)"
-    echo "  IMAGE           — Docker-образ (по умолчанию: ghcr.io/lllypuk/agent-shatrov:latest)"
+    echo "  IMAGE           — Docker-образ (по умолчанию: ghcr.io/lllypuk/artel:latest)"
     exit 1
 }
 

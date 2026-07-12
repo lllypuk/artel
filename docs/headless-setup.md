@@ -1,13 +1,13 @@
 # Headless Setup — автозапуск ботов через systemd + Docker
 
-Инструкция для запуска agent-shatrov в headless-режиме (без монитора, автозапуск при загрузке).
+Инструкция для запуска Artel в headless-режиме (без монитора, автозапуск при загрузке).
 3 бота (аналитик, разработчик, тестер) в Docker-контейнерах, общаются через Mattermost.
 
 ## Предварительные требования
 
 1. **Docker** установлен и работает.
 2. **docker compose** plugin доступен.
-3. **Git-репозиторий** agent-shatrov склонирован в `~/Project/agent-shatrov`.
+3. **Git-репозиторий** artel склонирован в `~/Project/artel`.
 4. **Mattermost** сервер доступен по сети (например, на хосте, порт 8065).
 5. **Ollama** слушает на `0.0.0.0:11434` (не `127.0.0.1` — нужен для Docker).
 6. **pi** — конфиг в `~/.pi/` для Ollama endpoint; версия pi на хосте должна совпадать с версией в Dockerfile.
@@ -58,7 +58,7 @@ sudo usermod -aG docker $USER
 ## Шаг 4. Подготовить конфиги ботов
 
 ```bash
-cd ~/Project/agent-shatrov
+cd ~/Project/artel
 
 # Скопировать примеры конфигов и заполнить токены
 cp configs/analyst-bot.yaml.example configs/analyst-bot.yaml
@@ -109,8 +109,8 @@ grep "pi-coding-agent@" Dockerfile  # в Dockerfile
 ## Шаг 7. Собрать Docker образ
 
 ```bash
-cd ~/Project/agent-shatrov
-docker build -t agent-shatrov:latest .
+cd ~/Project/artel
+docker build -t artel:latest .
 ```
 
 ## Шаг 8. Ручная проверка
@@ -120,12 +120,12 @@ docker build -t agent-shatrov:latest .
 docker compose -f docker-compose.bots.yml up -d
 
 # Проверка что все 3 контейнера запущены
-docker ps --filter "name=agent-shatrov"
+docker ps --filter "name=artel"
 
 # Логи (WebSocket подключён?)
 for c in analyst developer tester; do
     echo "=== $c ==="
-    docker exec agent-shatrov-$c-1 cat /home/agent/data/agent.log | tail -3
+    docker exec artel-$c-1 cat /home/agent/data/agent.log | tail -3
 done
 
 # Ожидаемые строки:
@@ -140,7 +140,7 @@ docker compose -f docker-compose.bots.yml down
 
 ```bash
 mkdir -p ~/.config/systemd/user/
-cp ~/Project/agent-shatrov/scripts/agent-bots.service ~/.config/systemd/user/
+cp ~/Project/artel/scripts/agent-bots.service ~/.config/systemd/user/
 
 systemctl --user daemon-reload
 systemctl --user enable agent-bots.service
@@ -160,7 +160,7 @@ systemctl --user status agent-bots.service
 
 # Перезапуск (после изменения конфигов или обновления образа)
 docker compose -f docker-compose.bots.yml down
-docker build -t agent-shatrov:latest .
+docker build -t artel:latest .
 systemctl --user restart agent-bots.service
 
 # Логи Docker контейнеров
@@ -183,7 +183,7 @@ systemctl --user daemon-reload
 - **pi "Connection error"**: проверьте `~/.pi/agent/models.json` → `baseUrl` должен быть `http://host-gateway:11434/v1`.
 - **pi "Failed to load extension"**: версия pi в Dockerfile не совпадает с хостом. Обновите Dockerfile.
 - **pi read-only file system**: `~/.pi` монтирована как `:ro`. Исправьте на `:rw` в `docker-compose.bots.yml`.
-- **Git не работает**: проверьте SSH-ключи и права. `docker exec agent-shatrov-analyst-1 git ls-remote git@github.com:...`.
+- **Git не работает**: проверьте SSH-ключи и права. `docker exec artel-analyst-1 git ls-remote git@github.com:...`.
 - **Изменения в service file**: после правки `systemctl --user daemon-reload`.
 
 Полное руководство по e2e тестированию: [`docs/e2e-testing.md`](e2e-testing.md).

@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/lllypuk/agent-shatrov/internal/config"
+	"github.com/lllypuk/artel/internal/config"
 )
 
 // setupLogger создаёт slog.Logger согласно конфигурации.

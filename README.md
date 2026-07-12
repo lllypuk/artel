@@ -1,8 +1,14 @@
-# agent-shatrov
+# Artel
+
+*A cooperative of AI agents, each with its own craft.*
 
 Персональный AI-агент с Telegram/Mattermost-интерфейсами для личного использования на локальном компьютере.
 Может работать как одиночный Telegram-бот или как набор автономных ролей (аналитик, разработчик,
 тестировщик) в общем Mattermost.
+
+> **Artel** — a Russian word for a self-organizing cooperative of craftsmen (артель — самоорганизующийся
+> кооператив мастеров без начальника). The name reflects the multi-agent architecture: analyst, developer,
+> and tester bots coordinate in Mattermost without a central orchestrator, each contributing their own craft.
 
 ## Docker
 
@@ -39,8 +45,8 @@ docker compose logs -f
 ## Быстрый старт
 
 ```bash
-git clone https://github.com/lllypuk/agent-shatrov.git
-cd agent-shatrov
+git clone https://github.com/lllypuk/artel.git
+cd artel
 
 cp config.example.yaml config.yaml
 # заполнить telegram.token + telegram.allowed_users (или mattermost + role)
@@ -55,7 +61,7 @@ make run
 ```bash
 make run                    # собрать и запустить с config.yaml (по умолчанию)
 make run CONFIG=config-analyst.yaml # запустить с другим конфигом (multi-instance)
-./bin/agent config-analyst.yaml  # запустить указанной конфигурацией (multi-instance)
+./bin/artel config-analyst.yaml  # запустить указанной конфигурацией (multi-instance)
 make stop                   # остановить
 make restart                # перезапустить
 make logs                   # смотреть логи в реальном времени
@@ -65,7 +71,7 @@ make test                   # запуск тестов
 make clean                  # удалить бинарник
 ```
 
-> **CLI:** первый позиционный аргумент `bin/agent` — путь к `config.yaml`. По умолчанию используется `config.yaml`. Для multi-instance в Mattermost каждая роль запускается со своим конфигом (см. `docs/multi-instance-guide.md`).
+> **CLI:** первый позиционный аргумент `bin/artel` — путь к `config.yaml`. По умолчанию используется `config.yaml`. Для multi-instance в Mattermost каждая роль запускается со своим конфигом (см. `docs/multi-instance-guide.md`).
 
 ## Конфигурация
 
@@ -232,7 +238,7 @@ pi_coder:
   model: "glm-4.7"               # модель по умолчанию (можно переопределить per-project)
   timeout: 300                     # таймаут по умолчанию в секундах
   projects:
-    - name: "agent-shatrov"        # идентификатор для бота
+    - name: "artel"        # идентификатор для бота
       path: "."                     # путь к проекту (относительный или абсолютный)
     - name: "my-project"
       path: "/path/to/my-project"
@@ -250,8 +256,8 @@ pi_coder:
 → агент вызывает pi_coder {project: "my-project", task: "..."}
 → pi запускается в директории my-project, анализирует и возвращает результат
 
-Добавь инструмент для работы с календарём в agent-shatrov
-→ агент вызывает pi_coder {project: "agent-shatrov", task: "...", restart: true}
+Добавь инструмент для работы с календарём в Artel
+→ агент вызывает pi_coder {project: "artel", task: "...", restart: true}
 → pi редактирует код, make build пересобирает бинарник
 → агент отвечает «перезапускаюсь через 5 сек...»
 → через 5 сек syscall.Exec заменяет процесс — агент живёт с новым кодом
@@ -330,7 +336,7 @@ monitor:
 
 ## Multi-agent режим в Mattermost
 
-Один бинарник `agent-shatrov` может подниматься одновременно в нескольких ролях
+Один бинарник `artel` может подниматься одновременно в нескольких ролях
 (аналитик, разработчик, тестировщик), общающихся через @-mentions в одном
 канале/DM без центрального оркестратора.
 

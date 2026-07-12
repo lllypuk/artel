@@ -1,4 +1,4 @@
-module github.com/lllypuk/agent-shatrov
+module github.com/lllypuk/artel
 
 go 1.26.3
 

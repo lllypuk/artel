@@ -11,16 +11,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/agent"
-	"github.com/lllypuk/agent-shatrov/internal/config"
-	"github.com/lllypuk/agent-shatrov/internal/llm"
-	"github.com/lllypuk/agent-shatrov/internal/mattermost"
-	"github.com/lllypuk/agent-shatrov/internal/safeguards"
-	"github.com/lllypuk/agent-shatrov/internal/storage"
-	"github.com/lllypuk/agent-shatrov/internal/telegram"
-	"github.com/lllypuk/agent-shatrov/internal/telemetry"
-	"github.com/lllypuk/agent-shatrov/internal/tools"
-	"github.com/lllypuk/agent-shatrov/internal/transport"
+	"github.com/lllypuk/artel/internal/agent"
+	"github.com/lllypuk/artel/internal/config"
+	"github.com/lllypuk/artel/internal/llm"
+	"github.com/lllypuk/artel/internal/mattermost"
+	"github.com/lllypuk/artel/internal/safeguards"
+	"github.com/lllypuk/artel/internal/storage"
+	"github.com/lllypuk/artel/internal/telegram"
+	"github.com/lllypuk/artel/internal/telemetry"
+	"github.com/lllypuk/artel/internal/tools"
+	"github.com/lllypuk/artel/internal/transport"
 )
 
 func main() {
@@ -61,7 +61,7 @@ func main() {
 	if cfg.Otel.Endpoint != "" {
 		serviceName := cfg.Otel.ServiceName
 		if serviceName == "" {
-			serviceName = "agent-shatrov"
+			serviceName = "artel"
 		}
 		shutdown, err := telemetry.InitOTLP(cfg.Otel.Endpoint, serviceName)
 		if err != nil {
@@ -124,7 +124,7 @@ func main() {
 		cancel()
 	}()
 
-	logger.Info("agent-shatrov starting",
+	logger.Info("artel starting",
 		"model", cfg.LLM.Models.Default,
 		"db", cfg.Database.Path,
 		"transport", cfg.Transport.Type,
@@ -135,7 +135,7 @@ func main() {
 
 	<-ctx.Done()
 
-	logger.Info("agent-shatrov stopped")
+	logger.Info("artel stopped")
 }
 
 // createDirectories ensures all required data directories exist.

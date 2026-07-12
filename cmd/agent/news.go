@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/config"
-	"github.com/lllypuk/agent-shatrov/internal/news"
-	"github.com/lllypuk/agent-shatrov/internal/storage"
-	"github.com/lllypuk/agent-shatrov/internal/tools"
+	"github.com/lllypuk/artel/internal/config"
+	"github.com/lllypuk/artel/internal/news"
+	"github.com/lllypuk/artel/internal/storage"
+	"github.com/lllypuk/artel/internal/tools"
 )
 
 func setupNews(

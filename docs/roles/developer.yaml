@@ -1,7 +1,7 @@
-# agent-shatrov: конфигурация роли «разработчик»
+# artel: конфигурация роли «разработчик»
 #
 # Скопируйте файл, замените токены/URL/user-id, затем запустите:
-#   ./bin/agent config-developer.yaml
+#   ./bin/artel config-developer.yaml
 
 transport:
   type: mattermost

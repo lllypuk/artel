@@ -1,5 +1,5 @@
 # ============================================================
-# Конфигурация agent-shatrov
+# Конфигурация artel
 # ============================================================
 #
 # Переменные окружения (альтернатива YAML, удобно для Docker):
@@ -26,7 +26,7 @@ role:
 #   server_url: "https://mattermost.example.com"
 #   token: ""              # токен бота Mattermost
 #   proxy: ""              # прокси для Mattermost (опционально)
-#   bot_username: "agent-shatrov"  # имя этого бота без @
+#   bot_username: "artel"  # имя этого бота без @
 #   owner_user_id: ""      # user id человека-владельца (полный доступ)
 #   team_bots:             # белый список ботов-коллег (username или id)
 #     - "analyst-bot"
@@ -88,8 +88,8 @@ safeguards:
 #         default: "google/gemini-2.5-flash"
 #         fast: "google/gemini-2.5-flash"
 #       extra_headers:
-#         HTTP-Referer: "https://github.com/lllypuk/agent-shatrov"
-#         X-Title: "agent-shatrov"
+#         HTTP-Referer: "https://github.com/lllypuk/artel"
+#         X-Title: "artel"
 #       proxy: ""
 #       timeout_seconds: 120
 #
@@ -272,7 +272,7 @@ pi_coder:
   projects_dir: ""                # каталог для автообнаружения git-репозиториев (пусто = выключено)
   exclude_projects: []             # имена проектов для исключения из автообнаружения
   projects:                        # список доступных проектов (переопределяют автообнаруженные)
-    # - name: "agent-shatrov"      # идентификатор для бота
+    # - name: "artel"      # идентификатор для бота
     #   path: "."                  # путь к проекту (абсолютный или относительный конфигу)
     # - name: "my-project"
     #   path: "/path/to/my-project"
@@ -281,7 +281,7 @@ pi_coder:
 
 otel:
   endpoint: ""                     # OTLP HTTP endpoint для трассировки, напр. "http://localhost:4318"
-  service_name: "agent-shatrov"    # имя сервиса в трейсах
+  service_name: "artel"    # имя сервиса в трейсах
 
 monitor:
   enabled: false                   # включить для мониторинга доступности сайтов

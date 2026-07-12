@@ -4,7 +4,7 @@
 #
 # Требования:
 #   - Запущенный Mattermost (http://localhost:8065)
-#   - Три инстанса agent-shatrov с config-*-e2e-pi.yaml
+#   - Три инстанса artel с config-*-e2e-pi.yaml
 #   - Установленный pi (https://github.com/mariozechner/pi)
 #   - Запущенный Ollama с qwen3.5:cloud (http://localhost:11434)
 #   - Тестовый проект в /home/sasha/Project/test-project
@@ -63,8 +63,8 @@ waitread 30 10
 
 #--- Сценарий 3: Self-project через pi_coder ---
 echo ""
-echo "[3] Self-project (agent-shatrov)"
-post "@developer-bot открой проект agent-shatrov, добавь комментарий в README"
+echo "[3] Self-project (artel)"
+post "@developer-bot открой проект artel, добавь комментарий в README"
 waitread 60 20
 
 #--- Сценарий 4: Non-self restart игнорируется ---

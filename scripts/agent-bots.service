@@ -1,12 +1,12 @@
 [Unit]
-Description=Agent-Shatrov multi-bot Docker containers (analyst, developer, tester)
+Description=Artel multi-bot Docker containers (analyst, developer, tester)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=%h/Project/agent-shatrov
+WorkingDirectory=%h/Project/artel
 ExecStartPre=/bin/sh -c 'until docker info >/dev/null 2>&1; do sleep 2; done'
 ExecStart=/usr/bin/docker compose -f docker-compose.bots.yml up -d
 ExecStop=/usr/bin/docker compose -f docker-compose.bots.yml down

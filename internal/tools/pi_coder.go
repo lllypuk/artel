@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/projects"
+	"github.com/lllypuk/artel/internal/projects"
 )
 
 // PiCoderTool запускает pi (AI coding agent) для работы с проектами.

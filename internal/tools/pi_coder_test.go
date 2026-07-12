@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/config"
-	"github.com/lllypuk/agent-shatrov/internal/projects"
+	"github.com/lllypuk/artel/internal/config"
+	"github.com/lllypuk/artel/internal/projects"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

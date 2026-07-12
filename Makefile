@@ -1,4 +1,4 @@
-BINARY=bin/agent
+BINARY=bin/artel
 CONFIG=config.yaml
 
 .PHONY: build run stop restart logs clean lint test
@@ -8,13 +8,13 @@ build:
 
 run: build
 	mkdir -p data
-	-pkill -x agent
+	-pkill -x artel
 	nohup ./$(BINARY) $(CONFIG) > data/stdout.log 2>&1 &
 	sleep 1
 	tail -10 data/agent.log
 
 stop:
-	-pkill -x agent
+	-pkill -x artel
 	@echo "Stopped."
 
 restart: stop

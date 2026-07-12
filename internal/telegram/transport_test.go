@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/lllypuk/agent-shatrov/internal/transport"
+	"github.com/lllypuk/artel/internal/transport"
 )
 
 func TestParseChatID(t *testing.T) {

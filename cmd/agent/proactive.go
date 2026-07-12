@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lllypuk/agent-shatrov/internal/agent"
-	"github.com/lllypuk/agent-shatrov/internal/config"
-	"github.com/lllypuk/agent-shatrov/internal/storage"
-	"github.com/lllypuk/agent-shatrov/internal/tools"
+	"github.com/lllypuk/artel/internal/agent"
+	"github.com/lllypuk/artel/internal/config"
+	"github.com/lllypuk/artel/internal/storage"
+	"github.com/lllypuk/artel/internal/tools"
 )
 
 // eventWindow is how long after a scheduled time the event may still fire.

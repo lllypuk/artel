@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lllypuk/agent-shatrov/internal/news"
+	"github.com/lllypuk/artel/internal/news"
 )
 
 // ── NewsError.Error() ─────────────────────────────────────────────────────────

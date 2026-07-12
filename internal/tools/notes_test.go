@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lllypuk/agent-shatrov/internal/storage"
-	"github.com/lllypuk/agent-shatrov/internal/tools"
+	"github.com/lllypuk/artel/internal/storage"
+	"github.com/lllypuk/artel/internal/tools"
 )
 
 func openNotesDB(t *testing.T) *storage.DB {

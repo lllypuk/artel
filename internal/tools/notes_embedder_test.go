@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lllypuk/agent-shatrov/internal/storage"
+	"github.com/lllypuk/artel/internal/storage"
 )
 
 // newInMemoryDB creates a test SQLite DB in memory.

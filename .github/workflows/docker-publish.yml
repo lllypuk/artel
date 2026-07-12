@@ -32,12 +32,12 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/agent-shatrov
+          images: ghcr.io/${{ github.repository_owner }}/artel
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=sha-,format=short
           labels: |
-            org.opencontainers.image.title=agent-shatrov
+            org.opencontainers.image.title=artel
             org.opencontainers.image.description=Personal AI agent with Telegram interface
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
