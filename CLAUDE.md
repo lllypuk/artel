@@ -5,7 +5,7 @@
 ## Стек
 
 - **Go 1.26**
-- **LLM**: GLM-4.7 / GLM-4.7-Flash (Zhipu AI / z.ai) через OpenAI-compatible API
+- **LLM**: любой OpenAI-compatible провайдер (multi-provider с fallback)
 - **Интерфейс**: Telegram Bot (long polling) · Mattermost Bot (REST + WebSocket)
 - **Хранилище**: SQLite (`data/agent.db`)
 - **Прокси**: `HTTPS_PROXY=http://127.0.0.1:2080`
@@ -175,22 +175,22 @@ telegram:
   proxy: ""                     # опционально: прокси только для Telegram
 
 llm:
-  provider: "glm"               # провайдер LLM
-  base_url: "https://api.z.ai/api/coding/paas/v4"
-  api_key: "<ключ из ~/.pi/agent/auth.json, провайдер zai>"
+  provider: "openai"            # условное имя провайдера LLM
+  base_url: "https://api.openai.com/v1"
+  api_key: "<API-ключ провайдера>"
   models:
-    default: "glm-4-plus"
-    fast: "glm-4-flash"
+    default: "gpt-4.1"
+    fast: "gpt-4.1-mini"
   max_iterations: 10            # лимит шагов ReAct-цикла
   max_context_messages: 50      # лимит сообщений в окне LLM-контекста (0 = без ограничений)
 
   # Мультипровайдер (опционально): при наличии providers — base_url/api_key выше игнорируются
   providers: # список провайдеров с приоритетом (priority: меньше = первым)
-    - name: "zai"
+    - name: "openai"
       base_url: "..."
       api_key: "..."
       priority: 1
-      models: { default: "glm-4-plus", fast: "glm-4-flash" }
+      models: { default: "gpt-4.1", fast: "gpt-4.1-mini" }
     - name: "openrouter"
       base_url: "https://openrouter.ai/api/v1"
       api_key: "..."
@@ -231,14 +231,14 @@ browser:
 
 pi_coder:
   enabled: false
-  model: "glm-4.7"               # модель по умолчанию
+  model: "gpt-4.1"               # модель по умолчанию
   timeout: 300                     # таймаут по умолчанию (сек)
   projects:                        # список проектов (явные)
     - name: "artel"
       path: "."
     # - name: "my-project"
     #   path: "/path/to/my-project"
-    #   model: "glm-4.7-flash"     # переопределение (опц.)
+    #   model: "gpt-4.1-mini"      # переопределение (опц.)
     #   timeout: 600               # переопределение (опц.)
   # projects_dir: "/home/projects"   # автообнаружение git-репозиториев в каталоге
   # exclude_projects: ["test-project", "nanoGPT"]  # исключить по имени
@@ -290,7 +290,7 @@ logging:
 
 ```bash
 export TELEGRAM_TOKEN="..."
-export GLM_API_KEY="..."
+export LLM_API_KEY="..."
 ```
 
 ## Архитектура агента
@@ -472,7 +472,7 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 ## Реализованные функции
 
 - [x] Telegram бот-интерфейс (long polling, auth по chat_id)
-- [x] Диалог с GLM-4.7 / GLM-4.7-Flash
+- [x] Диалог с LLM через OpenAI-compatible API
 - [x] История диалогов (SQLite, персистентная)
 - [x] Окно контекста с лимитом сообщений и суммаризацией
 - [x] Заметки — создание, поиск, теги, редактирование, удаление, чтение
@@ -489,7 +489,7 @@ Shell tool (`internal/tools/shell.go`) имеет многоуровневую �
 - [x] Прогноз погоды (Open-Meteo) — текущие условия, прогноз на 1–7 дней, геокодирование городов
 - [x] Котировки акций и индексов — US (через Yahoo Finance) + RU (через MOEX ISS); S&P 500, Nasdaq, DJI, Russell, IMOEX,
   RTSI, любые тикеры; кэш в SQLite
-- [x] Мультипровайдер LLM с fallback — OpenRouter, z.ai, любой OpenAI-compatible API; retry с backoff, circuit breaker
+- [x] Мультипровайдер LLM с fallback — любые OpenAI-compatible API; retry с backoff, circuit breaker
 - [x] Файлы — приём файлов и изображений через Telegram, list/read/delete; Vision API для изображений
 - [x] Выполнение кода — Python, Go, bash в изолированной временной директории с таймаутом и лимитом памяти
 - [x] Статистика токенов — учёт prompt/completion токенов по дням, отчёт через `/status`

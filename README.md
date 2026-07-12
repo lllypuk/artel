@@ -2,9 +2,13 @@
 
 *A cooperative of AI agents, each with its own craft.*
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Персональный AI-агент с Telegram/Mattermost-интерфейсами для личного использования на локальном компьютере.
 Может работать как одиночный Telegram-бот или как набор автономных ролей (аналитик, разработчик,
 тестировщик) в общем Mattermost.
+
+Создано [Shatrov Tech](https://shatrov.tech).
 
 > **Artel** — a Russian word for a self-organizing cooperative of craftsmen (артель — самоорганизующийся
 > кооператив мастеров без начальника). The name reflects the multi-agent architecture: analyst, developer,
@@ -27,7 +31,7 @@ docker compose logs -f
 - `config.yaml` монтируется в контейнер, поэтому правки применяются после перезапуска `docker compose`.
 - Данные агента сохраняются в volume `agent_data`.
 - Для переопределения значений в Docker можно использовать env-переменные: `TELEGRAM_TOKEN`,
-  `TELEGRAM_ALLOWED_USERS`, `LLM_API_KEY`/`GLM_API_KEY`, `LLM_BASE_URL`, `WEB_API_KEY`, `LOG_LEVEL`.
+  `TELEGRAM_ALLOWED_USERS`, `LLM_API_KEY`, `LLM_BASE_URL`, `WEB_API_KEY`, `LOG_LEVEL`.
 - В Docker из коробки работают инструменты, не требующие внешних бинарников. `browser` выключен по умолчанию и
   требует отдельной установки `agent-browser`; `shell` выключен по умолчанию; `pi_coder` требует отдельно установленный `pi`.
 - Если используешь прокси на хосте, например `http://127.0.0.1:2080`, в `config.yaml` для Docker замени адрес на
@@ -36,7 +40,7 @@ docker compose logs -f
 ## Стек
 
 - **Go 1.26**
-- **LLM**: GLM-4.7 / GLM-4.7-Flash (z.ai, OpenAI-compatible API)
+- **LLM**: любой OpenAI-compatible провайдер (multi-provider с fallback)
 - **Интерфейс**: Telegram Bot (long polling) · Mattermost Bot (REST + WebSocket)
 - **Хранилище**: SQLite
 - **Безопасность**: whitelist/sandbox для shell-команд · предохранители от петель для multi-agent
@@ -179,7 +183,7 @@ Makefile             — управление сервисом
 ## Возможности
 
 - [x] Telegram бот-интерфейс (long polling, auth по chat_id)
-- [x] Диалог с GLM-4.7 / GLM-4.7-Flash
+- [x] Диалог с LLM через OpenAI-compatible API
 - [x] История диалогов (SQLite, персистентная)
 - [x] Окно контекста с лимитом сообщений и суммаризацией
 - [x] Заметки — создание, поиск, теги, редактирование, удаление
@@ -192,7 +196,7 @@ Makefile             — управление сервисом
 - [x] Агрегация новостей — подписки на RSS/Atom/JSON фиды, поиск, избранное
 - [x] Автоматизация браузера (agent-browser) — навигация, клики, формы, скриншоты, JS
 - [x] Прогноз погоды (Open-Meteo) — текущие условия, прогноз на 1–7 дней, геокодирование
-- [x] Мультипровайдер LLM с fallback — OpenRouter, z.ai, любой OpenAI-compatible API; retry с backoff, circuit breaker
+- [x] Мультипровайдер LLM с fallback — любые OpenAI-compatible API; retry с backoff, circuit breaker
 - [x] Файлы — приём файлов/изображений через Telegram, list/read/delete; Vision API
 - [x] Выполнение кода — Python, Go, bash в изолированной директории с таймаутом
 - [x] Статистика токенов — учёт prompt/completion по дням через `/status`
@@ -235,14 +239,14 @@ Makefile             — управление сервисом
 # config.yaml
 pi_coder:
   enabled: true
-  model: "glm-4.7"               # модель по умолчанию (можно переопределить per-project)
+  model: "gpt-4.1"              # модель по умолчанию (можно переопределить per-project)
   timeout: 300                     # таймаут по умолчанию в секундах
   projects:
     - name: "artel"        # идентификатор для бота
       path: "."                     # путь к проекту (относительный или абсолютный)
     - name: "my-project"
       path: "/path/to/my-project"
-      model: "glm-4.7-flash"       # переопределение модели (опц.)
+      model: "gpt-4.1-mini"       # переопределение модели (опц.)
       timeout: 600                 # переопределение таймаута (опц.)
   # Автообнаружение: сканировать каталог на git-репозитории
   # projects_dir: "/home/projects"
@@ -370,3 +374,8 @@ monitor:
 
 Полная инструкция по установке: [`docs/headless-setup.md`](docs/headless-setup.md).
 E2E тестирование: [`docs/e2e-testing.md`](docs/e2e-testing.md).
+
+## License
+
+Artel is open-source software licensed under the [MIT License](LICENSE).
+Copyright © 2026 [Shatrov Tech](https://shatrov.tech).
