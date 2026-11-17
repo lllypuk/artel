@@ -1,5 +1,6 @@
 #pragma once
 #include "apiclient.h"
+#include "observerclient.h"
 #include <QObject>
 #include <QtQml/qqmlregistration.h>
 
@@ -9,6 +10,7 @@ class Panel : public QObject {
   Q_OBJECT
   QML_ELEMENT
   QML_UNCREATABLE("Provided by the application")
+  Q_PROPERTY(ObserverClient *observers READ observers CONSTANT)
   Q_PROPERTY(QVariantList projects READ projects NOTIFY changed)
   Q_PROPERTY(QVariantList tasks READ tasks NOTIFY changed)
   Q_PROPERTY(QVariantList history READ history NOTIFY changed)
@@ -35,6 +37,7 @@ class Panel : public QObject {
       bool showArchived READ showArchived WRITE setShowArchived NOTIFY changed)
 public:
   explicit Panel(ApiClient *client, QObject *parent = nullptr);
+  ObserverClient *observers() { return &m_observers; }
   QVariantList projects() const;
   QVariantList tasks() const;
   QVariantList history() const;
@@ -86,6 +89,7 @@ private:
   QVariantList queueIds() const;
   bool begin(const QString &kind, const QVariantMap &value);
   ApiClient *m_client;
+  ObserverClient m_observers;
   QString m_project, m_task, m_kind, m_editorId, m_editorProject,
       m_historyInstance, m_editorInstance;
   qint64 m_seenSequence = -1;

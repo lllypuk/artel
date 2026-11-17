@@ -13,7 +13,9 @@ QVariantMap find(ObjectModel *model, const QString &id) {
 }
 } // namespace
 Panel::Panel(ApiClient *client, QObject *parent)
-    : QObject(parent), m_client(client) {
+    : QObject(parent), m_client(client), m_observers(client, this) {
+  connect(this, &Panel::changed, this,
+          [this] { m_observers.setProject(project()); });
   connect(client, &ApiClient::changed, this, [this] {
     if (m_seenSequence != m_client->sequence() ||
         m_historyInstance != m_client->instance()) {

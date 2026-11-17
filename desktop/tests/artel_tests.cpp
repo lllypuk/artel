@@ -1,5 +1,6 @@
 #include "apiclient.h"
 #include "appearance.h"
+#include "observerfixture.h"
 #include "panel.h"
 #include "uifixture.h"
 #include <QFile>
@@ -110,6 +111,338 @@ private slots:
               .toString();
       QVERIFY2(strings.contains(key), qPrintable(key));
     }
+  }
+  void observerCatalogCoversQmlAndClient() {
+    QFile catalog(":/i18n/ru.json"), qml(":/ObserverPanel.qml");
+    QVERIFY(catalog.open(QIODevice::ReadOnly));
+    QVERIFY(qml.open(QIODevice::ReadOnly));
+    const auto strings = QJsonDocument::fromJson(catalog.readAll()).object();
+    const QRegularExpression expression("qsTr\\(\"([^\"]*)\"");
+    auto matches = expression.globalMatch(QString::fromUtf8(qml.readAll()));
+    while (matches.hasNext()) {
+      const auto key =
+          QJsonDocument::fromJson(
+              ("[\"" + matches.next().captured(1) + "\"]").toUtf8())
+              .array()
+              .first()
+              .toString();
+      QVERIFY2(strings.contains(key), qPrintable(key));
+    }
+  }
+  void observerProductionQmlPreservesDraftAndShowsCandidates() {
+    ObserverFixture fixture;
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    QVERIFY(panel.editTask());
+    panel.field("title", "A private unsaved draft");
+    const auto draft = client.draft();
+    QVERIFY(click(window, "observersButton"));
+    auto *observer = panel.observers();
+    QTRY_VERIFY(observer->active());
+    QTRY_VERIFY(observer->online());
+    QCOMPARE(observer->rows().size(), 2);
+    observer->setOnlyProject(true);
+    QVERIFY(observer->rows().isEmpty());
+    observer->setOnlyProject(false);
+    QTRY_VERIFY(item(window, "observerBind_" + fixture.runtime));
+    auto *bindButton = item(window, "observerBind_" + fixture.runtime);
+    bindButton->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_Space);
+    QVERIFY(!observer->confirmation().isEmpty());
+    auto *dialog = window->findChild<QObject *>("observerConfirmation");
+    QVERIFY(dialog);
+    QVERIFY(QMetaObject::invokeMethod(dialog, "accept"));
+    QTRY_COMPARE(fixture.mutations.size(), 1);
+    QTRY_VERIFY(observer->online());
+    QVERIFY(observer->rows().first().toMap().value("bound_runtime").toBool());
+    observer->setOnlyProject(true);
+    QCOMPARE(observer->rows().size(), 1);
+    observer->setOnlyProject(false);
+    QCOMPARE(client.draft(), draft);
+    QCOMPARE(panel.project().value("id").toString(), fixture.project);
+    QVERIFY(!panel.selectProject("77777777-7777-4777-8777-777777777777"));
+    QCOMPARE(client.draft(), draft);
+    QVERIFY(!client.pending());
+    QVERIFY(fixture.mutations.first().startsWith("PATCH /v1/observers/"));
+    QVERIFY(fixture.mutations.first().contains("Idempotency-Key:"));
+    QVERIFY(!fixture.mutations.first().contains("A private unsaved draft"));
+    QTRY_VERIFY(!dialog->property("visible").toBool());
+    QTest::qWait(
+        200); // Finish Qt's native popup exit transition before capture.
+    const auto image = window->grabWindow();
+    QVERIFY(!image.isNull());
+    const auto path = qEnvironmentVariable("ARTEL_OBSERVER_SCREENSHOT");
+    if (!path.isEmpty())
+      QVERIFY(image.save(path));
+    writeFile(fixture.directory.filePath("language"), "ru\n");
+    QCoreApplication::installTranslator(&appearance);
+    QObject::connect(&appearance, &Appearance::changed, observer,
+                     &ObserverClient::changed);
+    appearance.refresh();
+    engine.retranslate();
+    QVERIFY(observer->rows()
+                .first()
+                .toMap()
+                .value("status_text")
+                .toString()
+                .contains(QString::fromUtf8("Привязан")));
+    QVERIFY(item(window, "observerConnection")
+                ->property("text")
+                .toString()
+                .contains(QString::fromUtf8("Наблюдение")));
+    window->resize(1000, 680);
+    QTest::qWait(100);
+    if (!path.isEmpty())
+      QVERIFY(window->grabWindow().save(path + ".ru.png"));
+    QCoreApplication::removeTranslator(&appearance);
+  }
+  void observerCasRebindRevokePruneAndManualPendingAreIndependent() {
+    ObserverFixture fixture;
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(panel.selectProject(fixture.project));
+    auto *o = panel.observers();
+    o->setActive(true);
+    QTRY_VERIFY(o->online());
+    QVERIFY(o->prepare("bind", fixture.observer, fixture.runtime));
+    // Another owner's version wins. No hidden CAS adoption.
+    auto record = fixture.record();
+    record.insert("version", 2);
+    fixture.record(record);
+    QVERIFY(o->confirm());
+    QTRY_COMPARE(fixture.mutations.size(), 1);
+    QTRY_VERIFY(o->online());
+    QVERIFY(!fixture.record().contains("binding"));
+    QVERIFY(o->message().contains("project unavailable"));
+    QVERIFY(o->prepare("bind", fixture.observer, fixture.runtime));
+    QVERIFY(o->confirm());
+    QVERIFY(!o->prepare("revoke", fixture.observer, fixture.runtime));
+    QTRY_COMPARE(fixture.mutations.size(), 2);
+    QTRY_VERIFY(o->online());
+    QVERIFY(o->prepare("bind", fixture.observer, fixture.otherRuntime));
+    QVERIFY(o->confirm());
+    QTRY_COMPARE(fixture.mutations.size(), 3);
+    QTRY_VERIFY(o->online());
+    QCOMPARE(o->rows().first().toMap().value("disposition").toString(),
+             QString("superseded"));
+    QVERIFY(!o->prepare("bind", fixture.observer, fixture.runtime));
+    QVERIFY(o->prepare("prune", fixture.observer, fixture.otherRuntime));
+    QVERIFY(o->confirm());
+    QTRY_COMPARE(fixture.mutations.size(), 4);
+    QTRY_VERIFY(o->online());
+    QCOMPARE(o->rows().size(), 1);
+    QVERIFY(o->prepare("unbind", fixture.observer, fixture.otherRuntime));
+    QVERIFY(o->confirm());
+    QTRY_COMPARE(fixture.mutations.size(), 5);
+    QTRY_VERIFY(o->online());
+    QVERIFY(!fixture.record().contains("binding"));
+    QCOMPARE(o->rows().first().toMap().value("disposition").toString(),
+             QString("superseded"));
+    // An unrelated manual save remains pending while observer revoke completes.
+    QPointer<QTcpSocket> pending;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("PATCH /v1/tasks/"))
+        pending = socket;
+      else
+        fixture.observation(socket, request);
+    };
+    QVERIFY(panel.selectTask(fixture.task));
+    QVERIFY(panel.editTask());
+    panel.field("title", "Manual pending");
+    const auto draft = client.draft();
+    QVERIFY(panel.save());
+    QTRY_VERIFY(pending);
+    QVERIFY(client.pending());
+    QVERIFY(o->prepare("revoke", fixture.observer, fixture.otherRuntime));
+    QVERIFY(o->confirm());
+    QTRY_VERIFY(fixture.record().value("revoked").toBool());
+    QTRY_VERIFY(o->online());
+    QVERIFY(client.pending());
+    QCOMPARE(client.draft(), draft);
+    QVERIFY(!o->prepare("bind", fixture.observer, fixture.otherRuntime));
+    UiFixture::respond(pending, 409, "{\"code\":\"version_conflict\"}");
+    QTRY_VERIFY(!client.pending());
+    QCOMPARE(client.draft(), draft);
+  }
+  void observerOldReadCannotUpdateReplacementDatabase() {
+    ObserverFixture fixture;
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    auto *o = panel.observers();
+    QPointer<QTcpSocket> old;
+    int requests = 0;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/observers ")) {
+        ++requests;
+        if (requests == 1)
+          old = socket;
+        else
+          fixture.observation(socket, request);
+      } else
+        fixture.normal(socket, request);
+    };
+    o->setActive(true);
+    QTRY_VERIFY(old);
+    for (int i = 0; i < 20; ++i)
+      o->reload();
+    QCOMPARE(requests, 1); // Exactly one projection request in flight.
+    const auto oldBytes = fixture.bytes();
+    const QString replacement = "77777777-7777-4777-8777-777777777777";
+    auto snapshot = QJsonDocument::fromJson(fixture.state).object();
+    snapshot.insert("instance_id", replacement);
+    fixture.state = QJsonDocument(snapshot).toJson();
+    fixture.registry.insert("database_instance_id", replacement);
+    auto row = fixture.record();
+    row.insert("label", "Replacement observer");
+    fixture.record(row);
+    client.reload();
+    QTRY_COMPARE(client.instance(), replacement);
+    QTRY_VERIFY(o->online());
+    QCOMPARE(o->rows().first().toMap().value("label").toString(),
+             QString("Replacement observer"));
+    if (old && old->state() == QAbstractSocket::ConnectedState)
+      UiFixture::respond(old, 200, oldBytes);
+    QTest::qWait(100);
+    QCOMPARE(o->rows().first().toMap().value("label").toString(),
+             QString("Replacement observer"));
+  }
+  void observerArchiveMissingProjectUnknownSaveAndMalformedReply() {
+    ObserverFixture fixture;
+    ApiClient client;
+    client.setTimeout(100);
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(panel.selectProject(fixture.project));
+    auto *o = panel.observers();
+    o->setActive(true);
+    QTRY_VERIFY(o->online());
+    QVERIFY(o->prepare("bind", fixture.observer, fixture.runtime));
+    auto archived = panel.project();
+    archived.insert("archived", true);
+    o->setProject(archived);
+    QVERIFY(!o->confirm());
+    QVERIFY(!o->canBind());
+    QVERIFY(!o->prepare("bind", fixture.observer, fixture.runtime));
+    o->setProject({});
+    QVERIFY(!o->canBind());
+    o->setProject(panel.project());
+    QTRY_VERIFY(o->online());
+    QVERIFY(panel.selectTask(fixture.task));
+    QVERIFY(panel.editTask());
+    panel.field("title", "Uncertain manual draft");
+    const auto draft = client.draft();
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("PATCH /v1/tasks/"))
+        return; // lost manual ACK
+      fixture.observation(socket, request);
+    };
+    QVERIFY(panel.save());
+    QTRY_VERIFY(client.uncertain());
+    QVERIFY(o->prepare("bind", fixture.observer, fixture.runtime));
+    QVERIFY(o->confirm());
+    QTRY_VERIFY(fixture.record().contains("binding"));
+    QTRY_VERIFY(o->online());
+    QVERIFY(client.uncertain());
+    QCOMPARE(client.draft(), draft);
+    // A malformed response (including hostile error/secret text) never reaches
+    // UI.
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/observers "))
+        UiFixture::respond(socket, 200,
+                           "{\"secret\":\"private-token-never-display\"}");
+      else
+        fixture.normal(socket, request);
+    };
+    o->reload();
+    QTRY_VERIFY(!o->online());
+    QVERIFY(!o->message().contains("private-token"));
+    QVERIFY(!QJsonDocument::fromVariant(o->rows()).toJson().contains(
+        "private-token"));
+    QCOMPARE(client.draft(), draft);
+    QVERIFY(client.uncertain());
+  }
+  void observerOfflineDelayedReplyReplacementAndWhitelist() {
+    ObserverFixture fixture;
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(panel.selectProject(fixture.project));
+    auto *o = panel.observers();
+    o->setTimeout(200);
+    o->setActive(true);
+    QTRY_VERIFY(o->online());
+    auto record = fixture.record();
+    record.insert("secret", "must-not-reach-model");
+    auto runtimes = record.value("runtimes").toArray();
+    auto runtime = runtimes.first().toObject();
+    runtime.insert("freshness", "stale");
+    runtime.insert("token", "must-not-reach-model");
+    runtimes[0] = runtime;
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    const int before = fixture.reads;
+    o->reload();
+    QTRY_VERIFY(fixture.reads > before);
+    QTRY_COMPARE(o->rows().first().toMap().value("freshness").toString(),
+                 QString("stale"));
+    QVERIFY(!QJsonDocument::fromVariant(o->rows()).toJson().contains(
+        "must-not-reach-model"));
+    QPointer<QTcpSocket> delayed;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/observers "))
+        delayed = socket;
+      else
+        fixture.normal(socket, request);
+    };
+    o->reload();
+    QTRY_VERIFY(delayed);
+    // A project change cancels the old read and invalidates confirmation.
+    QVERIFY(o->prepare("bind", fixture.observer, fixture.runtime));
+    o->setProject({});
+    QVERIFY(!o->confirm());
+    QVERIFY(!o->canBind());
+    QTRY_VERIFY(!o->online());
+    QCOMPARE(o->rows().first().toMap().value("freshness").toString(),
+             QString("unknown"));
+    QVERIFY(!o->prepare("bind", fixture.observer, fixture.runtime));
+    QVERIFY(!o->message().contains(QString(64, 'a')));
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      fixture.observation(socket, request);
+    };
+    fixture.registry.insert("database_instance_id",
+                            "77777777-7777-4777-8777-777777777777");
+    o->reload();
+    QTRY_VERIFY(o->rows().isEmpty());
+    QVERIFY(!o->online());
+    QVERIFY(o->message().contains("database changed"));
+    o->setActive(false);
+    const int stoppedReads = fixture.reads;
+    QTest::qWait(2100);
+    QCOMPARE(fixture.reads, stoppedReads);
+    fixture.registry.insert("database_instance_id", fixture.instance);
+    o->setActive(true);
+    QTRY_VERIFY(o->online());
+    QCOMPARE(o->rows().size(), 2);
   }
   void productionQmlLoadsOfflineAndRedactsErrors() {
     QTemporaryDir dir;

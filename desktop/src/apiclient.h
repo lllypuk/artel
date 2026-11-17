@@ -47,6 +47,11 @@ public:
   static bool validEndpoint(const QUrl &url);
   bool configure(const QUrl &endpoint, const QString &tokenFile);
   void setTimeout(int milliseconds);
+  // C++ transport only: credentials never enter the QML object graph.
+  QNetworkReply *ownerRequest(QNetworkAccessManager &network,
+                              const QByteArray &method, const QString &path,
+                              const QByteArray &body = {},
+                              const QByteArray &key = {}) const;
   bool historyLoading() const { return m_historyReply; }
   void loadHistory(const QString &project, const QString &task, qint64 after);
   void cancelHistory();

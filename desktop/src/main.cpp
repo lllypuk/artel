@@ -28,6 +28,8 @@ int main(int argc, char *argv[]) {
   app.installTranslator(&appearance);
   Panel panel(&client);
   QObject::connect(&appearance, &Appearance::changed, &panel, &Panel::changed);
+  QObject::connect(&appearance, &Appearance::changed, panel.observers(),
+                   &ObserverClient::changed);
   QQmlApplicationEngine engine;
   QObject::connect(&appearance, &Appearance::changed, &engine,
                    &QQmlEngine::retranslate);

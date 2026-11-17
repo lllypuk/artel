@@ -150,6 +150,24 @@ ApiClient::ApiClient(QObject *parent) : QObject(parent) {
   connect(&m_coalesce, &QTimer::timeout, this, &ApiClient::reload);
 }
 ApiClient::~ApiClient() { stop(); }
+QNetworkReply *ApiClient::ownerRequest(QNetworkAccessManager &network,
+                                       const QByteArray &method,
+                                       const QString &path,
+                                       const QByteArray &body,
+                                       const QByteArray &key) const {
+  if (m_token.isEmpty() || !validEndpoint(m_endpoint))
+    return nullptr;
+  QUrl url = m_endpoint;
+  url.setPath(path);
+  QNetworkRequest req(url);
+  req.setRawHeader("Authorization", "Bearer " + m_token);
+  req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+  req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                   QNetworkRequest::ManualRedirectPolicy);
+  if (!key.isEmpty())
+    req.setRawHeader("Idempotency-Key", key);
+  return network.sendCustomRequest(req, method, body);
+}
 QString ApiClient::defaultTokenPath() {
   return QStandardPaths::writableLocation(
              QStandardPaths::GenericConfigLocation) +

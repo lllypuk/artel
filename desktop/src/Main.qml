@@ -89,6 +89,22 @@ ApplicationWindow {
             text: qsTr("The save may have committed in the old database. It will not be retried in the replacement database. The draft stays here: copy it before discarding it to continue.")
         }
     }
+    Drawer {
+        id: observerDrawer
+        objectName: "observerDrawer"
+        edge: Qt.RightEdge
+        width: Math.min(680, window.width - 40)
+        height: window.height
+        Binding {
+            target: window.panel.observers
+            property: "active"
+            value: observerDrawer.opened && window.visible && window.visibility !== Window.Minimized
+        }
+        ObserverPanel {
+            anchors.fill: parent
+            client: window.panel.observers
+        }
+    }
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 16
@@ -105,6 +121,11 @@ ApplicationWindow {
             }
             Label {
                 text: qsTr("Updated: %1").arg(window.panel.updated)
+            }
+            PanelButton {
+                objectName: "observersButton"
+                text: qsTr("Pi observations")
+                onClicked: observerDrawer.open()
             }
             PanelButton {
                 objectName: "reloadButton"
