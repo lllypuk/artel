@@ -1,6 +1,6 @@
 # Legacy cleanup
 
-Task 1 replaces the personal bot, without migrating its data. Git history is retained.
+The foundation replaces the personal bot, without migrating its data. Git history is retained.
 
 ## Explicit tracked removal inventory
 
@@ -31,6 +31,18 @@ Before removal, existence checks (including dangling symlinks) found none of:
 Their deletion is a no-op. No credential contents were read and no symlinks followed.
 No external installation, Docker volume, host service, shared Pi/SSH directory or other project was modified.
 
-## Initial validation
+## Final state and validation
 
-Task 1 requires `make lint test build`. Qt smoke tests load production QML offscreen, without a daemon or bot/provider environment. Local authorization, storage and CRUD are intentionally not part of the skeleton.
+The replacement `internal/`, `scripts/` and `tests/e2e/` now contain only the v2
+implementation and isolated checks, not retained bot interfaces. Active README,
+agent instructions, Makefile and CI refer to the native/manual product. Mentions
+of the retired bot in this inventory, completed plans and architecture/experiments
+are historical context, not instructions to run it.
+
+`make check` covers Go/Qt/API/race and native restart/concurrency acceptance;
+`make package-check` validates disposable Arch delivery without installation.
+Documentation examples are executed against a private temporary daemon by
+`tests/test_documentation.py`. See [development guide](development.md) and the
+[plan validation records](plans/20261117-artel-v2-foundation-desktop.md) for gates,
+results and limitations. No external legacy installation or volume cleanup is
+claimed; any such work requires a separate owner-approved inventory.

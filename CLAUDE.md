@@ -1,10 +1,10 @@
 # Artel v2
 
-Local manual project/task panel: Go 1.26.3 API and CLI, SQLite (introduced with storage), native C++17 / Qt Quick 6.8+ desktop. The bot product is retired; no Telegram, Mattermost, LLM, Docker or Pi runtime dependency.
+Local manual project/task panel: Go 1.26.3 API and CLI, SQLite, native C++17 / Qt Quick 6.8+ desktop. The bot product is retired; no Telegram, Mattermost, LLM, Docker or Pi runtime dependency.
 
 ## Quality gates
 
-After every code change run `make lint test`. Before completing each plan task run its additional gates, initially `make lint test build`. Never commit failing lint/tests or disable checks to pass. Use golangci-lint 2.10.1; `GOLANGCI_LINT` can point to a private installation. No automatic host package installation.
+After every code change run `make lint test`. Before completing each plan task run its additional gates, initially `make lint test build`. Final acceptance uses `make check` and, on Arch, `make package-check`; see `docs/development.md` for isolated CLI examples and delivery boundaries. Never commit failing lint/tests or disable checks to pass. Use golangci-lint 2.10.1; `GOLANGCI_LINT` can point to a private installation. No automatic host package installation.
 
 ## Boundaries
 
