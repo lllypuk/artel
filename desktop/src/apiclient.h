@@ -47,11 +47,14 @@ public:
   static bool validEndpoint(const QUrl &url);
   bool configure(const QUrl &endpoint, const QString &tokenFile);
   void setTimeout(int milliseconds);
+  bool historyLoading() const { return m_historyReply; }
+  void loadHistory(const QString &project, const QString &task, qint64 after);
+  void cancelHistory();
   ObjectModel *projects() { return &m_projects; }
   ObjectModel *tasks() { return &m_tasks; }
   ObjectModel *queues() { return &m_queues; }
   QString status() const { return m_status; }
-  QString error() const { return m_error; }
+  QString error() const { return m_error.isEmpty() ? m_historyError : m_error; }
   bool online() const { return m_online; }
   bool loading() const { return m_snapshot; }
   bool pending() const { return m_mutation; }
@@ -74,6 +77,7 @@ public:
 signals:
   void changed();
   void mutationSucceeded();
+  void historyReceived(const QVariantList &events, qint64 cursor, bool more);
 
 private:
   QNetworkReply *request(const QByteArray &method, const QString &path,
@@ -90,10 +94,11 @@ private:
   QUrl m_endpoint;
   QByteArray m_token;
   QNetworkReply *m_snapshot = nullptr, *m_stream = nullptr,
-                *m_mutation = nullptr;
+                *m_mutation = nullptr, *m_historyReply = nullptr;
   QTimer m_reconnect, m_coalesce;
   quint64 m_generation = 0, m_draftRevision = 0, m_sentRevision = 0;
-  QString m_instance, m_status = QStringLiteral("disconnected"), m_error;
+  QString m_instance, m_status = QStringLiteral("disconnected"), m_error,
+                      m_historyError;
   qint64 m_sequence = 0, m_cursor = 0;
   bool m_online = false, m_uncertain = false, m_conflict = false,
        m_reloadAgain = false, m_stopped = true;

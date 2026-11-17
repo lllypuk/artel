@@ -166,6 +166,7 @@ bool ApiClient::configure(const QUrl &endpoint, const QString &tokenFile) {
     return false;
   stop();
   m_token.clear();
+  m_historyError.clear();
   m_projects.replace({});
   m_tasks.replace({});
   m_queues.replace({});
@@ -209,6 +210,7 @@ void ApiClient::stop() {
   if (m_mutation)
     m_uncertain = true;
   cancel(m_snapshot);
+  cancelHistory();
   cancel(m_stream);
   cancel(m_mutation);
   m_online = false;
@@ -406,6 +408,79 @@ void ApiClient::streamReady(QNetworkReply *reply, quint64 generation) {
   }
   reply->setProperty("bytes", buffer);
 }
+void ApiClient::cancelHistory() { cancel(m_historyReply); }
+void ApiClient::loadHistory(const QString &project, const QString &task,
+                            qint64 after) {
+  cancelHistory();
+  if (!m_online || m_stopped || !uuid(project) ||
+      (!task.isEmpty() && !uuid(task)))
+    return;
+  const auto instance = m_instance;
+  auto *reply =
+      request("GET", "/v1/events?instance_id=" + instance +
+                         "&after=" + QString::number(after) +
+                         "&limit=20&project_id=" + project +
+                         (task.isEmpty() ? QString{} : "&task_id=" + task));
+  m_historyReply = reply;
+  connect(reply, &QIODevice::readyRead, this, [reply] {
+    auto bytes = reply->property("bytes").toByteArray() + reply->readAll();
+    if (bytes.size() > responseLimit) {
+      reply->setProperty("oversized", true);
+      reply->abort();
+    } else {
+      reply->setProperty("bytes", bytes);
+    }
+  });
+  connect(
+      reply, &QNetworkReply::finished, this, [this, reply, instance, after] {
+        reply->deleteLater();
+        if (reply != m_historyReply)
+          return;
+        m_historyReply = nullptr;
+        const auto obj =
+            QJsonDocument::fromJson(reply->property("bytes").toByteArray())
+                .object();
+        const auto events = obj.value("events");
+        bool valid = reply->error() == QNetworkReply::NoError &&
+                     reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                             .toInt() == 200 &&
+                     reply->header(QNetworkRequest::ContentTypeHeader)
+                         .toString()
+                         .startsWith("application/json") &&
+                     !reply->property("oversized").toBool() &&
+                     instance == m_instance &&
+                     obj.value("instance_id").toString() == instance &&
+                     events.isArray() && integer(obj.value("next_cursor")) &&
+                     obj.value("next_cursor").toInteger() >= after &&
+                     events.toArray().size() <= 20;
+        qint64 previous = after;
+        for (const auto &event : events.toArray()) {
+          const auto row = event.toObject();
+          valid = valid && integer(row.value("seq")) &&
+                  row.value("seq").toInteger() > previous &&
+                  row.value("seq").toInteger() <=
+                      obj.value("next_cursor").toInteger() &&
+                  uuid(row.value("project_id").toString()) &&
+                  row.value("action").isString() &&
+                  row.value("source").toString() == "owner_manual" &&
+                  row.value("timestamp").isString() &&
+                  row.value("before").isObject() &&
+                  row.value("after").isObject();
+          previous = row.value("seq").toInteger();
+        }
+        if (valid) {
+          m_historyError.clear();
+          emit historyReceived(events.toArray().toVariantList(),
+                               obj.value("next_cursor").toInteger(),
+                               obj.value("next_cursor").toInteger() <
+                                   m_sequence);
+        } else {
+          m_historyError = tr("History unavailable or invalid");
+        }
+        emit changed();
+      });
+  emit changed();
+}
 void ApiClient::setDraft(const QVariantMap &draft) {
   m_draft = draft;
   ++m_draftRevision;
@@ -497,7 +572,10 @@ void ApiClient::sendMutation() {
       m_error =
           m_uncertain ? tr("Save outcome unknown; retry the same request")
           : m_conflict
-              ? tr("Conflict; draft preserved. Reload before editing again")
+              ? (dirty()
+                     ? tr("Conflict; draft preserved. Reload before editing "
+                          "again")
+                     : tr("Conflict; reload before trying the action again"))
               : tr("Save rejected; draft preserved");
       if (code == 401) {
         fail(tr("Owner authorization failed; draft preserved"));

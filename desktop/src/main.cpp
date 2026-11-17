@@ -1,4 +1,6 @@
 #include "apiclient.h"
+#include "appearance.h"
+#include "panel.h"
 #include <QCommandLineParser>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
@@ -22,15 +24,16 @@ int main(int argc, char *argv[]) {
   ApiClient client;
   const bool configured = client.configure(QUrl(parser.value("endpoint")),
                                            parser.value("token-file"));
+  Appearance appearance;
+  app.installTranslator(&appearance);
+  Panel panel(&client);
+  QObject::connect(&appearance, &Appearance::changed, &panel, &Panel::changed);
   QQmlApplicationEngine engine;
-  engine.setInitialProperties({{"connectionStatus", client.status()},
-                               {"connectionError", client.error()}});
-  QObject::connect(&client, &ApiClient::changed, &engine, [&] {
-    for (auto *root : engine.rootObjects()) {
-      root->setProperty("connectionStatus", client.status());
-      root->setProperty("connectionError", client.error());
-    }
-  });
+  QObject::connect(&appearance, &Appearance::changed, &engine,
+                   &QQmlEngine::retranslate);
+  engine.setInitialProperties(
+      {{"panel", QVariant::fromValue(&panel)},
+       {"appearance", QVariant::fromValue(&appearance)}});
   engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
   if (engine.rootObjects().isEmpty())
     return 1;

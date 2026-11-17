@@ -1,5 +1,6 @@
 The native application starter layout, QGuiApplication/QML bootstrap,
-qmake structure and offscreen test approach are adapted from the
+qmake structure, read-only theme/language watching and offscreen test
+approach are adapted from the
 Omarchy app templates (Omacut and Monologue).
 
 Copyright (c) David Heinemeier Hansson

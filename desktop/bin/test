@@ -14,10 +14,11 @@ make -j"${JOBS:-2}"
 TEST_HOME=$(mktemp -d)
 trap 'rm -rf "$TEST_HOME"' EXIT HUP INT TERM
 mkdir -m 700 "$TEST_HOME/runtime"
+go build -o "$TEST_HOME/arteld" "$ROOT/cmd/arteld"
 env -i PATH="$PATH" LANG=C.UTF-8 HOME="$TEST_HOME" XDG_RUNTIME_DIR="$TEST_HOME/runtime" \
+    ARTEL_TEST_DAEMON="$TEST_HOME/arteld" ARTEL_SCREENSHOT="${ARTEL_SCREENSHOT:-}" \
     QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_FORCE_STDERR_LOGGING=1 \
     "$ROOT/desktop/build/tests/artel_tests" -maxwarnings 0
-go build -o "$TEST_HOME/arteld" "$ROOT/cmd/arteld"
 env -i PATH="$PATH" LANG=C.UTF-8 HOME="$TEST_HOME" XDG_RUNTIME_DIR="$TEST_HOME/runtime" \
     ARTEL_TEST_DAEMON="$TEST_HOME/arteld" \
     "$ROOT/desktop/build/client-tests/apiclient_tests" -maxwarnings 0

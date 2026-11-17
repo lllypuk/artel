@@ -2,8 +2,12 @@
 set -eu
 cd "$(dirname "$0")/.."
 . ./scripts/qt-tools
-clang-format --dry-run --Werror desktop/src/*.cpp desktop/src/*.h desktop/tests/*.cpp
-"$QT_BINS/qmllint" desktop/src/*.qml
+clang-format --dry-run --Werror desktop/src/*.cpp desktop/src/*.h desktop/tests/*.cpp desktop/tests/*.h
+# qmake generates accurate metadata from the registered C++ properties/actions.
+./desktop/bin/build
+mkdir -p desktop/build/Artel
+printf 'module Artel\ntypeinfo ../artel.qmltypes\n' > desktop/build/Artel/qmldir
+"$QT_BINS/qmllint" --max-warnings 0 -I desktop/build desktop/src/*.qml
 for file in desktop/src/*.qml; do
     formatted=$(mktemp)
     trap 'rm -f "$formatted"' EXIT HUP INT TERM
@@ -12,4 +16,3 @@ for file in desktop/src/*.qml; do
     rm -f "$formatted"
     trap - EXIT HUP INT TERM
 done
-./desktop/bin/build
