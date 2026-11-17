@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+. "$ROOT/scripts/qt-tools"
+mkdir -p "$ROOT/desktop/build"
+cd "$ROOT/desktop/build"
+"$QMAKE" "$ROOT/desktop/artel.pro"
+make -j"${JOBS:-2}"

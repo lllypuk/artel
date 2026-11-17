@@ -1,36 +1,25 @@
-BINARY=bin/artel
-CONFIG=config.yaml
+.PHONY: preflight build lint test test-race
 
-.PHONY: build run stop restart logs clean lint test
+GOLANGCI_LINT ?= golangci-lint
+export GOLANGCI_LINT
 
-build:
-	go build -o $(BINARY) ./cmd/agent/
+preflight:
+	./scripts/preflight
 
-run: build
-	mkdir -p data
-	-pkill -x artel
-	nohup ./$(BINARY) $(CONFIG) > data/stdout.log 2>&1 &
-	sleep 1
-	tail -10 data/agent.log
+build: preflight
+	mkdir -p build/bin
+	go build -o build/bin/arteld ./cmd/arteld
+	go build -o build/bin/artelctl ./cmd/artelctl
+	./desktop/bin/build
 
-stop:
-	-pkill -x artel
-	@echo "Stopped."
+lint: preflight
+	@test -z "$$(gofmt -l cmd internal)" || { gofmt -l cmd internal; exit 1; }
+	$(GOLANGCI_LINT) run ./...
+	./scripts/desktop-lint
 
-restart: stop
-	sleep 1
-	$(MAKE) run
-
-logs:
-	tail -f data/agent.log
-
-clean:
-	rm -f $(BINARY)
-
-lint:
-	go fix ./...
-	go fmt ./...
-	golangci-lint run ./...
-
-test:
+test: preflight
 	go test ./...
+	./desktop/bin/test
+
+test-race: preflight
+	go test -race ./...

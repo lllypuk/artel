@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+. ./scripts/qt-tools
+clang-format --dry-run --Werror desktop/src/*.cpp desktop/tests/*.cpp
+"$QT_BINS/qmllint" desktop/src/*.qml
+for file in desktop/src/*.qml; do
+    formatted=$(mktemp)
+    trap 'rm -f "$formatted"' EXIT HUP INT TERM
+    "$QT_BINS/qmlformat" "$file" > "$formatted"
+    diff -u "$file" "$formatted"
+    rm -f "$formatted"
+    trap - EXIT HUP INT TERM
+done
+./desktop/bin/build

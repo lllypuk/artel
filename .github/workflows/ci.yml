@@ -25,5 +25,9 @@ jobs:
         with:
           version: v2.10.1
 
-      - name: Test
-        run: make test
+      # Native/full-stack gates are added with packaging in foundation Task 8.
+      - name: Test Go skeleton
+        run: go test ./...
+
+      - name: Build Go skeleton
+        run: go build ./cmd/...

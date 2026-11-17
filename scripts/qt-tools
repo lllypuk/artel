@@ -1,0 +1,6 @@
+#!/bin/sh
+# Source this file from repository scripts.
+QMAKE=${QMAKE:-qmake6}
+command -v "$QMAKE" >/dev/null || { echo "Missing dependency: $QMAKE" >&2; exit 1; }
+QT_BINS=${QT_BINS:-$("$QMAKE" -query QT_INSTALL_BINS)}
+export QMAKE QT_BINS

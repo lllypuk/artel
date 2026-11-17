@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+. ./scripts/qt-tools
+for tool in go make g++ clang-format "$QMAKE"; do
+    command -v "$tool" >/dev/null || { echo "Missing dependency: $tool" >&2; exit 1; }
+done
+for tool in qmllint qmlformat; do
+    test -x "$QT_BINS/$tool" || { echo "Missing Qt tool: $QT_BINS/$tool" >&2; exit 1; }
+done
+expected=$(awk '/^go / { print "go" $2 }' go.mod)
+test "$(go env GOVERSION)" = "$expected" || { echo "Go $expected required" >&2; exit 1; }
+case "$("$QMAKE" -query QT_VERSION)" in
+    6.*) minor=$("$QMAKE" -query QT_VERSION | cut -d. -f2); test "$minor" -ge 8 ;;
+    *) echo 'Qt 6.8+ required' >&2; exit 1 ;;
+esac
+lint=${GOLANGCI_LINT:-golangci-lint}
+"$lint" version | grep -Eq 'version 2\.10\.1( |$)' || { echo 'golangci-lint 2.10.1 required; set GOLANGCI_LINT' >&2; exit 1; }
+printf 'Go: %s\nQt: %s\n' "$(go env GOVERSION)" "$("$QMAKE" -query QT_VERSION)"
+clang-format --version
+"$lint" version
