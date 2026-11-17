@@ -1,3 +1,4 @@
+#include "agtermfixture.h"
 #include "apiclient.h"
 #include "appearance.h"
 #include "observerfixture.h"
@@ -94,6 +95,176 @@ class ArtelTests : public QObject {
 private slots:
   void initTestCase() { QQuickStyle::setStyle("Material"); }
   void init() { QTest::failOnWarning(); }
+  void agtermNavigationContract() {
+    for (const auto &mode :
+         {"", "move", "swap", "version", "capability", "oversize", "malformed",
+          "windows", "ambiguous", "missing", "disappeared", "unrealized",
+          "pane", "killed", "timeout", "window-format", "tree-format",
+          "tree-oversize"}) {
+      AgtermFixture fixture;
+      fixture.mode = mode;
+      AgtermAdapter adapter;
+      fixture.install(&adapter);
+      adapter.open(fixture.hint());
+      QTRY_VERIFY_WITH_TIMEOUT(!adapter.busy(), 3000);
+      const bool success = QString(mode).isEmpty() || QString(mode) == "move" ||
+                           QString(mode) == "swap";
+      QCOMPARE(adapter.message().contains("opened"), success);
+      for (const auto &args : fixture.calls) {
+        QCOMPARE(args.mid(args.size() - 2),
+                 QStringList({"--socket", "/fictional/owner.sock"}));
+        QVERIFY(args.first() == "version" || args.first() == "window" ||
+                args.first() == "tree" ||
+                args.mid(0, 2) == QStringList({"session", "select"}));
+        QVERIFY(!args.contains("active"));
+      }
+      if (success) {
+        QCOMPARE(fixture.calls.size(), 9);
+        QCOMPARE(fixture.calls.first(),
+                 QStringList({"version", "--json", "--socket",
+                              "/fictional/owner.sock"}));
+        QCOMPARE(fixture.calls.at(1),
+                 QStringList({"session", "select", "--help", "--socket",
+                              "/fictional/owner.sock"}));
+        for (int offset : {2, 5}) {
+          QCOMPARE(fixture.calls.at(offset),
+                   QStringList({"window", "list", "--json", "--socket",
+                                "/fictional/owner.sock"}));
+          QCOMPARE(fixture.calls.at(offset + 1),
+                   QStringList({"tree", "--window", fixture.window, "--json",
+                                "--socket", "/fictional/owner.sock"}));
+          QCOMPARE(
+              fixture.calls.at(offset + 2),
+              QStringList({"tree", "--window", fixture.otherWindow, "--json",
+                           "--socket", "/fictional/owner.sock"}));
+        }
+        QCOMPARE(fixture.calls.last(),
+                 QStringList({"session", "select", "--target", fixture.session,
+                              "--window", fixture.otherWindow, "--json",
+                              "--socket", "/fictional/owner.sock"}));
+      } else {
+        for (const auto &args : fixture.calls)
+          QVERIFY(args.first() != "session" || args.contains("--help"));
+      }
+    }
+    AgtermFixture fixture;
+    AgtermAdapter adapter;
+    fixture.install(&adapter);
+    for (const auto &key : {"window_id", "session_id", "pane_id"}) {
+      auto hint = fixture.hint();
+      hint[key] = "active; touch /tmp/not-allowed";
+      adapter.open(hint);
+      QVERIFY(fixture.calls.isEmpty());
+      hint.remove(key);
+      adapter.open(hint);
+      QVERIFY(fixture.calls.isEmpty());
+    }
+    auto hint = fixture.hint();
+    hint.insert("socket", "/hostile");
+    adapter.open(hint);
+    QVERIFY(fixture.calls.isEmpty());
+    fixture.mode = "select-failure";
+    adapter.open(fixture.hint());
+    QCOMPARE(fixture.calls.size(), 9);
+    QVERIFY(adapter.message().contains("unavailable"));
+    QVERIFY(!adapter.message().contains("SECRET"));
+    QVERIFY(!adapter.busy());
+  }
+  void agtermCancellationFencesLateReplies() {
+    AgtermFixture fixture;
+    AgtermAdapter::Done late;
+    auto adapter = std::make_unique<AgtermAdapter>();
+    adapter->setSocket("/fictional/socket");
+    adapter->setRunner([&late](const QStringList &, AgtermAdapter::Done done) {
+      late = done;
+    });
+    adapter->open(fixture.hint());
+    QVERIFY(adapter->busy());
+    adapter->cancel();
+    QVERIFY(!adapter->busy());
+    QVERIFY(adapter->message().isEmpty());
+    const auto response =
+        AgtermFixture::response({{"app", QJsonObject{{"version", "0.40.0"}}}});
+    late(true, response);
+    QVERIFY(!adapter->busy());
+    adapter->open(fixture.hint());
+    adapter.reset();
+    late(true, response); // Deleted QObject must not be accessed.
+  }
+  void agtermRealProcessBoundary() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const auto path = dir.filePath("agtermctl");
+    const auto oldPath = qgetenv("PATH");
+    struct Restore {
+      QByteArray path;
+      ~Restore() { qputenv("PATH", path); }
+    } restore{oldPath};
+    qputenv("PATH", dir.path().toUtf8());
+    // A real executable checks every argv in order, not just a mock callback.
+    AgtermFixture oracle;
+    AgtermAdapter reference;
+    oracle.install(&reference);
+    reference.open(oracle.hint());
+    QVERIFY(reference.message().contains("opened"));
+    QJsonArray scenario;
+    AgtermFixture responses;
+    for (const auto &args : oracle.calls)
+      scenario.append(
+          QJsonObject{{"args", QJsonArray::fromStringList(args)},
+                      {"output", QString::fromUtf8(responses.reply(args))}});
+    writeFile(dir.filePath("scenario.json"), QJsonDocument(scenario).toJson());
+    writeFile(
+        path,
+        "#!/usr/bin/python3\n"
+        "import sys,json,pathlib\n"
+        "root=pathlib.Path(sys.argv[0]).parent\n"
+        "log=root/'calls.jsonl'\n"
+        "n=len(log.read_text().splitlines()) if log.exists() else 0\n"
+        "expected=json.loads((root/'scenario.json').read_text())[n]\n"
+        "assert sys.argv[1:]==expected['args']\n"
+        "with log.open('a') as f: f.write(json.dumps(sys.argv[1:])+'\\n')\n"
+        "print(expected['output'])\n");
+    QVERIFY(QFile::setPermissions(path, QFileDevice::ReadOwner |
+                                            QFileDevice::WriteOwner |
+                                            QFileDevice::ExeOwner));
+    {
+      AgtermAdapter adapter;
+      adapter.setSocket("/fictional/owner.sock");
+      adapter.open(oracle.hint());
+      QTRY_VERIFY_WITH_TIMEOUT(!adapter.busy(), 3000);
+      QVERIFY(adapter.message().contains("opened"));
+      QFile log(dir.filePath("calls.jsonl"));
+      QVERIFY(log.open(QIODevice::ReadOnly));
+      QCOMPARE(log.readAll().count('\n'), oracle.calls.size());
+    }
+    for (const auto &body :
+         {QByteArray(
+              "import sys\nsys.stderr.write('SECRET-CANARY')\nsys.exit(1)\n"),
+          QByteArray("import time\ntime.sleep(20)\n"),
+          QByteArray("import os,signal\nos.kill(os.getpid(),signal.SIGKILL)\n"),
+          QByteArray("import sys\nsys.stdout.write('x'*1100000)\n"),
+          QByteArray("import sys\nsys.stderr.write('x'*1100000)\n")}) {
+      writeFile(path, "#!/usr/bin/python3\nimport os,pathlib,sys\n"
+                      "(pathlib.Path(sys.argv[0]).parent/"
+                      "'child.pid').write_text(str(os.getpid()))\n" +
+                          body);
+      QVERIFY(QFile::setPermissions(path, QFileDevice::ReadOwner |
+                                              QFileDevice::WriteOwner |
+                                              QFileDevice::ExeOwner));
+      AgtermFixture fixture;
+      AgtermAdapter adapter;
+      adapter.setSocket(dir.filePath("private.sock"));
+      adapter.open(fixture.hint());
+      QTRY_VERIFY_WITH_TIMEOUT(!adapter.busy(), 3000);
+      QVERIFY(adapter.message().contains("unavailable"));
+      QVERIFY(!adapter.message().contains("SECRET"));
+      QFile pid(dir.filePath("child.pid"));
+      QVERIFY(pid.open(QIODevice::ReadOnly));
+      const auto child = QString::fromUtf8(pid.readAll());
+      QVERIFY(!QFileInfo::exists("/proc/" + child));
+    }
+  }
   void russianCatalogCoversVisibleQmlStrings() {
     QFile catalog(":/i18n/ru.json"), qml(":/Main.qml");
     QVERIFY(catalog.open(QIODevice::ReadOnly));
@@ -128,6 +299,72 @@ private slots:
               .toString();
       QVERIFY2(strings.contains(key), qPrintable(key));
     }
+  }
+  void observerNavigationProductionQml() {
+    ObserverFixture fixture;
+    AgtermFixture terminal;
+    auto record = fixture.record();
+    auto runtimes = record.value("runtimes").toArray();
+    auto runtime = runtimes.first().toObject();
+    auto reg = runtime.value("registration").toObject();
+    reg.insert("terminal_hint", QJsonObject::fromVariantMap(terminal.hint()));
+    runtime.insert("registration", reg);
+    runtimes[0] = runtime;
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    terminal.install(panel.observers()->navigation());
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    QVERIFY(panel.editTask());
+    panel.field("title", "Navigation must preserve this draft");
+    const auto draft = client.draft();
+    QVERIFY(click(window, "observersButton"));
+    auto *o = panel.observers();
+    QTRY_VERIFY(o->online());
+    const auto button = "observerOpen_" + fixture.runtime;
+    QTRY_VERIFY(item(window, button));
+    QVERIFY(item(window, button)->isEnabled());
+    QVERIFY(!item(window, "observerOpen_" + fixture.otherRuntime)->isEnabled());
+    // Keyboard activation uses the exact same production handler as a click.
+    item(window, button)->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_Space);
+    QVERIFY(o->navigation()->message().contains("exact pane focus"));
+    if (qEnvironmentVariableIsSet("ARTEL_NAV_SCREENSHOT"))
+      QVERIFY(window->grabWindow().save(
+          qEnvironmentVariable("ARTEL_NAV_SCREENSHOT")));
+    QCOMPARE(terminal.calls.last().at(1), QString("select"));
+    QCOMPARE(client.draft(), draft);
+    QCOMPARE(panel.project().value("id").toString(), fixture.project);
+    terminal.mode = "version";
+    QVERIFY(click(window, button));
+    QVERIFY(o->navigation()->message().contains("unavailable"));
+    const int reads = fixture.reads;
+    o->reload();
+    QTRY_VERIFY(fixture.reads > reads);
+    QTRY_VERIFY(o->online());
+    QCOMPARE(client.draft(), draft);
+    // A stale/expired hint cannot be launched, including direct invocation.
+    runtime.insert("freshness", "stale");
+    runtimes[0] = runtime;
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    o->reload();
+    QTRY_VERIFY(!item(window, button)->isEnabled());
+    const auto calls = terminal.calls.size();
+    o->openSession(fixture.observer, fixture.runtime);
+    QCOMPARE(terminal.calls.size(), calls);
+    QCOMPARE(client.draft(), draft);
+    QVERIFY(fixture.mutations.isEmpty());
   }
   void observerProductionQmlPreservesDraftAndShowsCandidates() {
     ObserverFixture fixture;

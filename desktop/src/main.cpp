@@ -20,6 +20,8 @@ int main(int argc, char *argv[]) {
       {"endpoint", "Local API endpoint", "url", "http://127.0.0.1:7331"});
   parser.addOption({"token-file", "Private owner credential file", "path",
                     ApiClient::defaultTokenPath()});
+  parser.addOption({"agterm-socket", "Owner-local agterm control socket",
+                    "path", qEnvironmentVariable("AGTERM_SOCKET")});
   parser.process(app);
   ApiClient client;
   const bool configured = client.configure(QUrl(parser.value("endpoint")),
@@ -27,6 +29,7 @@ int main(int argc, char *argv[]) {
   Appearance appearance;
   app.installTranslator(&appearance);
   Panel panel(&client);
+  panel.observers()->navigation()->setSocket(parser.value("agterm-socket"));
   QObject::connect(&appearance, &Appearance::changed, &panel, &Panel::changed);
   QObject::connect(&appearance, &Appearance::changed, panel.observers(),
                    &ObserverClient::changed);

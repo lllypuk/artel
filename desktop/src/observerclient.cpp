@@ -88,6 +88,9 @@ bool projection(const QJsonObject &root, QJsonArray &clean) {
           return false;
         result.insert(k, runtime.value(k).toString());
       }
+      const auto hint = reg.value("terminal_hint").toObject().toVariantMap();
+      if (AgtermAdapter::validHint(hint))
+        result.insert("terminal_hint", QJsonObject::fromVariantMap(hint));
       runtimes.append(result);
     }
     row.insert("runtimes", runtimes);
@@ -147,6 +150,7 @@ ObserverClient::~ObserverClient() {
   }
 }
 void ObserverClient::resetRead() {
+  m_navigation.cancel();
   ++m_generation;
   m_poll.stop();
   if (m_read) {
@@ -212,6 +216,10 @@ QVariantList ObserverClient::records(bool onlyProject) const {
       const auto freshness =
           offline ? QString("unknown") : row.value("freshness").toString();
       row.insert("freshness", freshness);
+      row.insert(
+          "navigable",
+          !offline && freshness == "fresh" && !o.value("revoked").toBool() &&
+              AgtermAdapter::validHint(row.value("terminal_hint").toMap()));
       row.insert(
           "status_text",
           tr("%1 · %2 · %3")
@@ -427,4 +435,16 @@ bool ObserverClient::confirm() {
       reload();
   });
   return true;
+}
+
+void ObserverClient::openSession(const QString &observer,
+                                 const QString &runtime) {
+  for (const auto &v : rows()) {
+    const auto row = v.toMap();
+    if (row.value("observer_id") == observer &&
+        row.value("runtime_id") == runtime && row.value("navigable").toBool()) {
+      m_navigation.open(row.value("terminal_hint").toMap());
+      return;
+    }
+  }
 }

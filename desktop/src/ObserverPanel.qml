@@ -69,6 +69,19 @@ Pane {
             wrapMode: Text.Wrap
             Layout.fillWidth: true
         }
+        Label {
+            text: qsTr("Terminal hints may be inherited and are unverified. Opens a session only; exact pane focus is not guaranteed.")
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
+        }
+        Label {
+            objectName: "navigationMessage"
+            text: root.client.navigation.message
+            textFormat: Text.PlainText
+            visible: text.length > 0
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
+        }
         ListView {
             id: list
             objectName: "observerList"
@@ -112,6 +125,12 @@ Pane {
                 Flow {
                     Layout.fillWidth: true
                     spacing: 6
+                    Button {
+                        objectName: "observerOpen_" + row.modelData.runtime_id
+                        text: qsTr("Open declared agterm session")
+                        enabled: row.modelData.navigable && !root.client.navigation.busy
+                        onClicked: root.client.openSession(row.modelData.observer_id, row.modelData.runtime_id)
+                    }
                     Button {
                         objectName: "observerBind_" + row.modelData.runtime_id
                         text: qsTr("Bind to selected project")

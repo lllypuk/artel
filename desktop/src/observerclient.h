@@ -1,4 +1,5 @@
 #pragma once
+#include "agtermadapter.h"
 #include "apiclient.h"
 #include <QElapsedTimer>
 #include <QPointer>
@@ -10,6 +11,7 @@ class ObserverClient : public QObject {
   QML_ELEMENT
   QML_UNCREATABLE("Provided by the application")
   Q_PROPERTY(QVariantList rows READ rows NOTIFY changed)
+  Q_PROPERTY(AgtermAdapter *navigation READ navigation CONSTANT)
   Q_PROPERTY(bool active READ active WRITE setActive NOTIFY changed)
   Q_PROPERTY(bool online READ online NOTIFY changed)
   Q_PROPERTY(bool busy READ busy NOTIFY changed)
@@ -23,6 +25,8 @@ public:
   explicit ObserverClient(ApiClient *owner, QObject *parent = nullptr);
   ~ObserverClient() override;
   QVariantList rows() const;
+  AgtermAdapter *navigation() { return &m_navigation; }
+  Q_INVOKABLE void openSession(const QString &observer, const QString &runtime);
   bool active() const { return m_active; }
   void setActive(bool value);
   void setProject(const QVariantMap &project);
@@ -52,6 +56,7 @@ private:
   QNetworkReply *request(const QByteArray &method, const QString &path,
                          const QByteArray &body = {},
                          const QByteArray &key = {});
+  AgtermAdapter m_navigation;
   ApiClient *m_owner;
   QNetworkAccessManager m_network;
   QPointer<QNetworkReply> m_read, m_mutation;
