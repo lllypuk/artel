@@ -1,0 +1,395 @@
+openapi: 3.0.3
+info:
+  title: Artel opt-in Pi observer contract
+  version: 0.1.0
+  description: |
+    Executable pilot contract, not an implemented API yet. Owner endpoints use the
+    existing numeric-loopback listener; observer endpoints exist only on the opt-in
+    private Unix socket. Security schemes are never interchangeable. No task writes,
+    delivery, prompts or automatic binding. Same-UID code is not sandboxed by tokens.
+    JSON bodies are strict and at most 16384 bytes. Strings reject control characters.
+    Owner paths will also be referenced from openapi.yaml when implemented.
+servers:
+  - url: http://artel-observer
+    description: Observer HTTP over owner-configured Unix socket, not DNS/TCP
+x-limits:
+  observers: 256
+  full-runtimes-per-observer: 8
+  lifetime-runtime-identities-per-observer: 1024
+  audit-entries-per-observer: 256
+  body-bytes: 16384
+  heartbeat-seconds: 5
+  coalesce-milliseconds: 250
+  reports-per-second: 4
+  request-deadline-seconds: 2
+  shutdown-budget-milliseconds: 250
+  fresh-seconds: 20
+  owner-poll-seconds: 2
+  reconnect-seconds: [1, 30]
+x-transport: |
+  Observer Host must be exactly artel-observer; reject Origin and absolute URLs.
+  Read/write/body deadlines are mandatory. Socket directory 0700/socket 0600,
+  owner/type/no-follow checks and lifetime lock; uncertain stale-socket races fail.
+  Default daemon creates no observer listener. Credentials are 32 random bytes,
+  stored server-side only as unique SHA-256 verifiers. Revocation is immediate.
+x-provisioning: |
+  CLI writes private token and canonical config with fsync/atomic no-overwrite
+  before PUT. Pending config contains observer_id, database_instance_id,
+  observer_socket, token_file, provisioning_key and canonical ProvisionRequest.
+  Extension refuses pending. Resume validates verifier against token file and
+  replays exact saved payload/key, not current CLI flags. Only a successful response
+  matching observer/database identities permits atomic fsynced confirmed status.
+  Lost ACK or crash before confirmed write leaves pending and allows resume.
+  Collision/content mismatch never overwrites artifacts. No secret in argv/stdout,
+  receipt, projection, audit, QML or diagnostics. Pin database UUID before sending
+  register/report; mismatch or 401 disables transmission, never auto-provisions.
+x-state: |
+  Registration immutable per (observer_id,runtime_id). New session_start creates a
+  fresh random runtime candidate requiring explicit owner bind, even resume/reload.
+  Same live runtime reconnect is idempotent. Context returns only own assignment.
+  Binding uses version CAS and UUID idempotency; unknown/archived project rejected.
+  Switching runtime/project or unbinding increments server generation. Superseded
+  runtime cannot rebind; owner must select a new runtime. Generation conflict causes
+  one context reconciliation, never guessed generation or old-report replay.
+  Reports are latest-state, strictly increasing seq per (runtime,generation).
+  Same seq/body is duplicate without freshness extension; different body or lower
+  seq conflicts. Monotonic process elapsed time determines freshness; after daemon
+  restart saved state is stale until a new report. Wall clock is display-only.
+  Stopped is distinct from stale. Heartbeats never enter domain events/receipts or
+  owner_manual history. One in-flight and one latest pending state; no backlog.
+  Quotas are atomic. Existing runtime replay and bound reports work at quota.
+  Prune CAS deletes only non-current unbound/superseded/stopped payload, never the
+  currently bound runtime (even stopped). Permanent compact retirement markers
+  retain identity quota and reject register/context/report after restart. Markers
+  have no TTL, no metadata, no audit eviction and are excluded from projection.
+  Identity exhaustion requires explicit new provisioning/binding/revocation; no GC.
+paths:
+  /v1/observers:
+    servers: [{url: 'http://127.0.0.1:8080'}]
+    get:
+      operationId: listObservers
+      security: [{OwnerBearer: []}]
+      responses:
+        '200':
+          description: Bounded owner-only registry projection, no credentials
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Projection'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/observers/{observer_id}:
+    servers: [{url: 'http://127.0.0.1:8080'}]
+    parameters: [{$ref: '#/components/parameters/ObserverID'}]
+    put:
+      operationId: provisionObserver
+      security: [{OwnerBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProvisionRequest'}
+      responses:
+        '200':
+          description: Public result only; same key/body replays, changed body conflicts
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OwnerResult'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/observers/{observer_id}/binding:
+    servers: [{url: 'http://127.0.0.1:8080'}]
+    parameters: [{$ref: '#/components/parameters/ObserverID'}]
+    patch:
+      operationId: bindObserver
+      security: [{OwnerBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BindingRequest'}
+      responses:
+        '200':
+          description: Atomic assignment, or unbind with both IDs null; version fenced
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OwnerResult'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/observers/{observer_id}/revoke:
+    servers: [{url: 'http://127.0.0.1:8080'}]
+    parameters: [{$ref: '#/components/parameters/ObserverID'}]
+    post:
+      operationId: revokeObserver
+      security: [{OwnerBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/CAS'}
+      responses:
+        '200':
+          description: Immediately invalidates observer credential
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OwnerResult'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/observers/{observer_id}/prune:
+    servers: [{url: 'http://127.0.0.1:8080'}]
+    parameters: [{$ref: '#/components/parameters/ObserverID'}]
+    post:
+      operationId: pruneObserver
+      security: [{OwnerBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/CAS'}
+      responses:
+        '200':
+          description: Removes eligible payload only, preserving permanent retirement markers
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OwnerResult'}
+        default: {$ref: '#/components/responses/Error'}
+  /observer/v1/context:
+    get:
+      operationId: observerContext
+      security: [{ObserverBearer: []}]
+      parameters:
+        - name: runtime_id
+          in: query
+          required: true
+          schema: {$ref: '#/components/schemas/UUID'}
+      responses:
+        '200':
+          description: |
+            Only authenticated observer/runtime context, no other observers/tasks.
+            Before registration an unknown runtime returns candidate/generation 0,
+            no binding and the database UUID, without allocating an identity. This
+            permits database pin validation before register. Retired IDs return 409,
+            never this pre-registration response.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Context'}
+        default: {$ref: '#/components/responses/Error'}
+  /observer/v1/register:
+    post:
+      operationId: registerRuntime
+      security: [{ObserverBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Registration'}
+      responses:
+        '200':
+          description: Immutable registration replay or newly allocated candidate
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Context'}
+        default: {$ref: '#/components/responses/Error'}
+  /observer/v1/report:
+    put:
+      operationId: reportRuntime
+      security: [{ObserverBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Report'}
+      responses:
+        '200':
+          description: Accepted latest state or duplicate without freshness renewal
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReportResult'}
+        default: {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    OwnerBearer: {type: http, scheme: bearer, description: 'Existing owner credential, loopback only'}
+    ObserverBearer: {type: http, scheme: bearer, description: 'Per-observer credential, Unix socket only'}
+  parameters:
+    ObserverID:
+      name: observer_id
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/UUID'}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {$ref: '#/components/schemas/UUID'}
+  requestBodies:
+    CAS:
+      required: true
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/CAS'}
+  responses:
+    Error:
+      description: |
+        400 invalid_request/unsafe_host/origin_forbidden; 401 unauthorized (including
+        revoked credentials); 404 not_found; 409 version_conflict/generation_conflict/
+        registration_conflict/sequence_conflict/runtime_retired/capacity_exceeded/
+        database_mismatch/runtime_superseded/project_unavailable/idempotency_conflict;
+        413 body_too_large; 429 rate_limited; 503 unavailable. No echoed input/secret.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+  schemas:
+    UUID:
+      type: string
+      format: uuid
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    Counter: {type: integer, minimum: 0, maximum: 9007199254740991}
+    Identifier: {type: string, minLength: 1, maxLength: 256, pattern: '^[^\x00-\x1f\x7f]+$'}
+    Disposition: {type: string, enum: [candidate, bound, superseded, revoked]}
+    Activity: {type: string, enum: [unknown, idle, working, waiting_user]}
+    Freshness: {type: string, enum: [unknown, fresh, stale, stopped]}
+    ProvisionRequest:
+      type: object
+      additionalProperties: false
+      required: [label, verifier]
+      properties:
+        label: {type: string, minLength: 1, maxLength: 128, pattern: '^[^\x00-\x1f\x7f]+$'}
+        verifier: {type: string, pattern: '^[0-9a-f]{64}$', description: 'SHA-256 hex only, never plaintext token'}
+    CAS:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: {$ref: '#/components/schemas/Counter'}
+    BindingRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, runtime_id, project_id]
+      description: Both runtime and project UUIDs for bind, both null for unbind; mixed null forbidden
+      oneOf:
+        - properties:
+            runtime_id: {$ref: '#/components/schemas/UUID'}
+            project_id: {$ref: '#/components/schemas/UUID'}
+        - properties:
+            runtime_id: {type: string, nullable: true, enum: [null]}
+            project_id: {type: string, nullable: true, enum: [null]}
+      properties:
+        expected_version: {$ref: '#/components/schemas/Counter'}
+        runtime_id: {type: string, format: uuid, nullable: true}
+        project_id: {type: string, format: uuid, nullable: true}
+    Binding:
+      type: object
+      additionalProperties: false
+      required: [runtime_id, project_id]
+      properties:
+        runtime_id: {$ref: '#/components/schemas/UUID'}
+        project_id: {$ref: '#/components/schemas/UUID'}
+    TerminalHint:
+      type: object
+      additionalProperties: false
+      required: [window_id, session_id, pane_id]
+      description: Unverified inherited hint, not process identity; no socket or commands
+      properties:
+        window_id: {$ref: '#/components/schemas/UUID'}
+        session_id: {$ref: '#/components/schemas/UUID'}
+        pane_id: {$ref: '#/components/schemas/UUID'}
+    Registration:
+      type: object
+      additionalProperties: false
+      required: [runtime_id, pi_session_id, reason, pi_version, bridge_version, cwd]
+      properties:
+        runtime_id: {$ref: '#/components/schemas/UUID'}
+        pi_session_id: {$ref: '#/components/schemas/UUID'}
+        reason: {type: string, enum: [startup, reload, new, resume, fork]}
+        pi_version: {$ref: '#/components/schemas/Identifier'}
+        bridge_version: {$ref: '#/components/schemas/Identifier'}
+        cwd: {type: string, minLength: 1, maxLength: 4096, pattern: '^[^\x00-\x1f\x7f]+$'}
+        provider: {$ref: '#/components/schemas/Identifier'}
+        model: {$ref: '#/components/schemas/Identifier'}
+        terminal_hint: {$ref: '#/components/schemas/TerminalHint'}
+    Context:
+      type: object
+      additionalProperties: false
+      required: [database_instance_id, observer_id, runtime_id, generation, disposition]
+      properties:
+        database_instance_id: {$ref: '#/components/schemas/UUID'}
+        observer_id: {$ref: '#/components/schemas/UUID'}
+        runtime_id: {$ref: '#/components/schemas/UUID'}
+        generation: {$ref: '#/components/schemas/Counter'}
+        disposition: {$ref: '#/components/schemas/Disposition'}
+        binding: {$ref: '#/components/schemas/Binding'}
+    Report:
+      type: object
+      additionalProperties: false
+      required: [runtime_id, generation, report_seq, activity, tool_count, lifecycle]
+      properties:
+        runtime_id: {$ref: '#/components/schemas/UUID'}
+        generation: {$ref: '#/components/schemas/Counter'}
+        report_seq: {type: integer, minimum: 1, maximum: 9007199254740991}
+        activity: {$ref: '#/components/schemas/Activity'}
+        tool_count: {type: integer, minimum: 0, maximum: 65535}
+        lifecycle: {type: string, enum: [running, stopped]}
+        provider: {$ref: '#/components/schemas/Identifier'}
+        model: {$ref: '#/components/schemas/Identifier'}
+    ReportResult:
+      type: object
+      additionalProperties: false
+      required: [runtime_id, generation, report_seq, result]
+      properties:
+        runtime_id: {$ref: '#/components/schemas/UUID'}
+        generation: {$ref: '#/components/schemas/Counter'}
+        report_seq: {$ref: '#/components/schemas/Counter'}
+        result: {type: string, enum: [accepted, duplicate]}
+    OwnerResult:
+      type: object
+      additionalProperties: false
+      required: [database_instance_id, observer_id, version, generation]
+      properties:
+        database_instance_id: {$ref: '#/components/schemas/UUID'}
+        observer_id: {$ref: '#/components/schemas/UUID'}
+        version: {$ref: '#/components/schemas/Counter'}
+        generation: {$ref: '#/components/schemas/Counter'}
+        pruned_count: {type: integer, minimum: 0, maximum: 8}
+    RuntimeProjection:
+      type: object
+      additionalProperties: false
+      required: [registration, disposition, generation, activity, freshness, tool_count, lifecycle]
+      properties:
+        registration: {$ref: '#/components/schemas/Registration'}
+        disposition: {$ref: '#/components/schemas/Disposition'}
+        generation: {$ref: '#/components/schemas/Counter'}
+        activity: {$ref: '#/components/schemas/Activity'}
+        freshness: {$ref: '#/components/schemas/Freshness'}
+        tool_count: {type: integer, minimum: 0, maximum: 65535}
+        lifecycle: {type: string, enum: [running, stopped]}
+        last_seen: {type: string, format: date-time}
+        provider: {$ref: '#/components/schemas/Identifier'}
+        model: {$ref: '#/components/schemas/Identifier'}
+    ObserverProjection:
+      type: object
+      additionalProperties: false
+      required: [observer_id, label, version, generation, revoked, identity_count, retired_count, runtimes]
+      properties:
+        observer_id: {$ref: '#/components/schemas/UUID'}
+        label: {type: string, minLength: 1, maxLength: 128}
+        version: {$ref: '#/components/schemas/Counter'}
+        generation: {$ref: '#/components/schemas/Counter'}
+        revoked: {type: boolean}
+        identity_count: {type: integer, minimum: 0, maximum: 1024}
+        retired_count: {type: integer, minimum: 0, maximum: 1024}
+        binding: {$ref: '#/components/schemas/Binding'}
+        runtimes:
+          type: array
+          maxItems: 8
+          items: {$ref: '#/components/schemas/RuntimeProjection'}
+    Projection:
+      type: object
+      additionalProperties: false
+      required: [database_instance_id, server_time, observers]
+      properties:
+        database_instance_id: {$ref: '#/components/schemas/UUID'}
+        server_time: {type: string, format: date-time}
+        observers:
+          type: array
+          maxItems: 256
+          items: {$ref: '#/components/schemas/ObserverProjection'}
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum: [invalid_request, unsafe_host, origin_forbidden, unauthorized, not_found, version_conflict, generation_conflict, registration_conflict, sequence_conflict, runtime_retired, capacity_exceeded, database_mismatch, runtime_superseded, project_unavailable, idempotency_conflict, body_too_large, rate_limited, unavailable]
+        capacity: {type: string, enum: [observers, runtime_payloads, runtime_identities]}

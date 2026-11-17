@@ -1,4 +1,4 @@
-.PHONY: preflight build lint test test-race test-e2e package-check check
+.PHONY: preflight build lint test test-race test-e2e package-check observer-check check
 
 GOLANGCI_LINT ?= golangci-lint
 export GOLANGCI_LINT
@@ -27,6 +27,12 @@ test-race: preflight
 
 test-e2e: preflight
 	./scripts/e2e
+
+# Dependencies are installed explicitly in this private workspace with npm ci
+# --ignore-scripts; never install tools or alter global Pi configuration here.
+observer-check:
+	npm --prefix integrations/pi-observer run check
+	go test ./internal/api -run '^TestObserverOpenAPI$$' -count=1
 
 package-check:
 	./scripts/package-check
