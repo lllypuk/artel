@@ -1,0 +1,104 @@
+{
+  "version": "1.5.2",
+  "checks": [
+    {
+      "name": "appendEntry before conversation stays memory-only",
+      "evidence": {
+        "fileExists": false
+      }
+    },
+    {
+      "name": "idle custom trigger: correlation in events/history; metadata excluded from model payload",
+      "evidence": {
+        "returnValue": "undefined",
+        "requests": 1
+      }
+    },
+    {
+      "name": "sendUserMessage can be handled without model run or persisted message",
+      "evidence": {
+        "returnValue": "undefined",
+        "additionalRequests": 0
+      }
+    },
+    {
+      "name": "busy sendUserMessage returns before asynchronous rejection",
+      "evidence": {
+        "error": {
+          "extensionPath": "<runtime>",
+          "event": "send_user_message",
+          "error": "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message."
+        }
+      }
+    },
+    {
+      "name": "caller-held message dispatched from agent_settled once",
+      "evidence": {
+        "requests": 2,
+        "note": "in-memory fixture, NOT durable Artel queue"
+      }
+    },
+    {
+      "name": "same custom message ID is not deduplicated by Pi",
+      "evidence": {
+        "duplicateCount": 2
+      }
+    },
+    {
+      "name": "normal reopen preserves custom details and session identity",
+      "evidence": {
+        "sessionId": "01a1e98c-96a2-71df-ae0b-490b1abb019d"
+      }
+    },
+    {
+      "name": "SIGKILL append-only: no session file at this boundary",
+      "evidence": {
+        "ready": true,
+        "file": "/tmp/artel-pi-bridge-Fd40ok1E/crash-append-only/sessions/2026-11-17T12-47-48-876Z_01a1e98c-9c8b-77fe-ae52-18e14489f14e.jsonl",
+        "kind": "append-only",
+        "exists": false,
+        "outcome": {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      }
+    },
+    {
+      "name": "SIGKILL custom-inflight: no session file at this boundary",
+      "evidence": {
+        "ready": true,
+        "file": "/tmp/artel-pi-bridge-Fd40ok1E/crash-custom-inflight/sessions/2026-11-17T12-47-50-058Z_01a1e98c-a129-762f-b0d9-fe58ca48ef84.jsonl",
+        "kind": "custom-inflight",
+        "exists": false,
+        "providerReceived": true,
+        "pending": false,
+        "outcome": {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      }
+    },
+    {
+      "name": "SIGKILL queued followup: persisted conversation survives but queued input is absent",
+      "evidence": {
+        "ready": true,
+        "file": "/tmp/artel-pi-bridge-Fd40ok1E/crash-queued-followup/sessions/2026-11-17T12-47-51-239Z_01a1e98c-a5c7-7186-b0fb-84b875ed2107.jsonl",
+        "kind": "queued-followup",
+        "exists": true,
+        "providerReceived": true,
+        "pending": true,
+        "outcome": {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      }
+    }
+  ],
+  "limitations": [
+    "SDK/json binding, not interactive TUI",
+    "No fake Artel API/auth or durable receipt journal",
+    "No reload/fork/compaction",
+    "No power-loss guarantees",
+    "No real LLM semantic/task acceptance validation"
+  ]
+}
