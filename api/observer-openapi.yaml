@@ -65,7 +65,7 @@ x-state: |
   Identity exhaustion requires explicit new provisioning/binding/revocation; no GC.
 paths:
   /v1/observers:
-    servers: [{url: 'http://127.0.0.1:8080'}]
+    servers: [{url: 'http://127.0.0.1:7331'}]
     get:
       operationId: listObservers
       security: [{OwnerBearer: []}]
@@ -75,9 +75,9 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Projection'}
-        default: {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/OwnerError'}
   /v1/observers/{observer_id}:
-    servers: [{url: 'http://127.0.0.1:8080'}]
+    servers: [{url: 'http://127.0.0.1:7331'}]
     parameters: [{$ref: '#/components/parameters/ObserverID'}]
     put:
       operationId: provisionObserver
@@ -94,9 +94,9 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/OwnerResult'}
-        default: {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/OwnerError'}
   /v1/observers/{observer_id}/binding:
-    servers: [{url: 'http://127.0.0.1:8080'}]
+    servers: [{url: 'http://127.0.0.1:7331'}]
     parameters: [{$ref: '#/components/parameters/ObserverID'}]
     patch:
       operationId: bindObserver
@@ -113,9 +113,9 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/OwnerResult'}
-        default: {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/OwnerError'}
   /v1/observers/{observer_id}/revoke:
-    servers: [{url: 'http://127.0.0.1:8080'}]
+    servers: [{url: 'http://127.0.0.1:7331'}]
     parameters: [{$ref: '#/components/parameters/ObserverID'}]
     post:
       operationId: revokeObserver
@@ -128,9 +128,9 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/OwnerResult'}
-        default: {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/OwnerError'}
   /v1/observers/{observer_id}/prune:
-    servers: [{url: 'http://127.0.0.1:8080'}]
+    servers: [{url: 'http://127.0.0.1:7331'}]
     parameters: [{$ref: '#/components/parameters/ObserverID'}]
     post:
       operationId: pruneObserver
@@ -143,7 +143,7 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/OwnerResult'}
-        default: {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/OwnerError'}
   /observer/v1/context:
     get:
       operationId: observerContext
@@ -219,6 +219,11 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/CAS'}
   responses:
+    OwnerError:
+      description: Owner transport errors preserve the existing owner middleware format; operation errors use observer error codes.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/OwnerError'}
     Error:
       description: |
         400 invalid_request/unsafe_host/origin_forbidden; 401 unauthorized (including
@@ -384,6 +389,15 @@ components:
           type: array
           maxItems: 256
           items: {$ref: '#/components/schemas/ObserverProjection'}
+    OwnerError:
+      oneOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: {type: string, enum: [invalid_request, unauthorized, body_too_large]}
+            message: {type: string}
     Error:
       type: object
       additionalProperties: false

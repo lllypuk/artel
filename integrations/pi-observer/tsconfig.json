@@ -4,5 +4,5 @@
     "strict": true, "noEmit": true, "allowImportingTsExtensions": true,
     "skipLibCheck": true
   },
-  "include": ["tests/*.ts"]
+  "include": ["tests/*.ts", "src/*.ts"]
 }

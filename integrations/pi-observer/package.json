@@ -8,7 +8,7 @@
     "preflight": "node tests/preflight.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit --noUnusedLocals --noUnusedParameters --noFallthroughCasesInSwitch",
-    "unit": "node --experimental-strip-types --test tests/probe.test.ts",
+    "unit": "node --experimental-strip-types --test tests/*.test.ts",
     "probe": "python3 -B tests/pty_probe.py",
     "check": "npm run preflight && npm run lint && npm run typecheck && npm run unit && npm run probe"
   },

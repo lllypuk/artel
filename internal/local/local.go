@@ -87,7 +87,7 @@ func privateDir(path string) error {
 
 // ReadToken refuses symlinks and unsafe files before reading any credential.
 func ReadToken(path string) (string, error) {
-	if !filepath.IsAbs(path) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return "", errors.New("credential path must be absolute")
 	}
 	if err := noSymlinks(path); err != nil {
@@ -133,7 +133,7 @@ func ReadToken(path string) (string, error) {
 
 // InitToken atomically publishes a complete credential and never replaces one.
 func InitToken(path string) (string, error) {
-	if !filepath.IsAbs(path) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return "", errors.New("credential path must be absolute")
 	}
 	if err := privateDir(filepath.Dir(path)); err != nil {
@@ -165,6 +165,15 @@ func InitToken(path string) (string, error) {
 	if err = os.Link(f.Name(), path); err != nil && !errors.Is(err, os.ErrExist) {
 		return "", errors.New("credential publication failed")
 	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return "", errors.New("credential directory unavailable")
+	}
+	syncErr := dir.Sync()
+	_ = dir.Close()
+	if syncErr != nil {
+		return "", errors.New("credential directory sync failed")
+	}
 	return ReadToken(path)
 }
 
@@ -172,14 +181,16 @@ func InitToken(path string) (string, error) {
 type Lock struct{ file *os.File }
 
 // Acquire refuses a second daemon using the same data directory.
-func Acquire(dir string) (*Lock, error) {
+func Acquire(dir string) (*Lock, error) { return acquire(dir, "daemon.lock") }
+
+func acquire(dir, name string) (*Lock, error) {
 	if !filepath.IsAbs(dir) {
 		return nil, errors.New("data directory must be absolute")
 	}
 	if err := privateDir(dir); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, "daemon.lock")
+	path := filepath.Join(dir, name)
 	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_CREAT|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
 	if err != nil {
 		return nil, errors.New("cannot open daemon lock")

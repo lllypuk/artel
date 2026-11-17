@@ -3,7 +3,8 @@ info:
   title: Artel local manual API
   version: 0.1.0
   description: >-
-    Loopback-only API. All mutations are owner_manual; they never run agents.
+    Loopback-only owner API. Domain mutations are owner_manual; they never run agents.
+    Observer controls use separate observer audit/receipts and 16 KiB bodies.
     Domain endpoints are implemented by the transactional application layer.
     No Origin requests, redirects or CORS. Host must match the bound IPv4 address/port.
     JSON bodies are limited to 256 KiB; unknown fields and trailing JSON are rejected.
@@ -14,6 +15,16 @@ servers:
 security:
   - owner: []
 paths:
+  /v1/observers:
+    $ref: './observer-openapi.yaml#/paths/~1v1~1observers'
+  /v1/observers/{observer_id}:
+    $ref: './observer-openapi.yaml#/paths/~1v1~1observers~1{observer_id}'
+  /v1/observers/{observer_id}/binding:
+    $ref: './observer-openapi.yaml#/paths/~1v1~1observers~1{observer_id}~1binding'
+  /v1/observers/{observer_id}/revoke:
+    $ref: './observer-openapi.yaml#/paths/~1v1~1observers~1{observer_id}~1revoke'
+  /v1/observers/{observer_id}/prune:
+    $ref: './observer-openapi.yaml#/paths/~1v1~1observers~1{observer_id}~1prune'
   /healthz:
     get:
       operationId: health
@@ -205,6 +216,10 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 components:
   securitySchemes:
+    OwnerBearer:
+      type: http
+      scheme: bearer
+      description: Private owner credential; same credential as owner.
     owner:
       type: http
       scheme: bearer

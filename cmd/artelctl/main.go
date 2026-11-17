@@ -24,6 +24,9 @@ func run(args []string, out, errOut io.Writer) int {
 			return printOutput(out, "artelctl 0.1.0-dev")
 		}
 	}
+	if len(args) > 0 && args[0] == "observer" {
+		return observer(args[1:], out, errOut)
+	}
 	if len(args) > 0 && (args[0] == "status" || args[0] == "snapshot") {
 		return diagnostic(args, out, errOut)
 	}

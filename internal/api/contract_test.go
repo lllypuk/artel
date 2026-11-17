@@ -22,6 +22,7 @@ func contract(t *testing.T) *openapi3.T {
 	t.Helper()
 	contractOnce.Do(func() {
 		loader := openapi3.NewLoader()
+		loader.IsExternalRefsAllowed = true
 		contractDoc, contractErr = loader.LoadFromFile(filepath.Join("..", "..", "api", "openapi.yaml"))
 		if contractErr == nil {
 			contractErr = contractDoc.Validate(context.Background())
@@ -41,7 +42,7 @@ func TestOpenAPIValid(t *testing.T) {
 	for _, p := range doc.Paths.Map() {
 		count += len(p.Operations())
 	}
-	if count != 10 {
+	if count != 15 {
 		t.Fatalf("operations: %d", count)
 	}
 }

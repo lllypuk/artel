@@ -53,6 +53,19 @@ func observerAuth(ctx context.Context, tx *sql.Tx, verifier string) (observerRec
 	}
 	return o, err
 }
+
+// AuthenticateObserver checks the scoped verifier before HTTP body parsing/routing.
+// Every mutation repeats auth in its own transaction to fence concurrent revoke.
+func (s *Store) AuthenticateObserver(ctx context.Context, verifier string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, err = observerAuth(ctx, tx, verifier)
+	return err
+}
+
 func observerRuntimeLoad(ctx context.Context, tx *sql.Tx, id, runtime string) (observerRuntime, error) {
 	var retired int
 	var r observerRuntime
