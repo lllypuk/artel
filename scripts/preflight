@@ -2,7 +2,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 . ./scripts/qt-tools
-for tool in go make g++ clang-format "$QMAKE"; do
+for tool in go make g++ clang-format python3 "$QMAKE"; do
     command -v "$tool" >/dev/null || { echo "Missing dependency: $tool" >&2; exit 1; }
 done
 for tool in qmllint qmlformat; do

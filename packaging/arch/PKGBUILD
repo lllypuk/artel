@@ -1,0 +1,34 @@
+# Local snapshot only; scripts/package-check supplies the source archive.
+pkgname=artel
+pkgver=2.0.0
+pkgrel=1
+pkgdesc='Local manual project and task panel'
+arch=('x86_64' 'aarch64')
+url='https://github.com/lllypuk/artel'
+license=('MIT')
+depends=('qt6-base>=6.8' 'qt6-declarative>=6.8' 'qt6-svg' 'qt6-wayland' 'gcc-libs' 'glibc')
+makedepends=('go>=1.26.3' 'gcc' 'make')
+options=('!debug')
+source=('artel-source.tar.gz')
+sha256sums=('SKIP')
+
+build() {
+    cd "$srcdir/artel"
+    export GOTOOLCHAIN=go1.26.3
+    mkdir -p build/bin
+    go build -trimpath -o build/bin/arteld ./cmd/arteld
+    go build -trimpath -o build/bin/artelctl ./cmd/artelctl
+    ./desktop/bin/build
+}
+
+package() {
+    cd "$srcdir/artel"
+    install -Dm755 desktop/build/artel "$pkgdir/usr/bin/artel"
+    install -Dm755 build/bin/arteld "$pkgdir/usr/bin/arteld"
+    install -Dm755 build/bin/artelctl "$pkgdir/usr/bin/artelctl"
+    install -Dm644 packaging/systemd/arteld.service "$pkgdir/usr/lib/systemd/user/arteld.service"
+    install -Dm644 packaging/arch/artel.desktop "$pkgdir/usr/share/applications/artel.desktop"
+    install -Dm644 packaging/arch/artel.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/artel.svg"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/artel/LICENSE"
+    install -Dm644 desktop/NOTICE "$pkgdir/usr/share/licenses/artel/NOTICE"
+}

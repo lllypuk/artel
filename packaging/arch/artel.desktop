@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Artel
+Name[ru]=Артель
+Comment=Manual local project and task panel
+Comment[ru]=Локальная панель проектов и задач с ручным управлением
+Exec=artel
+Icon=artel
+Terminal=false
+Categories=Development;ProjectManagement;
+StartupWMClass=artel

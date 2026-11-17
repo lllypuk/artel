@@ -1,4 +1,4 @@
-.PHONY: preflight build lint test test-race test-e2e check
+.PHONY: preflight build lint test test-race test-e2e package-check check
 
 GOLANGCI_LINT ?= golangci-lint
 export GOLANGCI_LINT
@@ -18,6 +18,7 @@ lint: preflight
 	./scripts/desktop-lint
 
 test: preflight
+	python3 -B -m unittest discover -s tests -p 'test_*.py'
 	go test ./...
 	./desktop/bin/test
 
@@ -26,6 +27,9 @@ test-race: preflight
 
 test-e2e: preflight
 	./scripts/e2e
+
+package-check:
+	./scripts/package-check
 
 # Recursive calls keep Qt builds serial even when make check is invoked with -j.
 check:

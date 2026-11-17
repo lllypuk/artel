@@ -1,0 +1,14 @@
+[Unit]
+Description=Artel local manual project panel API
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/arteld
+Restart=on-failure
+RestartSec=2s
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+UMask=0077
+
+[Install]
+WantedBy=default.target

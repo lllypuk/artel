@@ -17,14 +17,18 @@ Manual CRUD is available through both the desktop and API. No claimed agent acti
 
 ## Build and checks
 
-Dependencies: Go **1.26.3**, golangci-lint **2.10.1**, Qt **6.8+** (base/declarative, Quick Controls, Qt Test, qmllint and qmlformat), C++17 compiler, make and clang-format. Preflight diagnoses missing tools; it never installs host packages.
+Dependencies: Go **1.26.3**, golangci-lint **2.10.1**, Qt **6.8+** (base/declarative, Quick Controls, Qt Test, qmllint and qmlformat), C++17 compiler, make, clang-format and Python 3 (delivery tests). Preflight diagnoses missing tools; it never installs host packages.
 
 ```sh
 make lint test build
 make test-race
+make check          # lint, Go/Qt tests, race, build and native acceptance
+make package-check  # Arch only; disposable build/inspection, no installation
 ```
 
 If the host linter differs, install the pinned version into a private tools directory and set `GOLANGCI_LINT=/path/to/golangci-lint`. Qt tools are resolved via `qmake6 -query QT_INSTALL_BINS`; overrides: `QMAKE`, `QT_BINS`. `JOBS` defaults to 2.
+
+Arch packaging lives in `packaging/arch/`; the separate user unit is `packaging/systemd/arteld.service`. `make package-check` requires an unprivileged Arch environment with base-devel, Go, Qt base/declarative/SVG/Wayland, Python, desktop-file-utils, systemd and libarchive. It reports missing dependencies without installing them. It archives the current working tree's allowed source files (including uncommitted changes), builds with makepkg, checks the exact payload/desktop/unit and removes its temporary package. No token/database, package install hook or service activation is shipped. The package includes all three binaries, MIT license/template attribution and the `artel` desktop entry/icon. Installation and user-service enablement remain separate owner decisions. CI runs Go and native/full-stack/package gates; CI YAML alone is not evidence of a remote green run.
 
 Run separately (no service is enabled or started by build scripts):
 

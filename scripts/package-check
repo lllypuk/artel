@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Build and inspect a disposable Arch package; never install or activate it."""
+import hashlib
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tarfile
+import tempfile
+
+ROOT = Path(__file__).resolve().parent.parent
+SOURCE_DIRS = {"cmd", "internal", "api", "desktop", "scripts", "packaging"}
+SOURCE_FILES = {"go.mod", "go.sum", "LICENSE"}
+PAYLOAD = {
+    "usr/bin/artel", "usr/bin/arteld", "usr/bin/artelctl",
+    "usr/lib/systemd/user/arteld.service",
+    "usr/share/applications/artel.desktop",
+    "usr/share/icons/hicolor/scalable/apps/artel.svg",
+    "usr/share/licenses/artel/LICENSE", "usr/share/licenses/artel/NOTICE",
+}
+
+
+def run(args, **kwargs):
+    return subprocess.run(args, check=True, **kwargs)
+
+
+def snapshot(root, destination):
+    # Read the working tree, not git archive HEAD: task changes may be uncommitted.
+    # Git's ignore rules plus a narrow source allowlist exclude private artifacts.
+    names = subprocess.check_output(
+        ["git", "ls-files", "-co", "--exclude-standard", "-z"], cwd=root
+    ).decode().split("\0")
+    with tarfile.open(destination, "w:gz") as archive:
+        for name in sorted(set(names) - {""}):
+            path = Path(name)
+            if path.parts[0] not in SOURCE_DIRS and name not in SOURCE_FILES:
+                continue
+            if path.parts[:2] == ("desktop", "build") or "__pycache__" in path.parts:
+                continue
+            source = root / path
+            if not source.exists():
+                continue
+            if source.is_symlink() or not source.is_file():
+                raise ValueError(f"Non-regular source file: {name}")
+            archive.add(source, arcname=f"artel/{name}", recursive=False)
+
+
+def inspect_package(archive, root):
+    # bsdtar supports Arch's zstd archives; extraction happens only after validation.
+    entries = subprocess.check_output(["bsdtar", "-tf", str(archive)], text=True).splitlines()
+    files = {entry.removeprefix("./") for entry in entries if not entry.endswith("/")}
+    if files != PAYLOAD | {".PKGINFO", ".BUILDINFO", ".MTREE"}:
+        raise ValueError(f"Unexpected package manifest: {sorted(files)}")
+    metadata = subprocess.check_output(
+        ["bsdtar", "--numeric-owner", "-tvf", str(archive)], text=True
+    ).splitlines()
+    for line in metadata:
+        fields = line.split()
+        if len(fields) < 5 or fields[2:4] != ["0", "0"]:
+            raise ValueError("Package files must be owned by root:root")
+        if fields[0] not in {"drwxr-xr-x", "-rwxr-xr-x", "-rw-r--r--"}:
+            raise ValueError("Unsafe package file type/permissions")
+    run(["bsdtar", "-xf", str(archive), "-C", str(root)])
+    for name in PAYLOAD:
+        path = root / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"Non-regular package file: {name}")
+        if name.startswith("usr/bin/") and path.read_bytes()[:4] != b"\x7fELF":
+            raise ValueError(f"Not an ELF executable: {name}")
+    run(["desktop-file-validate", str(root / "usr/share/applications/artel.desktop")])
+    unit = root / "usr/lib/systemd/user/arteld.service"
+    text = unit.read_text()
+    if "ExecStart=/usr/bin/arteld\n" not in text or "Restart=on-failure\n" not in text:
+        raise ValueError("Unexpected service command/restart policy")
+    # verify checks executability too. Point only this temporary verification copy
+    # at the extracted binary; never place files under the host's /usr.
+    verify = root / "arteld.service"
+    verify.write_text(text.replace("ExecStart=/usr/bin/arteld", f"ExecStart={root}/usr/bin/arteld"))
+    run(["systemd-analyze", "--user", "verify", str(verify)])
+
+
+def main():
+    tools = ("makepkg", "pacman", "bsdtar", "desktop-file-validate", "systemd-analyze")
+    missing = [tool for tool in tools if shutil.which(tool) is None]
+    if missing:
+        raise ValueError("Missing package-check tools: " + ", ".join(missing))
+    if os.getuid() == 0:
+        raise ValueError("Run package-check as an unprivileged user")
+    with tempfile.TemporaryDirectory(prefix="artel-package-") as directory:
+        work = Path(directory)
+        recipe = (ROOT / "packaging/arch/PKGBUILD").read_text()
+        (work / "PKGBUILD").write_text(recipe)
+        info = subprocess.check_output(["makepkg", "--config", "/etc/makepkg.conf", "--printsrcinfo"], cwd=work, text=True)
+        deps = [line.split(" = ", 1)[1] for line in info.splitlines()
+                if line.strip().startswith(("depends = ", "makedepends = "))]
+        result = subprocess.run(["pacman", "-T", *deps], capture_output=True, text=True, check=False)
+        if result.returncode:
+            raise ValueError("Missing build/runtime dependencies (not installed automatically):\n" + result.stdout + result.stderr)
+        snapshot(ROOT, work / "artel-source.tar.gz")
+        digest = hashlib.sha256((work / "artel-source.tar.gz").read_bytes()).hexdigest()
+        (work / "PKGBUILD").write_text(recipe.replace("sha256sums=('SKIP')", f"sha256sums=('{digest}')"))
+        # Keep build products out of any host-configured output directories.
+        env = dict(os.environ, PKGDEST=str(work), SRCDEST=str(work),
+                   BUILDDIR=str(work), SRCPKGDEST=str(work), LOGDEST=str(work))
+        run(["makepkg", "--config", "/etc/makepkg.conf", "--cleanbuild", "--noconfirm"], cwd=work, env=env)
+        packages = list(work.glob("artel-*.pkg.tar.*"))
+        if len(packages) != 1:
+            raise ValueError("Expected exactly one package")
+        extracted = work / "inspection"
+        extracted.mkdir()
+        inspect_package(packages[0], extracted)
+        # Compilers must not embed the original checkout location in delivered files.
+        for name in PAYLOAD:
+            if str(ROOT).encode() in (extracted / name).read_bytes():
+                raise ValueError(f"Checkout path leaked into {name}")
+        print("Package manifest, ELF files, desktop entry, user unit and privacy checks: PASS")
+    print("Disposable package removed; nothing installed or activated.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        raise SystemExit(f"package-check: {error}") from error

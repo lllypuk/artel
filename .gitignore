@@ -11,3 +11,4 @@
 *.db-shm
 *.token
 /.ralphex/
+__pycache__/
