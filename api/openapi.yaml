@@ -1,0 +1,341 @@
+openapi: 3.1.0
+info:
+  title: Artel local manual API
+  version: 0.1.0
+  description: >-
+    Loopback-only API. All mutations are owner_manual; they never run agents.
+    Domain endpoints are specified here and implemented in Tasks 3–4.
+    No Origin requests, redirects or CORS. Host must match the bound IPv4 address/port.
+    JSON bodies are limited to 256 KiB; unknown fields and trailing JSON are rejected.
+    Receipts atomically persist successful mutation responses with domain changes/events.
+    Reuse the same key after uncertain outcomes; a changed payload with that key is 409.
+servers:
+  - url: http://127.0.0.1:7331
+security:
+  - owner: []
+paths:
+  /healthz:
+    get:
+      operationId: health
+      security: []
+      responses:
+        '200':
+          description: Liveness only
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: {const: ok}
+        '400': {$ref: '#/components/responses/BadRequest'}
+  /v1/snapshot:
+    get:
+      operationId: snapshot
+      responses:
+        '200':
+          description: Complete consistent read transaction; never truncated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Snapshot'}
+        '413': {$ref: '#/components/responses/TooLarge'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/projects:
+    post:
+      operationId: createProject
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateProject'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Project'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/projects/{id}:
+    parameters: [{$ref: '#/components/parameters/ID'}]
+    patch:
+      operationId: editProject
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EditProject'}
+      responses:
+        '200':
+          description: Updated or unchanged project
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Project'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/projects/{id}/tasks:
+    parameters: [{$ref: '#/components/parameters/ID'}]
+    post:
+      operationId: createTask
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateTask'}
+      responses:
+        '201':
+          description: Created in backlog
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Task'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tasks/{id}:
+    parameters: [{$ref: '#/components/parameters/ID'}]
+    patch:
+      operationId: editTask
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EditTask'}
+      responses:
+        '200':
+          description: Updated or unchanged task; project/state immutable here
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Task'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tasks/{id}/transition:
+    parameters: [{$ref: '#/components/parameters/ID'}]
+    post:
+      operationId: transitionTask
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [state, expected_version]
+              properties:
+                state: {enum: [backlog, in_progress, done, cancelled]}
+                expected_version: {$ref: '#/components/schemas/Version'}
+                expected_queue_version:
+                  description: Required when leaving queued; only the first queued task may start.
+                  type: integer
+                  minimum: 1
+      responses:
+        '200':
+          description: Task manually transitioned
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Task'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/projects/{id}/queue:
+    parameters: [{$ref: '#/components/parameters/ID'}]
+    put:
+      operationId: replaceQueue
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [task_ids, expected_queue_version]
+              properties:
+                task_ids:
+                  type: array
+                  uniqueItems: true
+                  items: {$ref: '#/components/schemas/UUID'}
+                expected_queue_version: {$ref: '#/components/schemas/Version'}
+      responses:
+        '200':
+          description: Full ordered queue; no-op preserves version/event count
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Queue'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/events:
+    get:
+      operationId: events
+      parameters:
+        - {$ref: '#/components/parameters/Instance'}
+        - {$ref: '#/components/parameters/After'}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500, default: 100}}
+        - {name: project_id, in: query, schema: {$ref: '#/components/schemas/UUID'}}
+        - {name: task_id, in: query, schema: {$ref: '#/components/schemas/UUID'}}
+      responses:
+        '200':
+          description: Next cursor accounts for scanned range even with filters
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [instance_id, events, next_cursor]
+                properties:
+                  instance_id: {$ref: '#/components/schemas/UUID'}
+                  events: {type: array, items: {$ref: '#/components/schemas/Event'}}
+                  next_cursor: {type: integer, minimum: 0}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/stream:
+    get:
+      operationId: stream
+      description: >-
+        Replay persisted events after cursor, then tail with heartbeat comments.
+        SSE id is event sequence, event is invalidation, data contains kind/object IDs,
+        not descriptions. Bounded slow consumers disconnect and replay from last cursor.
+        Wrong instance/future cursor returns 409 reset_required before streaming.
+        On reconnect obtain a new snapshot; instance changes reset cursors.
+      parameters:
+        - {$ref: '#/components/parameters/Instance'}
+        - {$ref: '#/components/parameters/After'}
+      responses:
+        '200':
+          description: Authenticated invalidation stream (Bearer header, never URL token)
+          content:
+            text/event-stream:
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    owner:
+      type: http
+      scheme: bearer
+      description: 32 random bytes encoded as 64 hex characters, read from private local file.
+  parameters:
+    ID: {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/UUID'}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {$ref: '#/components/schemas/UUID'}}
+    Instance: {name: instance_id, in: query, required: true, schema: {$ref: '#/components/schemas/UUID'}}
+    After: {name: after, in: query, required: true, schema: {type: integer, minimum: 0}}
+  responses:
+    BadRequest:
+      description: Invalid request, Host, Origin, JSON or field validation
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    TooLarge:
+      description: Request over 256 KiB or snapshot over 32 MiB
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Error:
+      description: >-
+        400 invalid request; 401 missing/wrong owner credential; 404 object not found;
+        409 version/invariant/idempotency conflict or reset_required;
+        413 size limit; 500 sanitized internal failure.
+        During foundation bootstrap domain endpoints return 501 unavailable.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+  schemas:
+    UUID: {type: string, format: uuid}
+    Version: {type: integer, minimum: 1}
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: {type: string}
+        message: {type: string, description: Safe public error; no SQL, internal paths or credentials}
+        current_version: {$ref: '#/components/schemas/Version'}
+    CreateProject:
+      type: object
+      additionalProperties: false
+      required: [name, root_path]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        root_path: {type: string, description: Existing absolute directory; canonical root unique among active projects}
+        description: {type: string, description: At most 16 KiB UTF-8}
+    EditProject:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: {$ref: '#/components/schemas/Version'}
+        name: {type: string, minLength: 1, maxLength: 120}
+        root_path: {type: string}
+        description: {type: string, description: At most 16 KiB UTF-8}
+        archived: {type: boolean, description: Archive requires no queued/in_progress tasks; unarchive rechecks root uniqueness}
+    Project:
+      type: object
+      additionalProperties: false
+      required: [id, name, root_path, description, version, queue_version, archived, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/UUID'}
+        name: {type: string}
+        root_path: {type: string}
+        description: {type: string}
+        version: {$ref: '#/components/schemas/Version'}
+        queue_version: {$ref: '#/components/schemas/Version'}
+        archived: {type: boolean}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    CreateTask:
+      type: object
+      additionalProperties: false
+      required: [title]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, description: At most 64 KiB UTF-8}
+        acceptance_criteria: {type: string, description: At most 64 KiB UTF-8}
+    EditTask:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: {$ref: '#/components/schemas/Version'}
+        title: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, description: At most 64 KiB UTF-8}
+        acceptance_criteria: {type: string, description: At most 64 KiB UTF-8}
+    Task:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, title, description, acceptance_criteria, state, version, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/UUID'}
+        project_id: {$ref: '#/components/schemas/UUID'}
+        title: {type: string}
+        description: {type: string}
+        acceptance_criteria: {type: string}
+        state: {enum: [backlog, queued, in_progress, done, cancelled]}
+        version: {$ref: '#/components/schemas/Version'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    Queue:
+      type: object
+      additionalProperties: false
+      required: [project_id, queue_version, task_ids]
+      properties:
+        project_id: {$ref: '#/components/schemas/UUID'}
+        queue_version: {$ref: '#/components/schemas/Version'}
+        task_ids: {type: array, uniqueItems: true, items: {$ref: '#/components/schemas/UUID'}}
+    Event:
+      type: object
+      additionalProperties: false
+      required: [seq, action, project_id, source, timestamp, before, after]
+      properties:
+        seq: {type: integer, minimum: 1}
+        action: {type: string}
+        project_id: {$ref: '#/components/schemas/UUID'}
+        task_id: {$ref: '#/components/schemas/UUID'}
+        source: {const: owner_manual}
+        timestamp: {type: string, format: date-time}
+        before: {type: object, description: Changed fields and their old versions}
+        after: {type: object, description: Changed fields and their new versions}
+    Snapshot:
+      type: object
+      additionalProperties: false
+      required: [instance_id, event_seq, projects, tasks, queues]
+      properties:
+        instance_id: {$ref: '#/components/schemas/UUID'}
+        event_seq: {type: integer, minimum: 0}
+        projects: {type: array, items: {$ref: '#/components/schemas/Project'}}
+        tasks: {type: array, items: {$ref: '#/components/schemas/Task'}}
+        queues: {type: array, items: {$ref: '#/components/schemas/Queue'}}

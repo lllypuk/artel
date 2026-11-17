@@ -181,11 +181,13 @@ Task 1 validation (2026-11-17): `GOLANGCI_LINT=/tmp/artel-pi-bridge-Fd40ok1E/too
 
 ### Task 2: Implement local daemon lifecycle, paths and owner authentication
 
-- [ ] Реализовать `internal/local/`: XDG defaults/explicit overrides, private credential initialization без перезаписи, symlink/permissions checks, data-dir lock, безопасное завершение по signal. Секреты никогда не печатать.
-- [ ] Реализовать HTTP server bootstrap и owner-auth middleware в `cmd/arteld`/`internal/api`: только loopback, headers/Origin/Host/body limits, deadlines и sanitized errors. Диагностика фактического bound address для :0 не содержит token.
-- [ ] Задать `api/openapi.yaml` с операциями/DTO/ошибками из Technical Details; реализацию domain handlers вводить следующими задачами. Минимальная CLI: `status --json`, `snapshot --json` (последняя заработает в Task 4), --endpoint/--token-file; никаких shell tools.
-- [ ] Написать тесты первого/повторного init, небезопасных прав и symlink, конкурирующих запусков, bind refusal, missing/wrong token, Origin/Host, oversized body и secret redaction. Test processes используют только temp paths/ephemeral ports.
-- [ ] Выполнить `make lint test build`; сверить auth схемы OpenAPI с middleware tests.
+- [x] Реализовать `internal/local/`: XDG defaults/explicit overrides, private credential initialization без перезаписи, symlink/permissions checks, data-dir lock, безопасное завершение по signal. Секреты никогда не печатать.
+- [x] Реализовать HTTP server bootstrap и owner-auth middleware в `cmd/arteld`/`internal/api`: только loopback, headers/Origin/Host/body limits, deadlines и sanitized errors. Диагностика фактического bound address для :0 не содержит token.
+- [x] Задать `api/openapi.yaml` с операциями/DTO/ошибками из Technical Details; реализацию domain handlers вводить следующими задачами. Минимальная CLI: `status --json`, `snapshot --json` (последняя заработает в Task 4), --endpoint/--token-file; никаких shell tools.
+- [x] Написать тесты первого/повторного init, небезопасных прав и symlink, конкурирующих запусков, bind refusal, missing/wrong token, Origin/Host, oversized body и secret redaction. Test processes используют только temp paths/ephemeral ports.
+- [x] Выполнить `make lint test build`; сверить auth схемы OpenAPI с middleware tests.
+
+Task 2 validation (2026-11-17): `GOLANGCI_LINT=/tmp/artel-pi-bridge-Fd40ok1E/tools/golangci-lint make lint test build test-race` — PASS (0 lint issues, all Go tests/race tests and 4 offscreen Qt results passed, no skips). Versions unchanged from Task 1: Go 1.26.3, lint 2.10.1, Qt 6.12.0, clang-format 23.1.3, GCC 16.2.1. Process tests build their own daemon, bind :0, verify cross-process lock refusal, SIGTERM/restart, unchanged credential and redacted diagnostics. Negative tests cover unsafe files/parents, symlinks, FIFO credentials, wrong/missing/duplicate auth, Origin/Host, oversized bodies, occupied/nonlocal binds, redirect rejection and invalid/oversized CLI responses. YAML parse/reference/auth-policy check passed for all 10 operations; middleware tests exercise all nine protected operations. Pinned full OpenAPI schema/response validation remains Task 4, not claimed here. Public status uses healthz; authenticated snapshot explicitly returns 501 until domain handlers arrive. No owner service/package/settings changes or remote CI performed. `git diff --check` and local content review passed.
 
 ### Task 3: Implement transactional storage, manual state transitions and queue rules
 
