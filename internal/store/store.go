@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/lllypuk/artel/internal/domain"
@@ -21,9 +23,17 @@ import (
 //go:embed schema.sql
 var schema string
 
-const schemaVersion = 1
+//go:embed observer_schema.sql
+var observerSchema string
 
-type Store struct{ db *sql.DB }
+const schemaVersion = 2
+
+type Store struct {
+	db            *sql.DB
+	observerMu    sync.Mutex
+	observerClock func() time.Time
+	observerSeen  map[string]time.Time
+}
 
 type Snapshot struct {
 	InstanceID string              `json:"instance_id"`
@@ -76,7 +86,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db}
+	s := &Store{db: db, observerClock: time.Now, observerSeen: make(map[string]time.Time)}
 	if err := s.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -139,7 +149,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO metadata(id,instance_id) VALUES(1,?)", uuid.NewString()); err != nil {
 			return err
 		}
-	} else if version != schemaVersion {
+	} else if version != 1 && version != schemaVersion {
 		return errors.New("unsupported database schema version")
 	}
 	var applicationID int
@@ -167,6 +177,24 @@ func (s *Store) migrate(ctx context.Context) error {
 		rows, err := tx.QueryContext(ctx, query)
 		if err != nil {
 			return errors.New("invalid database schema")
+		}
+		_ = rows.Close()
+	}
+	if version < 2 {
+		if _, err := tx.ExecContext(ctx, observerSchema); err != nil {
+			return fmt.Errorf("upgrade observer schema: %w", err)
+		}
+	}
+	for _, query := range []string{
+		"SELECT id,verifier,record FROM observers LIMIT 0",
+		"SELECT observer_id,runtime_id,retired FROM observer_identities LIMIT 0",
+		"SELECT observer_id,runtime_id,record FROM observer_runtimes LIMIT 0",
+		"SELECT principal,key,request_hash,result FROM observer_receipts LIMIT 0",
+		"SELECT seq,observer_id,action,timestamp FROM observer_audit LIMIT 0",
+	} {
+		rows, err := tx.QueryContext(ctx, query)
+		if err != nil {
+			return errors.New("invalid observer schema")
 		}
 		_ = rows.Close()
 	}

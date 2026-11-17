@@ -49,7 +49,7 @@ func TestSQLitePragmasAndConstraints(t *testing.T) {
 	for _, pair := range []struct {
 		name string
 		want int
-	}{{"foreign_keys", 1}, {"busy_timeout", 5000}, {"synchronous", 2}, {"user_version", 1}} {
+	}{{"foreign_keys", 1}, {"busy_timeout", 5000}, {"synchronous", 2}, {"user_version", 2}} {
 		var got int
 		if err := s.db.QueryRowContext(t.Context(), "PRAGMA "+pair.name).Scan(&got); err != nil {
 			t.Fatal(err)
