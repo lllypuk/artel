@@ -1,4 +1,6 @@
 /build/
+/integrations/pi-observer/dist/
+/integrations/pi-observer/node_modules/
 /desktop/build/
 /packaging/arch/pkg/
 /packaging/arch/src/

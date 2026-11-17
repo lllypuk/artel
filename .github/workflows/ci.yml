@@ -37,7 +37,7 @@ jobs:
       # Host dependencies are installed only inside this disposable CI container.
       - name: Prepare ephemeral Arch environment
         run: |
-          pacman -Syu --noconfirm --needed git go qt6-base qt6-declarative qt6-svg qt6-wayland clang python desktop-file-utils systemd libarchive
+          pacman -Syu --noconfirm --needed git go qt6-base qt6-declarative qt6-svg qt6-wayland clang python desktop-file-utils systemd libarchive nodejs npm
           useradd --create-home builder
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -53,8 +53,12 @@ jobs:
           g++ --version
           clang-format --version
           pacman -Q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
       - name: Mandatory native and full-stack gates (unprivileged)
         run: |
           chown -R builder:builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- env PATH="$PATH" npm --prefix integrations/pi-observer ci --ignore-scripts
           runuser -u builder -- env PATH="$PATH" GOLANGCI_LINT=/usr/local/bin/golangci-lint make check
           runuser -u builder -- env PATH="$PATH" GOLANGCI_LINT=/usr/local/bin/golangci-lint make package-check

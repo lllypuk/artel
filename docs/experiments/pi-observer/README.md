@@ -1,9 +1,13 @@
 # Pi observer: public lifecycle evidence (Task 1)
 
-This is a test-only probe, not the shipping observer extension. No observer
-listener, database changes, provisioning, UI integration, prompt delivery or
-production Pi configuration is implemented here. The existing manual application
-continues to build without Node/Pi. Tasks 2–8 remain separate work.
+This page preserves the original Task 1 public-hook evidence, not an operating
+contract. The implemented observer now has separate [storage](storage.md),
+[HTTP/CLI](http-cli.md), [extension](extension.md), [desktop](desktop.md),
+[navigation](navigation.md), [recovery](recovery.md) and [delivery](delivery.md)
+evidence. Use the stable [development contract](../../development.md) for current
+commands and boundaries. Source build/tests require the private Node/Pi toolchain;
+delivered daemon/CLI/desktop run without it. No prompt delivery or production Pi
+configuration is implemented.
 
 ## Reproduce
 

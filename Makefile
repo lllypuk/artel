@@ -1,4 +1,4 @@
-.PHONY: preflight build lint test test-race test-e2e package-check observer-check check
+.PHONY: preflight build lint test test-race test-e2e package-check observer-build observer-check check
 
 GOLANGCI_LINT ?= golangci-lint
 export GOLANGCI_LINT
@@ -11,6 +11,7 @@ build: preflight
 	go build -o build/bin/arteld ./cmd/arteld
 	go build -o build/bin/artelctl ./cmd/artelctl
 	./desktop/bin/build
+	$(MAKE) observer-build
 
 lint: preflight
 	@test -z "$$(gofmt -l cmd internal)" || { gofmt -l cmd internal; exit 1; }
@@ -25,12 +26,17 @@ test: preflight
 test-race: preflight
 	go test -race ./...
 
-test-e2e: preflight
+test-e2e: preflight observer-build
 	./scripts/e2e
 
 # Dependencies are installed explicitly in this private workspace with npm ci
 # --ignore-scripts; never install tools or alter global Pi configuration here.
+observer-build:
+	./scripts/preflight --observer
+	npm --prefix integrations/pi-observer run build
+
 observer-check:
+	./scripts/preflight --observer
 	npm --prefix integrations/pi-observer run check
 	go test ./internal/api -run '^TestObserverOpenAPI$$' -count=1
 
@@ -43,4 +49,5 @@ check:
 	$(MAKE) test
 	$(MAKE) test-race
 	$(MAKE) build
+	$(MAKE) observer-check
 	$(MAKE) test-e2e

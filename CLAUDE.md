@@ -1,6 +1,6 @@
 # Artel v2
 
-Local manual project/task panel: Go 1.26.3 API and CLI, SQLite, native C++17 / Qt Quick 6.8+ desktop. The bot product is retired; no Telegram, Mattermost, LLM, Docker or Pi runtime dependency.
+Local manual project/task panel: Go 1.26.3 API and CLI, SQLite, native C++17 / Qt Quick 6.8+ desktop. The bot product is retired; no Telegram, Mattermost, LLM or Docker dependency. Pi/Node are optional only for an explicitly loaded observer; daemon/CLI/desktop remain independent.
 
 ## Quality gates
 
@@ -8,12 +8,12 @@ After every code change run `make lint test`. Before completing each plan task r
 
 ## Boundaries
 
-- The completed foundation contract and validation records are in `docs/plans/completed/20261117-artel-v2-foundation-desktop.md`. Follow the current approved task; do not rerun completed tasks. Architecture/experiment documents describe future scope, not permission to implement it.
+- The stable implemented contract, validation gates and isolated examples are in `docs/development.md`. Follow the current approved task; do not rerun completed plans. Architecture/experiment documents describe wider future scope, not permission to implement it.
 - `arteld` owns SQLite; desktop/CLI use HTTP, never direct SQL. C++ owns logic and asynchronous networking; QML owns layout/actions. No shell from QML.
-- Manual state changes do not run agents, verify MRs or deploy anything. Do not add slash commands or bot tools.
+- Manual state changes do not run agents, verify MRs or deploy anything. Opt-in Pi observation is telemetry only, never delivery, writer assignment or task completion. Keep observer auth/store/polling/mutations separate from owner manual state/drafts; do not collect dialogue/tool payloads. Do not add slash commands or bot tools.
 - Preserve Git history, architecture, experiments and historical completed plans. Cleanup inventory: `docs/legacy-cleanup.md`.
 - Tests use temporary paths, private HOME and ephemeral ports; never production data/services or real credentials. Do not change desktop settings.
-- No main push, merge, deployment, package installation or service activation as part of this plan.
+- No main push, merge, deployment, package installation or service activation. No global Pi/agterm/Omarchy changes; standalone observer artifact is explicitly loaded, never auto-discovered.
 
 ## Layout
 

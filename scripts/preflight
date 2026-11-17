@@ -1,6 +1,12 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
+if test "${1:-}" = --observer; then
+    for tool in node npm python3; do
+        command -v "$tool" >/dev/null || { echo "Missing observer dependency: $tool" >&2; exit 1; }
+    done
+    exec node integrations/pi-observer/tests/preflight.mjs
+fi
 . ./scripts/qt-tools
 for tool in go make g++ clang-format python3 "$QMAKE"; do
     command -v "$tool" >/dev/null || { echo "Missing dependency: $tool" >&2; exit 1; }

@@ -4,7 +4,7 @@
 
 [Russian UI example](docs/screenshots/manual-panel-ru.png)
 
-A local, native project/task panel: Go API + CLI, SQLite storage and a standalone C++/Qt Quick desktop. This prototype provides the manual-only foundation; it is not an orchestrator. The former Telegram/Mattermost personal bot has been removed; see [cleanup inventory](docs/legacy-cleanup.md).
+A local, native project/task panel: Go API + CLI, SQLite storage and a standalone C++/Qt Quick desktop. This prototype provides a manual foundation and opt-in Pi observation; it is not an orchestrator. The former Telegram/Mattermost personal bot has been removed; see [cleanup inventory](docs/legacy-cleanup.md).
 
 ## Current slice
 
@@ -13,22 +13,23 @@ A local, native project/task panel: Go API + CLI, SQLite storage and a standalon
 - `artelctl --help` / `--version`, `status --json`, and `snapshot --json` (unsupported arguments exit 2).
 - `artel`: asynchronous native API client with project overview/edit/archive, task editors and acceptance criteria, ordered queue controls, manual transitions and paginated history with expandable before/after fields. The screenshot uses fictional HTTP-fixture data; normal startup never loads demo data.
 
-Manual CRUD is available through both the desktop and API. No claimed agent activity. Pi integration, MR orchestration, remote access and deployment are outside this slice. Closing the UI does not stop the independently launched daemon.
+Manual CRUD is available through both the desktop and API. Optional Pi 1.5.2 observation exposes candidates, explicit project bindings, reported activity and separate freshness, with no agent control or task completion inference. Desktop controls and best-effort claimed agterm session navigation preserve manual drafts. MR orchestration, delivery, remote access and deployment are outside this slice. Closing the UI does not stop the independently launched daemon.
 
 ## Build and checks
 
-Dependencies: Go **1.26.3**, golangci-lint **2.10.1**, Qt **6.8+** (base/declarative, Quick Controls, Qt Test, qmllint and qmlformat), C++17 compiler, make, clang-format and Python 3 (delivery tests). Preflight diagnoses missing tools; it never installs host packages.
+Dependencies: Go **1.26.3**, golangci-lint **2.10.1**, Qt **6.8+** (base/declarative, Quick Controls, Qt Test, qmllint and qmlformat), C++17 compiler, make, clang-format and Python 3 (delivery tests). Observer tests/build also require Node >=22.23.2, npm and Linux Python PTY support, with pinned Pi 1.5.2 in a private dependency workspace. Preflight diagnoses missing tools; it never installs host packages.
 
 ```sh
+npm --prefix integrations/pi-observer ci --ignore-scripts
 make lint test build
 make test-race
-make check          # lint, Go/Qt tests, race, build and native acceptance
+make check          # lint, Go/Qt tests, race, build, public Pi SDK/PTY and full-stack acceptance
 make package-check  # Arch only; disposable build/inspection, no installation
 ```
 
 If the host linter differs, install the pinned version into a private tools directory and set `GOLANGCI_LINT=/path/to/golangci-lint`. Qt tools are resolved via `qmake6 -query QT_INSTALL_BINS`; overrides: `QMAKE`, `QT_BINS`. `JOBS` defaults to 2.
 
-Arch packaging lives in `packaging/arch/`; the separate user unit is `packaging/systemd/arteld.service`. `make package-check` requires an unprivileged Arch environment with base-devel, Go, Qt base/declarative/SVG/Wayland, Python, desktop-file-utils, systemd and libarchive. It reports missing dependencies without installing them. It archives the current working tree's allowed source files (including uncommitted changes), builds with makepkg, checks the exact payload/desktop/unit and removes its temporary package. No token/database, package install hook or service activation is shipped. The package includes all three binaries, MIT license/template attribution and the `artel` desktop entry/icon. Installation and user-service enablement remain separate owner decisions. CI runs Go and native/full-stack/package gates; CI YAML alone is not evidence of a remote green run.
+Arch packaging lives in `packaging/arch/`; the separate user unit is `packaging/systemd/arteld.service`. `make package-check` requires an unprivileged Arch environment with base-devel, Go, Qt base/declarative/SVG/Wayland, Node/npm, Python, desktop-file-utils, systemd and libarchive. It reports missing dependencies without installing them. It archives the current working tree's allowed source files (including uncommitted changes), builds with makepkg, checks the exact payload/desktop/unit and removes its temporary package. No token/database, package install hook or service activation is shipped. The package includes all three binaries, MIT license/template attribution, the `artel` desktop entry/icon and an inert standalone extension under `/usr/share/artel/pi-observer/`. Pi/Node are optional for observation only; daemon/CLI/desktop work without them. Nothing installs into Pi auto-discovery. Installation and user-service enablement remain separate owner decisions. CI runs Go and native/full-stack/package gates; CI YAML alone is not evidence of a remote green run.
 
 Run separately (no service is enabled or started by build scripts):
 
@@ -61,4 +62,4 @@ Tests run production QML offscreen and daemon processes with temporary paths/HOM
 
 Mutations require a UUID `Idempotency-Key`; edits/transitions require expected versions, and leaving queued also requires the queue version. Retry uncertain outcomes with the same key/payload. Snapshot queues are an array of `{project_id,queue_version,task_ids}` records. Audit `before`/`after` objects map `object-kind:UUID` keys to changed fields, including versions. History scans at most `limit` events (1–500, default 100) and advances `next_cursor` even when filters match nothing; task filters include queue events that change that task. SSE uses `instance_id` and `after` from a snapshot, sends compact invalidations, polls the persisted log every 100 ms and heartbeats every 15 seconds. Each stream buffers at most 100 events and disconnects writes blocked for 2 seconds; reconnect with a new snapshot or replay cursor. Wrong-instance/future cursors return `409 reset_required` before streaming. Snapshots exceeding 32 MiB fail with 413, never partial data. The OpenAPI 3.0.3 document is checked using the pinned Go kin-openapi validator (no downloaded CLI validator).
 
-See [development and isolated CLI examples](docs/development.md), [implementation plan](docs/plans/completed/20261117-artel-v2-foundation-desktop.md) and [architecture direction](docs/architecture/20261117-artel-v2-direction.md). `docs/plans/completed/` contains the completed foundation plan and historical bot plans; the latter are not active instructions. `docs/experiments/` is research, not a runtime dependency.
+See [development, observer provisioning/resume/bind/revoke/prune and isolated CLI examples](docs/development.md), [foundation evidence](docs/plans/completed/20261117-artel-v2-foundation-desktop.md) and [architecture direction](docs/architecture/20261117-artel-v2-direction.md). `docs/plans/completed/` contains the completed foundation plan and historical bot plans; the latter are not active instructions. `docs/experiments/` is research, not a runtime dependency.

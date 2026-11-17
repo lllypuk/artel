@@ -76,6 +76,8 @@ class Lifecycle(unittest.TestCase):
             observed = oracle.__enter__()
             Provider.forbidden = observed['token']
             try:
+                if os.environ.get('ARTEL_OBSERVER_ARTIFACT'):
+                    env['ARTEL_OBSERVER_ARTIFACT'] = os.environ['ARTEL_OBSERVER_ARTIFACT']
                 result = subprocess.run([shutil.which('node'), '--experimental-strip-types',
                                          str(PACKAGE / 'tests/sdk.ts')],
                                         cwd=root / 'work', env=env, capture_output=True, timeout=20)
@@ -132,7 +134,7 @@ class Lifecycle(unittest.TestCase):
             args = [shutil.which('node'), str(CLI), '--offline', '--no-approve',
                     '--no-extensions', '--no-skills', '--no-prompt-templates',
                     '--no-context-files', '--no-themes', '--no-mcp', '--no-builtin-tools',
-                    '-e', str(PACKAGE / 'src/index.ts'),
+                    '-e', str(Path(shutil.copytree(PACKAGE / 'dist', root / 'installed-observer')) / 'index.mjs'),
                     '-e', str(PACKAGE / 'tests/probe.ts'),
                     '-e', str(PACKAGE / 'tests/fixture.ts'), '--model', 'artel-fixture/local']
             child = subprocess.Popen(args, cwd=root / 'work', env=env,

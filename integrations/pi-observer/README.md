@@ -5,11 +5,18 @@ No tools, commands, messages, prompts, model selection or global installation.
 Without ARTEL_OBSERVER_CONFIG the extension is inert. Invalid/pending/private-file
 permissions or unsupported host capabilities disable observation, not Pi.
 
-The package manifest exports src/index.ts. A local package artifact can be made
-with `npm pack --pack-destination /ABSOLUTE/PRIVATE/STAGING` from this directory;
-extract it into private staging and explicitly load its `package/src/index.ts`
-with Pi's `-e /ABSOLUTE/STAGING/package/src/index.ts`. Do not install into global
-settings or `.pi/extensions`. Artifact delivery/standalone checks are a later gate.
+The delivered package contains index.mjs, package.json and this README under
+/usr/share/artel/pi-observer/, outside Pi auto-discovery. Explicitly load with
+`ARTEL_OBSERVER_CONFIG=/ABSOLUTE/PRIVATE/config.json pi -e /usr/share/artel/pi-observer/index.mjs`.
+Pi itself must be separately installed at exactly 1.5.2; Node >=22.23.2 is optional
+for this integration only. Daemon/CLI/desktop start without either runtime.
+
+For local builds run `npm ci --ignore-scripts` then `npm run build` in this package.
+Copy the three dist files into private staging and load /ABSOLUTE/STAGING/index.mjs.
+The bundle contains only Artel code with Node built-ins and the public Pi API
+external (provided by the Pi extension loader); it needs no Artel checkout,
+node_modules, TypeScript compiler or dev dependencies at runtime. Do not install
+into global settings or `.pi/extensions`. No automatic service activation.
 
 Set ARTEL_OBSERVER_CONFIG to the absolute private config path confirmed by
 `artelctl observer provision` (or `provision --resume`). Never put the token in
@@ -37,7 +44,18 @@ connection, binding and old credential revocation. Observer quota is a capacity
 blocker, not automatic garbage collection. Terminal UUID hints are unverified
 claims only; no agterm commands are run by this extension.
 
-Development: `npm ci` locally, then `npm run check`, or repository
+Development: `npm ci --ignore-scripts` locally, then `npm run check`, or repository
 `make observer-check`. Tests use pinned public SDK and a real isolated Pi TUI,
-local deterministic provider and private Unix HTTP oracle. Production daemon/QML
-end-to-end acceptance and installed artifact gates belong to subsequent tasks.
+local deterministic provider and private Unix HTTP oracle. `make check` additionally
+runs production daemon/QML recovery acceptance; `make package-check` exercises the
+extracted artifact through the public Pi loader and starts staged binaries without
+Pi/Node. No remote CI, normal-session Wayland or live owner pilot is implied.
+
+Owner operations: provision/resume/list/bind/unbind/revoke/prune use artelctl's
+owner API. Bind/rebind and destructive observer controls require explicit CAS
+version. Never bind automatically from cwd, session, terminal or model. At 1024
+lifetime identities explicitly provision/connect/bind a replacement and revoke the
+old credential; prune only frees full payload slots (8), not retirement identities.
+The 256-observer cap includes revoked credentials. Navigation is desktop-only,
+checked session selection, not guaranteed pane focus or foreground activation.
+See the repository's stable docs/development.md for the full operating contract.

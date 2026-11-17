@@ -11,12 +11,17 @@ import tempfile
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE_DIRS = {"cmd", "internal", "api", "desktop", "scripts", "packaging"}
 SOURCE_FILES = {"go.mod", "go.sum", "LICENSE"}
+OBSERVER_SOURCES = {"package.json", "package-lock.json", "build.mjs", "README.md",
+                    "src/index.ts", "src/client.ts", "src/config.ts"}
 PAYLOAD = {
     "usr/bin/artel", "usr/bin/arteld", "usr/bin/artelctl",
     "usr/lib/systemd/user/arteld.service",
     "usr/share/applications/artel.desktop",
     "usr/share/icons/hicolor/scalable/apps/artel.svg",
     "usr/share/licenses/artel/LICENSE", "usr/share/licenses/artel/NOTICE",
+    "usr/share/artel/pi-observer/index.mjs",
+    "usr/share/artel/pi-observer/package.json",
+    "usr/share/artel/pi-observer/README.md",
 }
 
 
@@ -33,7 +38,9 @@ def snapshot(root, destination):
     with tarfile.open(destination, "w:gz") as archive:
         for name in sorted(set(names) - {""}):
             path = Path(name)
-            if path.parts[0] not in SOURCE_DIRS and name not in SOURCE_FILES:
+            observer_source = (path.parts[:2] == ("integrations", "pi-observer")
+                               and str(Path(*path.parts[2:])) in OBSERVER_SOURCES)
+            if path.parts[0] not in SOURCE_DIRS and name not in SOURCE_FILES and not observer_source:
                 continue
             if path.parts[:2] == ("desktop", "build") or "__pycache__" in path.parts:
                 continue
@@ -113,7 +120,8 @@ def main():
         for name in PAYLOAD:
             if str(ROOT).encode() in (extracted / name).read_bytes():
                 raise ValueError(f"Checkout path leaked into {name}")
-        print("Package manifest, ELF files, desktop entry, user unit and privacy checks: PASS")
+        run(["python3", "-B", str(ROOT / "tests/staged_acceptance.py"), str(extracted)])
+        print("Package manifest, standalone observer, no-Pi baseline, desktop, unit and privacy checks: PASS")
     print("Disposable package removed; nothing installed or activated.")
 
 

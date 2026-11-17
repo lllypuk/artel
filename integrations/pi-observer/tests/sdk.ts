@@ -9,7 +9,7 @@ const agentDir = process.env.PI_CODING_AGENT_DIR!;
 const settingsManager = SettingsManager.inMemory({ defaultProvider: "artel-fixture", defaultModel: "local", compaction: { enabled: false }, retry: { enabled: false } });
 const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager,
   noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-  additionalExtensionPaths: [fileURLToPath(new URL("../src/index.ts", import.meta.url)), fileURLToPath(new URL("./probe.ts", import.meta.url)), fileURLToPath(new URL("./fixture.ts", import.meta.url))],
+  additionalExtensionPaths: [process.env.ARTEL_OBSERVER_ARTIFACT ?? fileURLToPath(new URL("../dist/index.mjs", import.meta.url)), fileURLToPath(new URL("./probe.ts", import.meta.url)), fileURLToPath(new URL("./fixture.ts", import.meta.url))],
 });
 await loader.reload();
 const modelRuntime = await ModelRuntime.create({ authPath: agentDir + "/auth.json", modelsPath: agentDir + "/models.json", allowModelNetwork: false });

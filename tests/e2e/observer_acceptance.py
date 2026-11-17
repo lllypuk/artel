@@ -278,10 +278,13 @@ class Acceptance:
         master, slave = pty.openpty()
         self.master = master
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 120, 0, 0))
+        artifact = self.root / 'installed-observer'
+        if not artifact.exists():
+            shutil.copytree(PACKAGE / 'dist', artifact)
         args = [shutil.which('node'), str(PACKAGE / 'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'),
                 '--offline', '--no-approve', '--no-extensions', '--no-skills', '--no-prompt-templates',
                 '--no-context-files', '--no-themes', '--no-mcp', '--no-builtin-tools',
-                '-e', str(PACKAGE / 'src/index.ts'), '-e', str(PACKAGE / 'tests/probe.ts'),
+                '-e', str(artifact / 'index.mjs'), '-e', str(PACKAGE / 'tests/probe.ts'),
                 '-e', str(PACKAGE / 'tests/fixture.ts'), '--model', 'artel-fixture/local']
         self.pi = self.spawn(args, cwd=self.root / 'work', stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)

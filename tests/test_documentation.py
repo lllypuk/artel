@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import selectors
 import shlex
+import shutil
 import subprocess
 import tempfile
 from string import Template
@@ -23,12 +24,40 @@ class DocumentationTests(unittest.TestCase):
                         self.assertTrue(((ROOT / name).parent / target.split("#")[0]).exists())
 
     def test_active_instruction_plan_paths_resolve(self):
-        for name in ("CLAUDE.md", "docs/architecture/20261117-artel-v2-direction.md"):
+        for name in ("docs/architecture/20261117-artel-v2-direction.md",):
             paths = re.findall(r"`(docs/plans/[^`]+\.md)`", (ROOT / name).read_text())
             self.assertTrue(paths, name)
             for target in paths:
                 with self.subTest(document=name, target=target):
                     self.assertTrue((ROOT / target).is_file())
+
+    def test_instruction_links_survive_ralphex_move(self):
+        active_plan = 'docs/plans/20261117-artel-v2-pi-observer.md'
+        moved_plan = 'docs/plans/completed/20261117-artel-v2-pi-observer.md'
+        with tempfile.TemporaryDirectory(prefix='artel-plan-move-') as directory:
+            tree = Path(directory)
+            shutil.copytree(ROOT / 'docs', tree / 'docs')
+            shutil.copytree(ROOT / 'api', tree / 'api')
+            if (tree / active_plan).exists():
+                (tree / active_plan).rename(tree / moved_plan)
+            self.assertFalse((tree / active_plan).exists())
+            for name in ('CLAUDE.md', '.claude/CLAUDE.md', '.github/copilot-instructions.md',
+                         'README.md', 'docs/development.md', 'docs/legacy-cleanup.md'):
+                text = (ROOT / name).read_text()
+                destination = tree / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(text)
+                if name != 'docs/legacy-cleanup.md':
+                    self.assertIn('docs/development.md' if name != 'docs/development.md' else 'stable development contract', text)
+                self.assertNotIn(active_plan, text)
+                self.assertNotIn(moved_plan, text)
+                # Cleanup inventory contains names of intentionally deleted files.
+                if name != 'docs/legacy-cleanup.md':
+                    for target in re.findall(r'`(docs/[^`]+\.md)`', text):
+                        self.assertTrue((tree / target).is_file(), (name, target))
+                for target in re.findall(r'\]\(([^)]+)\)', text):
+                    if '://' not in target:
+                        self.assertTrue((destination.parent / target.split('#')[0]).exists(), (name, target))
 
     def test_documented_cli_examples_on_temporary_instance(self):
         text = (ROOT / "docs/development.md").read_text()
@@ -46,7 +75,9 @@ class DocumentationTests(unittest.TestCase):
             env = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home / "config"),
                        XDG_DATA_HOME=str(home / "data"))
             variables = dict(ARTELD=str(root / "arteld"), ARTELCTL=str(root / "artelctl"),
-                             ARTEL_DATA=str(root / "data"), ARTEL_TOKEN=str(root / "private/owner.token"))
+                             ARTEL_DATA=str(root / "data"), ARTEL_TOKEN=str(root / "private/owner.token"),
+                             ARTEL_SOCKET=str(root / 'observer/observer.sock'),
+                             ARTEL_CONFIG=str(root / 'observer/config.json'))
 
             def args(line):
                 return shlex.split(Template(line).substitute(variables))
@@ -72,6 +103,19 @@ class DocumentationTests(unittest.TestCase):
                         self.assertEqual(data["event_seq"], 0)
                         for key in ("projects", "tasks", "queues"):
                             self.assertEqual(data[key], [])
+                observer_block = re.search(r'<!-- smoke:observer-cli -->\n```sh\n(.*?)\n```', text, re.S)
+                self.assertIsNotNone(observer_block)
+                for line in observer_block.group(1).splitlines():
+                    result = subprocess.run(args(line), env=env, capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stderr, '')
+                    public = json.loads(result.stdout)
+                    self.assertTrue(public)
+                    config = json.loads(Path(variables['ARTEL_CONFIG']).read_text())
+                    self.assertEqual(config['status'], 'confirmed')
+                    secret = Path(config['token_file']).read_text().strip()
+                    self.assertNotIn(secret, result.stdout + result.stderr)
+                self.assertEqual(len(public['observers']), 1)
                 # Public liveness needs no credential; private snapshot must fail safely.
                 variables["ARTEL_TOKEN"] = str(root / "missing.token")
                 for line, expected in zip(lines[1:], (0, 1)):

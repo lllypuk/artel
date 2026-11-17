@@ -1,22 +1,33 @@
 {
   "name": "@artel/pi-observer",
-  "version": "0.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
-  "pi": { "extensions": ["./src/index.ts"] },
-  "files": ["src", "README.md"],
-  "engines": { "node": ">=22.23.2" },
+  "pi": {
+    "extensions": [
+      "./dist/index.mjs"
+    ]
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.23.2"
+  },
   "scripts": {
+    "build": "node build.mjs",
     "preflight": "node tests/preflight.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit --noUnusedLocals --noUnusedParameters --noFallthroughCasesInSwitch",
     "unit": "node --experimental-strip-types --test tests/*.test.ts",
     "probe": "python3 -B tests/pty_probe.py",
-    "check": "npm run preflight && npm run lint && npm run typecheck && npm run unit && npm run probe"
+    "check": "npm run preflight && npm run lint && npm run typecheck && npm run unit && npm run build && npm run probe"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.5.2",
     "@types/node": "22.19.0",
+    "esbuild": "0.25.12",
     "typescript": "5.9.3"
   }
 }

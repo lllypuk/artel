@@ -32,10 +32,18 @@ class DeliveryTests(unittest.TestCase):
             (root / ".env").write_text("fictional secret")
             (root / "data").mkdir()
             (root / "data/artel.sqlite").write_text("not source")
+            observer = root / 'integrations/pi-observer'
+            (observer / 'src').mkdir(parents=True)
+            (observer / 'src/index.ts').write_text('observer source')
+            (observer / 'node_modules').mkdir()
+            (observer / 'node_modules/private.js').write_text('not shipped')
+            (observer / 'dist').mkdir()
+            (observer / 'dist/index.mjs').write_text('stale bundle')
+            (observer / 'private-config.json').write_text('not source')
             archive = root / "snapshot.tar.gz"
             package.snapshot(root, archive)
             with tarfile.open(archive) as source:
-                self.assertEqual(source.getnames(), ["artel/cmd/main.go", "artel/desktop/bin/build"])
+                self.assertEqual(source.getnames(), ["artel/cmd/main.go", "artel/desktop/bin/build", "artel/integrations/pi-observer/src/index.ts"])
                 self.assertEqual(source.extractfile("artel/cmd/main.go").read(), b"current uncommitted source")
             (root / "cmd/link").symlink_to(root / "local-owner.token")
             with self.assertRaisesRegex(ValueError, "Non-regular"):
@@ -87,7 +95,8 @@ class DeliveryTests(unittest.TestCase):
         result = subprocess.CompletedProcess([], 0, "", "")
         with patch.object(package.shutil, "which", return_value="tool"), patch.object(package.os, "getuid", return_value=1000), patch.object(package.subprocess, "check_output", return_value=""), patch.object(package.subprocess, "run", return_value=result), patch.object(package, "run", side_effect=fake_run), patch.object(package, "snapshot", side_effect=fake_snapshot), patch.object(package, "inspect_package"), patch.object(package, "PAYLOAD", set()):
             package.main()
-        self.assertEqual(commands, [["makepkg", "--config", "/etc/makepkg.conf", "--cleanbuild", "--noconfirm"]])
+        self.assertEqual(commands[0], ["makepkg", "--config", "/etc/makepkg.conf", "--cleanbuild", "--noconfirm"])
+        self.assertEqual(commands[1][:3], ["python3", "-B", str(ROOT / "tests/staged_acceptance.py")])
 
     def test_root_refused_before_build(self):
         with patch.object(package.shutil, "which", return_value="tool"), patch.object(package.os, "getuid", return_value=0), patch.object(package, "run") as run:
@@ -102,6 +111,19 @@ class DeliveryTests(unittest.TestCase):
                 result = subprocess.run([str(ROOT / "scripts/preflight")], cwd=ROOT, env=dict(os.environ, **env), capture_output=True, text=True, check=False)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stdout + result.stderr)
+
+    def test_observer_artifact_is_explicit_and_standalone(self):
+        import json
+        manifest = json.loads((ROOT / 'integrations/pi-observer/package.json').read_text())
+        self.assertEqual(manifest['pi']['extensions'], ['./dist/index.mjs'])
+        self.assertNotIn('dependencies', manifest)
+        recipe = (ROOT / 'packaging/arch/PKGBUILD').read_text()
+        self.assertIn('/usr/share/artel/pi-observer/', recipe)
+        self.assertIn('ci --ignore-scripts', recipe)
+        self.assertNotIn('.pi/', recipe)
+        required = {f'usr/share/artel/pi-observer/{name}' for name in ('index.mjs', 'package.json', 'README.md')}
+        self.assertTrue(required <= package.PAYLOAD)
+        self.assertIn('$(MAKE) observer-check', (ROOT / 'Makefile').read_text())
 
     def test_delivery_has_no_activation_hooks(self):
         recipe = (ROOT / "packaging/arch/PKGBUILD").read_text()
