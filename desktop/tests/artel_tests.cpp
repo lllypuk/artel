@@ -451,6 +451,7 @@ private slots:
     QTest::addColumn<bool>("project");
     QTest::addColumn<bool>("create");
     QTest::addColumn<bool>("retry");
+    QTest::addColumn<bool>("discard");
     for (bool project : {false, true})
       for (bool create : {false, true})
         for (bool retry : {false, true}) {
@@ -458,17 +459,25 @@ private slots:
               QString("%1-%2-%3")
                   .arg(project ? "project" : "task", create ? "create" : "edit",
                        retry ? "retry" : "reply");
-          QTest::newRow(qPrintable(name)) << project << create << retry;
+          QTest::newRow(qPrintable(name))
+              << project << create << retry << false;
+          if (project && create)
+            QTest::newRow(qPrintable(name + "-discard"))
+                << project << create << retry << true;
         }
   }
   void retainedEditorAdoptsConfirmedIdentity() {
     QFETCH(bool, project);
     QFETCH(bool, create);
     QFETCH(bool, retry);
+    QFETCH(bool, discard);
     UiFixture fixture;
-    QPointer<QTcpSocket> held;
+    QPointer<QTcpSocket> held, heldHistory;
+    bool holdHistory = false;
     fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
-      if (!request.startsWith("GET"))
+      if (holdHistory && request.startsWith("GET /v1/events?"))
+        heldHistory = socket;
+      else if (!request.startsWith("GET"))
         held = socket;
       else
         fixture.normal(socket, request);
@@ -480,6 +489,13 @@ private slots:
     QTRY_VERIFY(panel.writable());
     QVERIFY(panel.selectProject(fixture.project));
     QVERIFY(panel.selectTask(fixture.task));
+    QTRY_VERIFY(!panel.history().isEmpty());
+    bool selectionClearedAtReply = false;
+    connect(&client, &ApiClient::mutationSucceeded, &panel, [&] {
+      selectionClearedAtReply = panel.task().isEmpty() &&
+                                panel.history().isEmpty() &&
+                                !panel.historyLoading();
+    });
     QVERIFY(project ? panel.editProject(create) : panel.editTask(create));
     const QString field = project ? "name" : "title";
     panel.field(field, "Submitted text");
@@ -518,6 +534,14 @@ private slots:
     snapshot.insert(collection, rows);
     snapshot.insert("event_seq", 26);
     fixture.state = QJsonDocument(snapshot).toJson();
+    if (project && create) {
+      // A previous task's in-flight history must be cancelled at adoption,
+      // not merely hidden after the next snapshot has arrived.
+      holdHistory = true;
+      client.loadHistory(fixture.project, fixture.task, 0);
+      QTRY_VERIFY(heldHistory);
+      QVERIFY(panel.historyLoading());
+    }
     UiFixture::respond(
         held, 200,
         QJsonDocument(QJsonObject{{"id", id}, {"version", version}}).toJson());
@@ -525,6 +549,27 @@ private slots:
     QTRY_VERIFY(!client.pending() && !panel.uncertain() && !client.loading());
     QCOMPARE(panel.editor(), retained);
     QVERIFY(panel.dirty());
+    if (project && create) {
+      QVERIFY(selectionClearedAtReply);
+      QTRY_VERIFY(!heldHistory ||
+                  heldHistory->state() == QAbstractSocket::UnconnectedState);
+      QCOMPARE(panel.project().value("id").toString(), id);
+      QVERIFY(panel.task().isEmpty());
+      QVERIFY(panel.history().isEmpty());
+    } else if (project) {
+      // Editing the current project must retain its selected task.
+      QCOMPARE(panel.task().value("id").toString(), fixture.task);
+    }
+    if (discard) {
+      panel.discard();
+      QVERIFY(!panel.dirty());
+      QVERIFY(!panel.editTask(false));
+      QVERIFY(!panel.allowed("cancelled"));
+      QVERIFY(!panel.transition("cancelled"));
+      QCOMPARE(fixture.mutations.size(), retry ? 2 : 1);
+      client.stop();
+      return;
+    }
     QVERIFY(panel.save());
     QTRY_VERIFY(held);
     const auto request = fixture.mutations.last();
@@ -544,6 +589,13 @@ private slots:
     QVERIFY(!panel.dirty());
     QVERIFY(!panel.conflict());
     QCOMPARE(fixture.mutations.size(), retry ? 3 : 2);
+    if (project && create) {
+      QVERIFY(!panel.editTask(false));
+      QVERIFY(!panel.allowed("cancelled"));
+      QVERIFY(!panel.transition("cancelled"));
+      QVERIFY(panel.task().isEmpty());
+      QVERIFY(panel.history().isEmpty());
+    }
     client.stop();
   }
   void replacedDatabaseAllowsAcknowledgedAbandonment_data() {

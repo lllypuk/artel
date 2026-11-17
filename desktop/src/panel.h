@@ -82,6 +82,7 @@ signals:
   void changed();
 
 private:
+  void setProjectSelection(const QString &id);
   QVariantList queueIds() const;
   bool begin(const QString &kind, const QVariantMap &value);
   ApiClient *m_client;

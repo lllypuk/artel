@@ -40,10 +40,12 @@ Panel::Panel(ApiClient *client, QObject *parent)
             m_editorId = result.value("id").toString();
             m_version = result.value("version").toLongLong();
             m_adopted = false;
-            if (m_kind == "project")
-              m_project = m_editorId;
-            else
+            if (m_kind == "project") {
+              if (m_project != m_editorId)
+                setProjectSelection(m_editorId);
+            } else {
               m_task = m_editorId;
+            }
           });
   connect(client, &ApiClient::historyReceived, this,
           [this](const QVariantList &events, qint64 cursor, bool more) {
@@ -206,13 +208,20 @@ void Panel::setShowArchived(bool value) {
   m_archived = value;
   emit changed();
 }
-bool Panel::selectProject(const QString &id) {
-  if (dirty() || m_client->pending() || uncertain())
-    return false;
+void Panel::setProjectSelection(const QString &id) {
+  // Keep dependent selection/history consistent for both owner selection and
+  // confirmed project creation, without touching an in-flight editor's draft.
   m_project = id;
   m_task.clear();
   m_client->cancelHistory();
   m_history.clear();
+  m_historyCursor = 0;
+  m_historyMore = true;
+}
+bool Panel::selectProject(const QString &id) {
+  if (dirty() || m_client->pending() || uncertain())
+    return false;
+  setProjectSelection(id);
   emit changed();
   return true;
 }
