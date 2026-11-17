@@ -1,7 +1,9 @@
-QT += core gui qml quick quickcontrols2 testlib
+QT += core gui qml quick quickcontrols2 testlib network
 CONFIG += c++17 testcase warn_on
 QMAKE_CXXFLAGS += -Wextra -Werror
 TARGET = artel_tests
 TEMPLATE = app
-SOURCES += artel_tests.cpp
+INCLUDEPATH += ../src
+SOURCES += artel_tests.cpp ../src/apiclient.cpp
+HEADERS += ../src/apiclient.h
 RESOURCES += ../src/resources.qrc

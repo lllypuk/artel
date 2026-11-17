@@ -2,7 +2,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 . ./scripts/qt-tools
-clang-format --dry-run --Werror desktop/src/*.cpp desktop/tests/*.cpp
+clang-format --dry-run --Werror desktop/src/*.cpp desktop/src/*.h desktop/tests/*.cpp
 "$QT_BINS/qmllint" desktop/src/*.qml
 for file in desktop/src/*.qml; do
     formatted=$(mktemp)

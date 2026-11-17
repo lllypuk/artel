@@ -1,6 +1,8 @@
+#include "apiclient.h"
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QTemporaryDir>
 #include <QtTest>
 
 class ArtelTests : public QObject {
@@ -25,6 +27,25 @@ private slots:
     QVERIFY(label);
     QVERIFY(label->property("text").toString().contains("not available yet"));
     QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+  }
+  void clientDiagnosticsReachProductionQml() {
+    QTemporaryDir directory;
+    ApiClient client;
+    QVERIFY(!client.configure(QUrl("http://127.0.0.1:7331"),
+                              directory.filePath("missing.token")));
+    QQmlApplicationEngine engine;
+    engine.setInitialProperties({{"connectionStatus", client.status()},
+                                 {"connectionError", client.error()}});
+    engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
+    QCOMPARE(engine.rootObjects().size(), 1);
+    auto *window = engine.rootObjects().first();
+    auto *label = window->findChild<QObject *>("connectionLabel");
+    QVERIFY(label);
+    QVERIFY(label->property("text").toString().contains("credential"));
+    QVERIFY(!label->property("text").toString().contains(directory.path()));
+    window->setProperty("connectionError", QString{});
+    window->setProperty("connectionStatus", QStringLiteral("online"));
+    QCOMPARE(label->property("text").toString(), QString("API: online"));
   }
   void missingQmlFails() {
     QQmlApplicationEngine engine;

@@ -6,10 +6,18 @@ mkdir -p "$ROOT/desktop/build/tests"
 cd "$ROOT/desktop/build/tests"
 "$QMAKE" "$ROOT/desktop/tests/artel_tests.pro"
 make -j"${JOBS:-2}"
+mkdir -p "$ROOT/desktop/build/client-tests"
+cd "$ROOT/desktop/build/client-tests"
+"$QMAKE" "$ROOT/desktop/tests/apiclient_tests.pro"
+make -j"${JOBS:-2}"
 # A private HOME avoids any dependency on the owner's desktop configuration.
 TEST_HOME=$(mktemp -d)
 trap 'rm -rf "$TEST_HOME"' EXIT HUP INT TERM
 mkdir -m 700 "$TEST_HOME/runtime"
 env -i PATH="$PATH" LANG=C.UTF-8 HOME="$TEST_HOME" XDG_RUNTIME_DIR="$TEST_HOME/runtime" \
     QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_FORCE_STDERR_LOGGING=1 \
-    ./artel_tests -maxwarnings 0
+    "$ROOT/desktop/build/tests/artel_tests" -maxwarnings 0
+go build -o "$TEST_HOME/arteld" "$ROOT/cmd/arteld"
+env -i PATH="$PATH" LANG=C.UTF-8 HOME="$TEST_HOME" XDG_RUNTIME_DIR="$TEST_HOME/runtime" \
+    ARTEL_TEST_DAEMON="$TEST_HOME/arteld" \
+    "$ROOT/desktop/build/client-tests/apiclient_tests" -maxwarnings 0
