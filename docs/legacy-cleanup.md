@@ -21,7 +21,7 @@ Individual removed files:
 - `DEPLOY.md`, `USER_GUIDE.md`
 - `docs/backlog.md`, `docs/e2e-testing.md`, `docs/headless-setup.md`, `docs/multi-instance-guide.md`
 
-README, Makefile, lint configuration and agent instructions are replaced, not retained as active bot instructions. Completed plans in `docs/plans/completed/` are historical bot records, not current instructions. All architecture, experiment and current plan files are preserved unchanged by cleanup.
+README, Makefile, lint configuration and agent instructions are replaced, not retained as active bot instructions. Historical bot plans in `docs/plans/completed/` are not current instructions; that directory also holds the completed v2 foundation contract and validation records. All architecture, experiment and current plan files are preserved unchanged by cleanup.
 
 ## Local data inspection
 
@@ -43,6 +43,6 @@ are historical context, not instructions to run it.
 `make package-check` validates disposable Arch delivery without installation.
 Documentation examples are executed against a private temporary daemon by
 `tests/test_documentation.py`. See [development guide](development.md) and the
-[plan validation records](plans/20261117-artel-v2-foundation-desktop.md) for gates,
+[plan validation records](plans/completed/20261117-artel-v2-foundation-desktop.md) for gates,
 results and limitations. No external legacy installation or volume cleanup is
 claimed; any such work requires a separate owner-approved inventory.

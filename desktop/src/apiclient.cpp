@@ -524,6 +524,20 @@ bool ApiClient::retry() {
   sendMutation();
   return true;
 }
+bool ApiClient::abandonUncertain() {
+  if (!canAbandon())
+    return false;
+  m_uncertain = false;
+  m_conflict = false;
+  m_method.clear();
+  m_path.clear();
+  m_body.clear();
+  m_key.clear();
+  m_mutationInstance.clear();
+  m_error.clear();
+  emit changed();
+  return true;
+}
 void ApiClient::sendMutation() {
   auto *reply = request(m_method, m_path, m_body, m_key);
   m_mutation = reply;
@@ -562,7 +576,7 @@ void ApiClient::sendMutation() {
       if (m_draftRevision == m_sentRevision)
         m_draft.clear();
       m_error.clear();
-      emit mutationSucceeded();
+      emit mutationSucceeded(obj.toVariantMap(), m_mutationInstance);
       reload();
     } else {
       // A transport error, 5xx, redirect or unusable success can follow commit.

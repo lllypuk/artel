@@ -27,6 +27,7 @@ class Panel : public QObject {
   Q_PROPERTY(bool retryable READ retryable NOTIFY changed)
   Q_PROPERTY(bool dirty READ dirty NOTIFY changed)
   Q_PROPERTY(bool uncertain READ uncertain NOTIFY changed)
+  Q_PROPERTY(bool canAbandon READ canAbandon NOTIFY changed)
   Q_PROPERTY(bool conflict READ conflict NOTIFY changed)
   Q_PROPERTY(bool historyMore READ historyMore NOTIFY changed)
   Q_PROPERTY(bool historyLoading READ historyLoading NOTIFY changed)
@@ -50,10 +51,11 @@ public:
   bool saveable() const;
   bool dirty() const { return m_client->dirty(); }
   bool uncertain() const { return m_client->uncertain(); }
+  bool canAbandon() const { return m_client->canAbandon(); }
   bool conflict() const { return m_client->conflict() && !m_adopted; }
   bool busy() const { return m_client->pending(); }
   bool retryable() const {
-    return m_client->online() && !busy() && uncertain();
+    return m_client->online() && !busy() && uncertain() && !canAbandon();
   }
   bool historyMore() const { return m_historyMore; }
   bool historyLoading() const { return m_client->historyLoading(); }
@@ -65,6 +67,7 @@ public:
   Q_INVOKABLE bool editTask(bool create = false);
   Q_INVOKABLE void field(const QString &name, const QString &value);
   Q_INVOKABLE bool save();
+  Q_INVOKABLE bool abandonUncertain() { return m_client->abandonUncertain(); }
   Q_INVOKABLE void discard();
   Q_INVOKABLE void reload();
   Q_INVOKABLE bool rebase();

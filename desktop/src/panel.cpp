@@ -30,6 +30,21 @@ Panel::Panel(ApiClient *client, QObject *parent)
       m_kind.clear();
     emit changed();
   });
+  connect(client, &ApiClient::mutationSucceeded, this,
+          [this](const QVariantMap &result, const QString &instance) {
+            // A newer draft survives the reply, but its base must advance to
+            // the confirmed save (not to a possibly newer SSE snapshot).
+            if (!m_client->dirty() || m_kind.isEmpty() ||
+                m_editorInstance != instance)
+              return;
+            m_editorId = result.value("id").toString();
+            m_version = result.value("version").toLongLong();
+            m_adopted = false;
+            if (m_kind == "project")
+              m_project = m_editorId;
+            else
+              m_task = m_editorId;
+          });
   connect(client, &ApiClient::historyReceived, this,
           [this](const QVariantList &events, qint64 cursor, bool more) {
             m_history += events;
@@ -159,6 +174,9 @@ QString Panel::currentText() const {
            row.value("acceptance_criteria").toString());
 }
 QString Panel::message() const {
+  if (canAbandon())
+    return tr("Database changed; the old save outcome is unknown. Acknowledge "
+              "abandonment before continuing; the draft will be kept.");
   if (dirty() && m_editorInstance != m_client->instance())
     return tr("Database changed; copy or discard the draft before continuing");
   return m_client->error();

@@ -8,7 +8,7 @@ After every code change run `make lint test`. Before completing each plan task r
 
 ## Boundaries
 
-- Follow `docs/plans/20261117-artel-v2-foundation-desktop.md`, one task per iteration. Architecture/experiment documents describe future scope, not permission to implement it.
+- The completed foundation contract and validation records are in `docs/plans/completed/20261117-artel-v2-foundation-desktop.md`. Follow the current approved task; do not rerun completed tasks. Architecture/experiment documents describe future scope, not permission to implement it.
 - `arteld` owns SQLite; desktop/CLI use HTTP, never direct SQL. C++ owns logic and asynchronous networking; QML owns layout/actions. No shell from QML.
 - Manual state changes do not run agents, verify MRs or deploy anything. Do not add slash commands or bot tools.
 - Preserve Git history, architecture, experiments and historical completed plans. Cleanup inventory: `docs/legacy-cleanup.md`.

@@ -274,6 +274,14 @@ Limitations/handoff: manual-only prototype, not an orchestrator; no Pi/Product/M
 - Offline/unknown/ручные отметки видны честно; продукт не заявляет агентное выполнение или проверенный MR.
 - Полные Go/Qt/API/e2e проверки зелёные, package проверен без установки, приложение имеет native desktop entry и отдельный service unit.
 
+## Review corrections (2026-11-17)
+
+Revmux round 01 reported two desktop correctness defects and duplicate reports of broken plan references after ralphex moved this file. The moved-plan HEAD did not pass documentation link tests; Task 9's earlier validation must not be read as validation of that later move.
+
+Corrections: explicit acknowledged abandonment of an uncertain request only after database replacement, retaining the draft without cross-instance replay; retained editors adopt confirmed mutation ID/version while preserving newer text; all active foundation-plan references and completed-directory descriptions corrected. Regression cases cover project/task × create/edit × normal reply/same-key retry, replacement with/without a draft, cancel/confirm abandonment, and active instruction paths.
+
+Validation: `GOTOOLCHAIN=go1.26.3 GOLANGCI_LINT=/tmp/artel-pi-bridge-Fd40ok1E/tools/golangci-lint make lint test` and then `make check package-check` with the same environment — PASS. Final run: 12 Python tests, all Go/race tests, 20 QML/UI results, 32 API-client results, 3 native acceptance results and negative assertion/cleanup probe; no skipped tests. Package payload, ELF, desktop/unit and privacy checks passed, nothing installed/activated. Fresh package configuration emitted qmake's `WARNING: Failure to find: artel_metatypes.json`; the subsequent moc step generated it and the qmltypes/ELF build completed. No compiler/lint errors, remote CI or normal-session desktop smoke claimed. Independent re-review remains pending.
+
 ## Post-Completion
 
 Владелец отдельно решает установку собранного Arch package и включение user service, выполняет desktop smoke на обычном Omarchy-сеансе и выбирает следующий план. Удаление внешних legacy Docker volumes/установок не требовалось для этого среза и автоматически не выполняется; при необходимости подготовить отдельный точный список объектов для очистки.

@@ -436,6 +436,8 @@ private slots:
     QVERIFY(client.dirty());
     QVERIFY(!client.configure(fixture.endpoint(), fixture.tokenPath()));
     QVERIFY(!client.save("POST", "/v1/projects", {{"name", "different"}}));
+    QVERIFY(!client.canAbandon());
+    QVERIFY(!client.abandonUncertain());
     client.discardDraft();
     QVERIFY(client.dirty());
     QVERIFY(client.retry());
@@ -466,6 +468,12 @@ private slots:
     QTRY_COMPARE(client.instance(),
                  QString("33333333-3333-4333-8333-333333333333"));
     QVERIFY(!client.retry());
+    QVERIFY(client.canAbandon());
+    QVERIFY(client.abandonUncertain());
+    QVERIFY(!client.uncertain());
+    QVERIFY(!client.retry());
+    QVERIFY(!client.abandonUncertain());
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
     client.stop();
   }
   void realTemporaryDaemon() {

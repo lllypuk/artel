@@ -447,6 +447,177 @@ private slots:
     QVERIFY(!panel.dirty());
     client.stop();
   }
+  void retainedEditorAdoptsConfirmedIdentity_data() {
+    QTest::addColumn<bool>("project");
+    QTest::addColumn<bool>("create");
+    QTest::addColumn<bool>("retry");
+    for (bool project : {false, true})
+      for (bool create : {false, true})
+        for (bool retry : {false, true}) {
+          const auto name =
+              QString("%1-%2-%3")
+                  .arg(project ? "project" : "task", create ? "create" : "edit",
+                       retry ? "retry" : "reply");
+          QTest::newRow(qPrintable(name)) << project << create << retry;
+        }
+  }
+  void retainedEditorAdoptsConfirmedIdentity() {
+    QFETCH(bool, project);
+    QFETCH(bool, create);
+    QFETCH(bool, retry);
+    UiFixture fixture;
+    QPointer<QTcpSocket> held;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (!request.startsWith("GET"))
+        held = socket;
+      else
+        fixture.normal(socket, request);
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    QVERIFY(project ? panel.editProject(create) : panel.editTask(create));
+    const QString field = project ? "name" : "title";
+    panel.field(field, "Submitted text");
+    QVERIFY(panel.save());
+    QTRY_VERIFY(held);
+    QVERIFY(
+        !panel.abandonUncertain()); // A pending request cannot be forgotten.
+    panel.field(field, "Newer draft during save");
+    if (retry) {
+      held->disconnectFromHost();
+      held = nullptr;
+      QTRY_VERIFY(panel.uncertain());
+      QVERIFY(!panel.abandonUncertain()); // Same database: retry only.
+      QVERIFY(panel.retry());
+      QTRY_VERIFY(held);
+      QCOMPARE(fixture.mutations.size(), 2);
+      QCOMPARE(fixture.mutations[0], fixture.mutations[1]);
+      panel.field(field, "Newer draft during retry");
+    }
+    const auto retained = panel.editor();
+    const auto id = create ? QString("55555555-5555-4555-8555-555555555555")
+                           : (project ? fixture.project : fixture.task);
+    const int version = create ? 1 : 2;
+    // Simulate the committed object in the next snapshot as well as its reply.
+    auto snapshot = QJsonDocument::fromJson(fixture.state).object();
+    const QString collection = project ? "projects" : "tasks";
+    auto rows = snapshot.value(collection).toArray();
+    auto row = rows.first().toObject();
+    row.insert("id", id);
+    row.insert("version", version);
+    row.insert(field, "Submitted text");
+    if (create)
+      rows.append(row);
+    else
+      rows[0] = row;
+    snapshot.insert(collection, rows);
+    snapshot.insert("event_seq", 26);
+    fixture.state = QJsonDocument(snapshot).toJson();
+    UiFixture::respond(
+        held, 200,
+        QJsonDocument(QJsonObject{{"id", id}, {"version", version}}).toJson());
+    held = nullptr;
+    QTRY_VERIFY(!client.pending() && !panel.uncertain() && !client.loading());
+    QCOMPARE(panel.editor(), retained);
+    QVERIFY(panel.dirty());
+    QVERIFY(panel.save());
+    QTRY_VERIFY(held);
+    const auto request = fixture.mutations.last();
+    const auto expectedPath =
+        "PATCH /v1/" + collection.toUtf8() + "/" + id.toUtf8() + " ";
+    QVERIFY(request.startsWith(expectedPath));
+    const auto body =
+        QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n") + 4))
+            .object();
+    QCOMPARE(body.value("expected_version").toInt(), version);
+    QCOMPARE(body.value(field).toString(), retained.value(field).toString());
+    UiFixture::respond(
+        held, 200,
+        QJsonDocument(QJsonObject{{"id", id}, {"version", version + 1}})
+            .toJson());
+    QTRY_VERIFY(!client.pending());
+    QVERIFY(!panel.dirty());
+    QVERIFY(!panel.conflict());
+    QCOMPARE(fixture.mutations.size(), retry ? 3 : 2);
+    client.stop();
+  }
+  void replacedDatabaseAllowsAcknowledgedAbandonment_data() {
+    QTest::addColumn<bool>("draft");
+    QTest::newRow("editor-draft") << true;
+    QTest::newRow("action-without-draft") << false;
+  }
+  void replacedDatabaseAllowsAcknowledgedAbandonment() {
+    QFETCH(bool, draft);
+    UiFixture fixture;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (!request.startsWith("GET"))
+        socket->disconnectFromHost();
+      else
+        fixture.normal(socket, request);
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    if (draft) {
+      QVERIFY(panel.editTask(true));
+      panel.field("title", "Keep this text from the old database");
+      QVERIFY(panel.save());
+    } else {
+      QVERIFY(panel.archive());
+    }
+    const auto originalDraft = panel.editor();
+    QTRY_VERIFY(panel.uncertain());
+    QVERIFY(!panel.canAbandon());
+    auto snapshot = QJsonDocument::fromJson(fixture.state).object();
+    snapshot.insert("instance_id", "44444444-4444-4444-8444-444444444444");
+    fixture.state = QJsonDocument(snapshot).toJson();
+    client.reload();
+    QTRY_VERIFY(panel.canAbandon());
+    QVERIFY(!panel.retryable());
+    QVERIFY(!panel.retry());
+    panel.discard();
+    QCOMPARE(panel.editor(), originalDraft);
+    QVERIFY(click(window, "abandonButton"));
+    auto *dialog = window->findChild<QObject *>("abandonDialog");
+    QVERIFY(dialog);
+    QTRY_VERIFY(dialog->property("visible").toBool());
+    QVERIFY(QMetaObject::invokeMethod(dialog, "reject"));
+    QVERIFY(panel.uncertain());
+    QVERIFY(click(window, "abandonButton"));
+    QTRY_VERIFY(dialog->property("visible").toBool());
+    QVERIFY(QMetaObject::invokeMethod(dialog, "accept"));
+    QVERIFY(!panel.uncertain());
+    QCOMPARE(panel.editor(), originalDraft);
+    QVERIFY(!panel.retry());
+    QCOMPARE(fixture.mutations.size(),
+             1);            // Neither confirmation nor retry replays.
+    QVERIFY(!panel.save()); // Old draft never silently migrates to the new DB.
+    if (draft) {
+      QVERIFY(panel.dirty());
+      QVERIFY(!panel.rebase());
+      QVERIFY(!panel.selectProject(""));
+      panel.discard();
+    }
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.editTask(true));
+    panel.field("title", "A deliberate new save");
+    QVERIFY(panel.save());
+    QTRY_COMPARE(fixture.mutations.size(), 2);
+    client.stop();
+  }
   void databaseReplacementPreservesButDoesNotSaveOldDraft() {
     UiFixture fixture;
     ApiClient client;

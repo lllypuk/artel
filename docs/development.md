@@ -1,7 +1,7 @@
 # Developing Artel v2
 
 Artel is a local, manual-only prototype, not an agent orchestrator. Read
-[CLAUDE.md](../CLAUDE.md) and the [foundation plan](plans/20261117-artel-v2-foundation-desktop.md)
+[CLAUDE.md](../CLAUDE.md) and the [foundation plan](plans/completed/20261117-artel-v2-foundation-desktop.md)
 before changing code. Architecture and experiments describe future work, not
 permission to implement Pi, Product roles, chat, MR verification or remote access.
 Historical completed bot plans are not active instructions.
@@ -102,6 +102,14 @@ survive refresh/conflict in the window but are not persisted across closing it.
 A 409 requires explicit version adoption after comparison. An unknown result
 retries the original key/payload; editing does not create a duplicate retry.
 Database replacement resets cursors and blocks replay of an old draft/receipt.
+If an old request is uncertain after replacement, the owner can explicitly
+acknowledge abandonment without resending it. Its draft remains available to
+copy, then discard before starting a new edit; abandonment does not prove that
+the old database rejected the request. This action is unavailable for a pending
+request or uncertainty within the same database.
+When text changes during a successful save or retry, the retained editor adopts
+that response's object ID and version without overwriting the newer text. Its next
+save updates the confirmed object rather than creating another one.
 See README for shortcuts, wire limits and audit pagination semantics.
 
 ## Delivery and remaining acceptance

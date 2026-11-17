@@ -74,6 +74,21 @@ ApplicationWindow {
         standardButtons: Dialog.Discard | Dialog.Cancel
         onDiscarded: window.panel.discard()
     }
+    Dialog {
+        id: abandonDialog
+        objectName: "abandonDialog"
+        title: qsTr("Abandon the old save?")
+        width: Math.min(600, window.width - 40)
+        anchors.centerIn: parent
+        modal: true
+        standardButtons: Dialog.Yes | Dialog.Cancel
+        onAccepted: window.panel.abandonUncertain()
+        Label {
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: qsTr("The save may have committed in the old database. It will not be retried in the replacement database. The draft stays here: copy it before discarding it to continue.")
+        }
+    }
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 16
@@ -115,6 +130,13 @@ ApplicationWindow {
                 visible: window.panel.uncertain
                 enabled: window.panel.retryable
                 onClicked: window.panel.retry()
+            }
+            PanelButton {
+                objectName: "abandonButton"
+                text: qsTr("Abandon old save, keep draft")
+                visible: window.panel.canAbandon
+                enabled: window.panel.canAbandon
+                onClicked: abandonDialog.open()
             }
             PanelButton {
                 objectName: "rebaseButton"

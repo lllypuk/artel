@@ -59,6 +59,10 @@ public:
   bool loading() const { return m_snapshot; }
   bool pending() const { return m_mutation; }
   bool uncertain() const { return m_uncertain; }
+  bool canAbandon() const {
+    return m_uncertain && m_online && !pending() && !m_stopped &&
+           !m_instance.isEmpty() && m_mutationInstance != m_instance;
+  }
   bool conflict() const { return m_conflict; }
   bool dirty() const { return !m_draft.isEmpty(); }
   QVariantMap draft() const { return m_draft; }
@@ -73,10 +77,12 @@ public:
   Q_INVOKABLE bool save(const QString &method, const QString &path,
                         const QVariantMap &payload);
   Q_INVOKABLE bool retry();
+  // Explicit acknowledgement only after database replacement. Keeps the draft.
+  bool abandonUncertain();
   Q_INVOKABLE void discardDraft();
 signals:
   void changed();
-  void mutationSucceeded();
+  void mutationSucceeded(const QVariantMap &result, const QString &instance);
   void historyReceived(const QVariantList &events, qint64 cursor, bool more);
 
 private:

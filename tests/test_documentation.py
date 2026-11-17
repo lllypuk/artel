@@ -22,6 +22,14 @@ class DocumentationTests(unittest.TestCase):
                     with self.subTest(document=name, target=target):
                         self.assertTrue(((ROOT / name).parent / target.split("#")[0]).exists())
 
+    def test_active_instruction_plan_paths_resolve(self):
+        for name in ("CLAUDE.md", "docs/architecture/20261117-artel-v2-direction.md"):
+            paths = re.findall(r"`(docs/plans/[^`]+\.md)`", (ROOT / name).read_text())
+            self.assertTrue(paths, name)
+            for target in paths:
+                with self.subTest(document=name, target=target):
+                    self.assertTrue((ROOT / target).is_file())
+
     def test_documented_cli_examples_on_temporary_instance(self):
         text = (ROOT / "docs/development.md").read_text()
         block = re.search(r"<!-- smoke:temporary-cli -->\n```sh\n(.*?)\n```", text, re.S)
