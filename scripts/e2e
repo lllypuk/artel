@@ -10,13 +10,16 @@ TEST_HOME=$(mktemp -d)
 trap 'rm -rf "$TEST_HOME"' EXIT HUP INT TERM
 mkdir -m 700 "$TEST_HOME/runtime"
 go build -o "$TEST_HOME/arteld" "$ROOT/cmd/arteld"
+mkdir -p "$ROOT/build/bin"
+cp "$TEST_HOME/arteld" "$ROOT/build/bin/arteld"
+go build -o "$ROOT/build/bin/artelctl" "$ROOT/cmd/artelctl"
 # Qt assertions and HTTP calls have their own deadlines. The watchdog bounds
 # hangs; Linux parent-death signaling also protects the owned daemon on crashes.
 timeout --signal=TERM --kill-after=15s 180s env -i PATH="$PATH" LANG=C.UTF-8 \
     HOME="$TEST_HOME" XDG_RUNTIME_DIR="$TEST_HOME/runtime" \
     ARTEL_TEST_DAEMON="$TEST_HOME/arteld" \
     QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_FORCE_STDERR_LOGGING=1 \
-    "$ROOT/desktop/build/e2e/acceptance" -maxwarnings 0 "$@"
+    "$ROOT/desktop/build/e2e/acceptance" -maxwarnings 0 restartConcurrencyAndRecovery "$@"
 
 # Prove a failing assertion exits nonzero and still destroys its daemon/data.
 status=0
@@ -39,3 +42,7 @@ if kill -0 "$pid" 2>/dev/null || [ -e "$data" ]; then
     exit 1
 fi
 printf '%s\n' 'E2E negative assertion/owned-process cleanup: PASS'
+# Required dependencies are checked explicitly; missing pinned Pi is not a skip.
+node "$ROOT/integrations/pi-observer/tests/preflight.mjs"
+timeout --signal=TERM --kill-after=10s 240s python3 -B "$ROOT/tests/e2e/observer_acceptance.py"
+timeout --signal=TERM --kill-after=10s 70s python3 -B "$ROOT/tests/e2e/observer_acceptance.py" --negative-probe

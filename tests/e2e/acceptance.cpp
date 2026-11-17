@@ -248,6 +248,59 @@ class Acceptance : public QObject {
 private slots:
   void initTestCase() { QQuickStyle::setStyle("Material"); }
   void init() { QTest::failOnWarning(); }
+  // Invoked by observer_acceptance.py while a real isolated Pi is alive.
+  void observerExternal() {
+    QVERIFY2(
+        !qEnvironmentVariableIsEmpty("ARTEL_OBSERVER_ENDPOINT"),
+        "Run observer acceptance through tests/e2e/observer_acceptance.py");
+    Daemon daemon;
+    daemon.endpoint = QUrl(qEnvironmentVariable("ARTEL_OBSERVER_ENDPOINT"));
+    QVERIFY(QDir().mkpath(daemon.dir.filePath("private")));
+    QVERIFY(QFile::copy(qEnvironmentVariable("ARTEL_OBSERVER_OWNER_TOKEN"),
+                        daemon.tokenPath()));
+    Oracle oracle(daemon.endpoint, daemon.tokenPath());
+    const auto expected =
+        QJsonDocument::fromJson(qgetenv("ARTEL_OBSERVER_EXPECTED")).object();
+    Window ui(daemon);
+    QVERIFY(ui.window);
+    QTRY_VERIFY_WITH_TIMEOUT(ui.panel.writable(), 5000);
+    QVERIFY(click(ui.window, "observersButton"));
+    auto *observers = ui.panel.observers();
+    QTRY_VERIFY_WITH_TIMEOUT(observers->online(), 5000);
+    auto matches = [&] {
+      for (const auto &value : observers->rows()) {
+        const auto row = value.toMap();
+        if (row.value("runtime_id").toString() !=
+            expected.value("runtime_id").toString())
+          continue;
+        for (auto it = expected.begin(); it != expected.end(); ++it)
+          if (row.value(it.key()) != it.value().toVariant())
+            return false;
+        return true;
+      }
+      return false;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(matches(), 5000);
+    QVERIFY(item(ui.window, "observerList"));
+    QVERIFY(item(ui.window, "observerList")->isVisible());
+    const auto projection = oracle.get("/v1/observers");
+    bool oracleMatch = false;
+    for (const auto &observer : projection.value("observers").toArray())
+      for (const auto &value :
+           observer.toObject().value("runtimes").toArray()) {
+        const auto runtime = value.toObject();
+        if (runtime.value("registration").toObject().value("runtime_id") !=
+            expected.value("runtime_id"))
+          continue;
+        oracleMatch = true;
+        for (auto it = expected.begin(); it != expected.end(); ++it)
+          if (it.key() != "runtime_id" && it.key() != "navigable")
+            QCOMPARE(runtime.value(it.key()), it.value());
+      }
+    QVERIFY(oracleMatch);
+    QVERIFY(!ui.panel.dirty());
+    QVERIFY(!ui.panel.uncertain());
+  }
   void restartConcurrencyAndRecovery() {
     Daemon daemon;
     QVERIFY(daemon.dir.isValid());

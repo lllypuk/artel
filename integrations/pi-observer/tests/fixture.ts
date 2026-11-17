@@ -3,6 +3,11 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function fixture(pi: ExtensionAPI) {
+  const endpoint = new URL(process.env.ARTEL_FIXTURE_URL!);
+  if (endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1" || endpoint.pathname !== "/v1")
+    throw new Error("fixture provider must be numeric loopback /v1");
+  const delay = Number(process.env.ARTEL_FIXTURE_DELAY || "0");
+  if (!Number.isFinite(delay) || delay < 0 || delay > 5000) throw new Error("invalid fixture delay");
   pi.registerProvider("artel-fixture", {
     baseUrl: process.env.ARTEL_FIXTURE_URL!, api: "openai-completions", apiKey: "fictional",
     models: [{ id: "local", name: "Local fixture", reasoning: false, input: ["text"],
@@ -17,13 +22,13 @@ export default function fixture(pi: ExtensionAPI) {
     pi.registerTool({ name, label: name, description: "Deterministic fixture",
       parameters: { type: "object", properties: {}, additionalProperties: false },
       async execute() {
-        await new Promise(resolve => setTimeout(resolve, name === "fixture_a" ? 900 : 650));
+        await new Promise(resolve => setTimeout(resolve, delay || (name === "fixture_a" ? 900 : 650)));
         return { content: [{ type: "text", text: "fictional" }], details: {} };
       },
     });
   }
   pi.registerCommand("fixture-wait", { handler: async (_args, ctx) => {
-    await ctx.ui.confirm("Fictional private title", "Fictional private body", { timeout: 800 });
+    await ctx.ui.confirm("Fictional private title", "Fictional private body", { timeout: delay || 800 });
   } });
   pi.registerCommand("fixture-new", { handler: async (_args, ctx) => { await ctx.newSession(); } });
   pi.registerCommand("fixture-reload", { handler: async (_args, ctx) => { await ctx.reload(); } });
