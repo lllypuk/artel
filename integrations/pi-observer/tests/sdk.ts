@@ -9,7 +9,7 @@ const agentDir = process.env.PI_CODING_AGENT_DIR!;
 const settingsManager = SettingsManager.inMemory({ defaultProvider: "artel-fixture", defaultModel: "local", compaction: { enabled: false }, retry: { enabled: false } });
 const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager,
   noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-  additionalExtensionPaths: [fileURLToPath(new URL("./probe.ts", import.meta.url)), fileURLToPath(new URL("./fixture.ts", import.meta.url))],
+  additionalExtensionPaths: [fileURLToPath(new URL("../src/index.ts", import.meta.url)), fileURLToPath(new URL("./probe.ts", import.meta.url)), fileURLToPath(new URL("./fixture.ts", import.meta.url))],
 });
 await loader.reload();
 const modelRuntime = await ModelRuntime.create({ authPath: agentDir + "/auth.json", modelsPath: agentDir + "/models.json", allowModelNetwork: false });
@@ -22,6 +22,11 @@ try {
   await session.setModel(model);
   await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(session.messages.length, 0);
+  if (process.env.ARTEL_FIXTURE_HOLD === "1") {
+    console.log("observer restart ready");
+    await new Promise<void>(resolve => process.stdin.once("data", () => resolve()));
+    process.stdin.pause();
+  }
   await session.prompt("Fictional SDK input");
   const trace = readFileSync(process.env.ARTEL_PROBE_TRACE!, "utf8").trim().split("\n").map(line => JSON.parse(line));
   assert.equal(trace[0].event, "session_start");
@@ -31,5 +36,6 @@ try {
   assert.deepEqual(loader.getAgentsFiles().agentsFiles, []);
   console.log("public SDK probe passed");
 } finally {
+  await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
   session.dispose();
 }

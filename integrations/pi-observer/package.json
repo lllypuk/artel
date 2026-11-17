@@ -3,6 +3,8 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "pi": { "extensions": ["./src/index.ts"] },
+  "files": ["src", "README.md"],
   "engines": { "node": ">=22.23.2" },
   "scripts": {
     "preflight": "node tests/preflight.mjs",

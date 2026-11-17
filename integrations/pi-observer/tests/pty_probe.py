@@ -12,6 +12,8 @@ import tempfile
 import threading
 import time
 import unittest
+from observer_fixture import observer
+from daemon_restart import check_restart
 
 PACKAGE = Path(__file__).resolve().parents[1]
 CLI = PACKAGE / 'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'
@@ -19,6 +21,7 @@ CLI = PACKAGE / 'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'
 
 class Provider(http.server.BaseHTTPRequestHandler):
     calls = 0
+    forbidden = ''
 
     def log_message(self, *_args):
         pass
@@ -27,6 +30,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
         assert self.path == '/v1/chat/completions'
         payload = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         assert payload['model'] == 'local'
+        assert not type(self).forbidden or type(self).forbidden not in json.dumps(payload)
         type(self).calls += 1
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
@@ -48,6 +52,10 @@ class Provider(http.server.BaseHTTPRequestHandler):
 
 
 class Lifecycle(unittest.TestCase):
+    def test_actual_daemon_restart(self):
+        Provider.calls = 0
+        check_restart(self, PACKAGE, Provider)
+
     def test_sdk(self):
         Provider.calls = 0
         with tempfile.TemporaryDirectory(prefix='artel-pi-sdk-') as tmp:
@@ -64,6 +72,9 @@ class Lifecycle(unittest.TestCase):
                    'ARTEL_PROBE_TRACE': tmp + '/trace.jsonl',
                    'ARTEL_FIXTURE_SESSION': tmp + '/original-session',
                    'ARTEL_FIXTURE_URL': f'http://127.0.0.1:{server.server_port}/v1'}
+            oracle = observer(root, env)
+            observed = oracle.__enter__()
+            Provider.forbidden = observed['token']
             try:
                 result = subprocess.run([shutil.which('node'), '--experimental-strip-types',
                                          str(PACKAGE / 'tests/sdk.ts')],
@@ -71,11 +82,26 @@ class Lifecycle(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr.decode())
                 self.assertEqual(Provider.calls, 2)
                 self.assertIn(b'public SDK probe passed', result.stdout)
+                self.assertTrue(observed['registrations'])
+                self.assertTrue(observed['reports'])
+                self.assertNotIn(observed['token'].encode(), result.stdout + result.stderr)
             finally:
+                oracle.__exit__(None, None, None)
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=2)
         self.assertFalse(root.exists())
+
+    def test_negative_cleanup(self):
+        with tempfile.TemporaryDirectory(prefix='artel-pi-negative-') as tmp:
+            result = subprocess.run([shutil.which('python3'), '-B', __file__,
+                                     'Lifecycle.test_pty_lifecycle'],
+                                    env={**os.environ, 'TMPDIR': tmp,
+                                         'ARTEL_FIXTURE_NEGATIVE': '1'},
+                                    capture_output=True, timeout=25)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b'intentional shipping observer assertion', result.stderr)
+            self.assertEqual(list(Path(tmp).iterdir()), [])
 
     def test_pty_lifecycle(self):
         Provider.calls = 0
@@ -95,6 +121,9 @@ class Lifecycle(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             env['ARTEL_FIXTURE_URL'] = f'http://127.0.0.1:{server.server_port}/v1'
+            oracle = observer(root, env)
+            observed = oracle.__enter__()
+            Provider.forbidden = observed['token']
             master, slave = pty.openpty()
             import fcntl
             import struct
@@ -103,6 +132,7 @@ class Lifecycle(unittest.TestCase):
             args = [shutil.which('node'), str(CLI), '--offline', '--no-approve',
                     '--no-extensions', '--no-skills', '--no-prompt-templates',
                     '--no-context-files', '--no-themes', '--no-mcp', '--no-builtin-tools',
+                    '-e', str(PACKAGE / 'src/index.ts'),
                     '-e', str(PACKAGE / 'tests/probe.ts'),
                     '-e', str(PACKAGE / 'tests/fixture.ts'), '--model', 'artel-fixture/local']
             child = subprocess.Popen(args, cwd=root / 'work', env=env,
@@ -146,6 +176,9 @@ class Lifecycle(unittest.TestCase):
                     pump()
                 self.assertEqual(Provider.calls, 0)
                 self.assertEqual([r['event'] for r in rows()], ['session_start'])
+                wait(lambda: len(observed['registrations']) == 1, 'shipping observer registration')
+                if os.environ.get('ARTEL_FIXTURE_NEGATIVE'):
+                    self.fail('intentional shipping observer assertion')
                 command('Fictional input')
                 wait(lambda: any(r['event'] == 'agent_settled' for r in rows()), 'settled')
                 self.assertEqual(Provider.calls, 2)
@@ -154,13 +187,27 @@ class Lifecycle(unittest.TestCase):
                 settled = next(i for i, r in enumerate(rows()) if r['event'] == 'agent_settled')
                 self.assertLess(ended, settled)
                 self.assertTrue(rows()[settled]['idle'])
+                wait(lambda: any(r['tool_count'] == 2 for r in observed['reports']), 'shipping overlap report')
+                wait(lambda: any(r['activity'] == 'idle' and r['report_seq'] > 1 for r in observed['reports']), 'shipping settled report')
+                old_seq = observed['reports'][-1]['report_seq']
+                old_runtime = observed['registrations'][0]['runtime_id']
+                observed['stop']()
+                wait(lambda: b'offline / reconnecting' in bytes(output), 'shipping offline')
+                observed['start']()
+                wait(lambda: observed['reports'][-1]['report_seq'] > old_seq, 'shipping reconnect after server restart')
+                self.assertEqual(len(observed['registrations']), 1)
+                self.assertEqual(observed['reports'][-1]['runtime_id'], old_runtime)
                 command('/fixture-wait')
                 wait(lambda: any(r['event'] == 'ui_prompt_end' for r in rows()), 'UI wait')
                 self.assertTrue(next(r for r in rows() if r['event'] == 'ui_prompt_start')['waiting'])
-                for reason in ['reload', 'new', 'resume', 'fork']:
+                wait(lambda: any(r['activity'] == 'waiting_user' for r in observed['reports']), 'shipping wait report')
+                wait(lambda: observed['reports'][-1]['activity'] == 'idle', 'shipping wait end')
+                for number, reason in enumerate(['reload', 'new', 'resume', 'fork'], start=2):
                     command('/fixture-' + reason)
                     wait(lambda: any(r['event'] == 'session_start' and r.get('reason') == reason
                                      for r in rows()), reason)
+                    wait(lambda: len(observed['registrations']) == number, 'shipping ' + reason)
+                    wait(lambda: any(r['runtime_id'] == observed['registrations'][-1]['runtime_id'] for r in observed['reports']), 'shipping report ' + reason)
                 starts = [r for r in rows() if r['event'] == 'session_start']
                 self.assertEqual(len({r['runtime'] for r in starts}), 5)
                 self.assertEqual(starts[0]['session'], starts[1]['session'])
@@ -168,6 +215,10 @@ class Lifecycle(unittest.TestCase):
                 self.assertEqual(starts[0]['session'], starts[3]['session'])
                 self.assertNotEqual(starts[3]['session'], starts[4]['session'])
                 self.assertEqual(Provider.calls, 2)  # lifecycle never auto-prompts
+                self.assertEqual([r['reason'] for r in observed['registrations']], ['startup', 'reload', 'new', 'resume', 'fork'])
+                self.assertEqual(len({r['runtime_id'] for r in observed['registrations']}), 5)
+                self.assertNotIn(observed['token'].encode(), bytes(output))
+                self.assertNotIn(observed['token'], ' '.join(args))
                 command('/fixture-quit')
                 wait(lambda: any(r.get('reason') == 'quit' for r in rows()), 'quit')
                 child.wait(timeout=3)
@@ -195,6 +246,7 @@ class Lifecycle(unittest.TestCase):
                     os.killpg(child.pid, signal.SIGKILL)
                     child.wait(timeout=3)
                 os.close(master)
+                oracle.__exit__(None, None, None)
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=2)

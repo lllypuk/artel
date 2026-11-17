@@ -17,13 +17,13 @@ export default function fixture(pi: ExtensionAPI) {
     pi.registerTool({ name, label: name, description: "Deterministic fixture",
       parameters: { type: "object", properties: {}, additionalProperties: false },
       async execute() {
-        await new Promise(resolve => setTimeout(resolve, name === "fixture_a" ? 120 : 60));
+        await new Promise(resolve => setTimeout(resolve, name === "fixture_a" ? 900 : 650));
         return { content: [{ type: "text", text: "fictional" }], details: {} };
       },
     });
   }
   pi.registerCommand("fixture-wait", { handler: async (_args, ctx) => {
-    await ctx.ui.confirm("Fictional private title", "Fictional private body", { timeout: 100 });
+    await ctx.ui.confirm("Fictional private title", "Fictional private body", { timeout: 800 });
   } });
   pi.registerCommand("fixture-new", { handler: async (_args, ctx) => { await ctx.newSession(); } });
   pi.registerCommand("fixture-reload", { handler: async (_args, ctx) => { await ctx.reload(); } });

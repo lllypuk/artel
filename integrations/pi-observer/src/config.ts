@@ -40,7 +40,6 @@ function privateBytes(path: string, limit: number): Buffer {
 }
 
 // Consumer boundary: pending provisioning records are never runtime config.
-// Task 4 wires this gate into session_start before opening any network resources.
 export function readConfirmedConfig(path: string): { config: ObserverConfig; token: string } {
   try {
     const config = JSON.parse(privateBytes(path, 16384).toString("utf8")) as ObserverConfig;
