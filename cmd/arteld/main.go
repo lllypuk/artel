@@ -11,11 +11,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/lllypuk/artel/internal/api"
 	"github.com/lllypuk/artel/internal/local"
+	"github.com/lllypuk/artel/internal/store"
 )
 
 func serve(ctx context.Context, args []string, out, errOut io.Writer) int {
@@ -48,6 +50,12 @@ func serve(ctx context.Context, args []string, out, errOut io.Writer) int {
 		_, _ = fmt.Fprintln(errOut, "arteld:", err)
 		return 1
 	}
+	database, err := store.Open(ctx, filepath.Join(paths.DataDir, "artel.sqlite"))
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "arteld: cannot initialize database")
+		return 1
+	}
+	defer func() { _ = database.Close() }()
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp4", *address)
 	if err != nil {
 		_, _ = fmt.Fprintln(errOut, "arteld: cannot bind local API")

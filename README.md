@@ -4,11 +4,12 @@ A local, native project/task panel: Go API + CLI, SQLite storage and a standalon
 
 ## Current slice
 
-- `arteld`: loopback HTTP with public `/healthz`, private owner credential bootstrap, data-directory lock and graceful SIGINT/SIGTERM shutdown. `/v1/*` requires Bearer auth; domain routes currently return 501.
+- `arteld`: loopback HTTP with public `/healthz`, private owner credential bootstrap, data-directory lock, versioned SQLite storage (`artel.sqlite`) and graceful SIGINT/SIGTERM shutdown. `/v1/*` requires Bearer auth; domain routes currently return 501.
+- Internal domain/app/store: manual transitions, queue CAS, archive rules, atomic audit events and idempotency receipts; exercised directly by isolated integration/concurrency tests, not yet exposed over HTTP.
 - `artelctl --help` / `--version`, `status --json`, and `snapshot --json` (snapshot awaits the domain API; unsupported arguments exit 2).
 - `artel`: native window explicitly displaying that it is a foundation skeleton.
 
-No CRUD, SQLite persistence or desktop API client yet. No demo data or claimed agent activity. Pi integration, MR orchestration, remote access and deployment are outside this slice. Closing the UI does not stop the independently launched daemon.
+No user-facing CRUD or desktop API client yet. No demo data or claimed agent activity. Pi integration, MR orchestration, remote access and deployment are outside this slice. Closing the UI does not stop the independently launched daemon.
 
 ## Build and checks
 
@@ -33,6 +34,6 @@ The daemon defaults to `${XDG_DATA_HOME:-$HOME/.local/share}/artel/v2` and `${XD
 
 Independent absolute `arteld --data-dir PATH --token-file PATH --listen 127.0.0.1:PORT` overrides support isolated instances (`PORT=0` reports the actual ephemeral address). CLI supports `status|snapshot --json --endpoint http://127.0.0.1:PORT --token-file PATH`; status reads public liveness, snapshot reads the private credential internally. Requests have bounded timeouts, no proxies/redirects, and nonzero exits on failures. Browser Origin requests and mismatched Host headers are rejected. The planned domain contract is in [api/openapi.yaml](api/openapi.yaml).
 
-Tests run Qt offscreen and daemon processes with temporary paths/HOME and ephemeral ports; no running daemon is required. Standard window-manager close is currently the only UI action. Future slices add transactional storage, domain API, asynchronous desktop client and manual screens in that order.
+Tests run Qt offscreen and daemon processes with temporary paths/HOME and ephemeral ports; no running daemon is required. Standard window-manager close is currently the only UI action. Future slices add the domain API, asynchronous desktop client and manual screens in that order. SQLite uses WAL, foreign keys, FULL synchronous commits and a persistent database instance UUID; incompatible databases fail startup without recreation. Do not point the daemon at a legacy bot database.
 
 See [implementation plan](docs/plans/20261117-artel-v2-foundation-desktop.md) and [architecture direction](docs/architecture/20261117-artel-v2-direction.md). `docs/plans/completed/` contains historical bot plans, not active instructions. `docs/experiments/` is research, not a runtime dependency.

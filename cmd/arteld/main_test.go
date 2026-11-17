@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/lllypuk/artel/internal/local"
+	"github.com/lllypuk/artel/internal/store"
 )
 
 func TestServeRefusesNonlocal(t *testing.T) {
@@ -89,6 +90,20 @@ func assertDaemonResponse(t *testing.T, ctx context.Context, address, path, toke
 	}
 }
 
+func databaseIdentity(t *testing.T, data string) string {
+	t.Helper()
+	db, err := store.Open(t.Context(), filepath.Join(data, "artel.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, readErr := db.Snapshot(t.Context())
+	closeErr := db.Close()
+	if readErr != nil || closeErr != nil {
+		t.Fatalf("database read/close: %v %v", readErr, closeErr)
+	}
+	return snapshot.InstanceID
+}
+
 func TestDaemonLifecycle(t *testing.T) {
 	base := t.TempDir()
 	binary := filepath.Join(base, "arteld")
@@ -100,6 +115,7 @@ func TestDaemonLifecycle(t *testing.T) {
 	tokenPath := filepath.Join(base, "private", "owner.token")
 	args := []string{"--listen", "127.0.0.1:0", "--data-dir", data, "--token-file", tokenPath}
 	token := ""
+	instance := ""
 	for iteration := range 2 {
 		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 		// #nosec G204 -- Executes test-built daemon with private paths and ephemeral port only.
@@ -148,6 +164,12 @@ func TestDaemonLifecycle(t *testing.T) {
 		}
 		if err = cmd.Wait(); err != nil {
 			t.Fatalf("shutdown: %v", err)
+		}
+		currentInstance := databaseIdentity(t, data)
+		if iteration == 0 {
+			instance = currentInstance
+		} else if instance != currentInstance {
+			t.Fatal("database identity changed on daemon restart")
 		}
 		cancel()
 		if strings.Contains(diagnostic.String(), token) {

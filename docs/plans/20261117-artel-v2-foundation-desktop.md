@@ -191,11 +191,13 @@ Task 2 validation (2026-11-17): `GOLANGCI_LINT=/tmp/artel-pi-bridge-Fd40ok1E/too
 
 ### Task 3: Implement transactional storage, manual state transitions and queue rules
 
-- [ ] Создать versioned schema и store/app/domain для Project, Task, queue entries, events, mutation_receipts и database instance UUID. Event хранит action, object IDs, owner_manual, timestamp, до/после изменённых полей и версии; не читать для него содержимое проектных каталогов.
-- [ ] Реализовать валидацию полей/путей, уникальность active roots, project archive/unarchive, все переходы и queue semantics из Technical Details. Каталог проекта только проверять, ничего в нём не создавать и не запускать.
-- [ ] Реализовать атомарные CAS/idempotency/event updates; no-op semantics; изменение queue_version при переходах из queued. Источник истины — transaction, не предварительная проверка в handler.
-- [ ] Написать unit tests таблицы переходов и ошибок, SQLite integration tests FK/unique/migrations/reopen/rollback, повторов ключа и другого payload, одновременных edit/reorder/start/archive. Проверить две записи in_progress отвергаются, инварианты не нарушаются после отказа транзакции.
-- [ ] Выполнить `make lint test test-race build`; тесты подтверждают отсутствие partial mutation/event/receipt при ошибках.
+- [x] Создать versioned schema и store/app/domain для Project, Task, queue entries, events, mutation_receipts и database instance UUID. Event хранит action, object IDs, owner_manual, timestamp, до/после изменённых полей и версии; не читать для него содержимое проектных каталогов.
+- [x] Реализовать валидацию полей/путей, уникальность active roots, project archive/unarchive, все переходы и queue semantics из Technical Details. Каталог проекта только проверять, ничего в нём не создавать и не запускать.
+- [x] Реализовать атомарные CAS/idempotency/event updates; no-op semantics; изменение queue_version при переходах из queued. Источник истины — transaction, не предварительная проверка в handler.
+- [x] Написать unit tests таблицы переходов и ошибок, SQLite integration tests FK/unique/migrations/reopen/rollback, повторов ключа и другого payload, одновременных edit/reorder/start/archive. Проверить две записи in_progress отвергаются, инварианты не нарушаются после отказа транзакции.
+- [x] Выполнить `make lint test test-race build`; тесты подтверждают отсутствие partial mutation/event/receipt при ошибках.
+
+Task 3 validation (2026-11-17): `GOLANGCI_LINT=/tmp/artel-pi-bridge-Fd40ok1E/tools/golangci-lint make lint test test-race build` — PASS (0 lint issues, all Go/race tests, 4 offscreen Qt results, no skips). Go 1.26.3, golangci-lint 2.10.1, modernc.org/sqlite 1.50.1, Qt 6.12.0, clang-format 23.1.3, GCC 16.2.1. `go test -count=20 ./internal/app ./internal/store` — PASS; coverage: app 93.8%, store 70.9%, domain 66.7%. Independent connections exercise edit/edit, unrelated edits, reorder/start, start/start, archive/queue, archive/start, reorder/reorder and same-key races. Fault injection at callback, persistence, event, receipt and migration DDL verifies rollback; foreign databases are rejected without byte changes, DB/sidecar symlinks refused. Daemon startup now opens the database under its lifetime data-dir lock, preserves instance UUID across SIGTERM/restart and fails with redacted diagnostics on invalid storage. MVP transactions serialize mutations and load/persist a complete snapshot; no network I/O occurs inside them. HTTP CRUD/history/SSE remain Task 4; desktop functionality remains unavailable. `git diff --check`, local content review and secret/privacy scan passed. No production data, service activation, settings changes or remote CI.
 
 ### Task 4: Expose the API, snapshots, audit history and replayable SSE
 
