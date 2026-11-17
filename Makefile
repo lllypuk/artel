@@ -1,4 +1,4 @@
-.PHONY: preflight build lint test test-race
+.PHONY: preflight build lint test test-race test-e2e check
 
 GOLANGCI_LINT ?= golangci-lint
 export GOLANGCI_LINT
@@ -23,3 +23,14 @@ test: preflight
 
 test-race: preflight
 	go test -race ./...
+
+test-e2e: preflight
+	./scripts/e2e
+
+# Recursive calls keep Qt builds serial even when make check is invoked with -j.
+check:
+	$(MAKE) lint
+	$(MAKE) test
+	$(MAKE) test-race
+	$(MAKE) build
+	$(MAKE) test-e2e

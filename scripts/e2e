@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+. "$ROOT/scripts/qt-tools"
+mkdir -p "$ROOT/desktop/build/e2e"
+cd "$ROOT/desktop/build/e2e"
+"$QMAKE" "$ROOT/tests/e2e/acceptance.pro"
+make -j"${JOBS:-2}"
+TEST_HOME=$(mktemp -d)
+trap 'rm -rf "$TEST_HOME"' EXIT HUP INT TERM
+mkdir -m 700 "$TEST_HOME/runtime"
+go build -o "$TEST_HOME/arteld" "$ROOT/cmd/arteld"
+# Qt assertions and HTTP calls have their own deadlines. The watchdog bounds
+# hangs; Linux parent-death signaling also protects the owned daemon on crashes.
+timeout --signal=TERM --kill-after=15s 180s env -i PATH="$PATH" LANG=C.UTF-8 \
+    HOME="$TEST_HOME" XDG_RUNTIME_DIR="$TEST_HOME/runtime" \
+    ARTEL_TEST_DAEMON="$TEST_HOME/arteld" \
+    QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_FORCE_STDERR_LOGGING=1 \
+    "$ROOT/desktop/build/e2e/acceptance" -maxwarnings 0 "$@"
+
+# Prove a failing assertion exits nonzero and still destroys its daemon/data.
+status=0
+timeout --signal=TERM --kill-after=15s 30s env -i PATH="$PATH" LANG=C.UTF-8 \
+    HOME="$TEST_HOME" XDG_RUNTIME_DIR="$TEST_HOME/runtime" \
+    ARTEL_TEST_DAEMON="$TEST_HOME/arteld" ARTEL_E2E_FAILURE_PROBE="$TEST_HOME/probe" \
+    QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_FORCE_STDERR_LOGGING=1 \
+    "$ROOT/desktop/build/e2e/acceptance" -maxwarnings 0 \
+    restartConcurrencyAndRecovery > "$TEST_HOME/probe.log" 2>&1 || status=$?
+if [ "$status" -ne 1 ] || ! grep -q 'Intentional assertion failure' "$TEST_HOME/probe.log"; then
+    printf '%s\n' 'e2e failure probe did not fail as expected' >&2
+    exit 1
+fi
+{
+    read -r pid
+    read -r data
+} < "$TEST_HOME/probe"
+if kill -0 "$pid" 2>/dev/null || [ -e "$data" ]; then
+    printf '%s\n' 'e2e failure probe leaked its daemon or temporary data' >&2
+    exit 1
+fi
+printf '%s\n' 'E2E negative assertion/owned-process cleanup: PASS'

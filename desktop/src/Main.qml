@@ -285,11 +285,13 @@ ApplicationWindow {
                                     onClicked: window.panel.queue(taskRow.modelData.id, 0)
                                 }
                                 PanelButton {
+                                    objectName: "up_" + taskRow.modelData.id
                                     text: qsTr("Up")
                                     enabled: taskRow.modelData.position > 0
                                     onClicked: window.panel.queue(taskRow.modelData.id, -1)
                                 }
                                 PanelButton {
+                                    objectName: "down_" + taskRow.modelData.id
                                     text: qsTr("Down")
                                     enabled: !!taskRow.modelData.canDown
                                     onClicked: window.panel.queue(taskRow.modelData.id, 1)

@@ -1,0 +1,11 @@
+QT += core gui qml quick quickcontrols2 testlib network
+CONFIG += c++17 testcase warn_on qmltypes
+QMAKE_CXXFLAGS += -Wextra -Werror
+TARGET = acceptance
+TEMPLATE = app
+INCLUDEPATH += ../../desktop/src
+QML_IMPORT_NAME = Artel
+QML_IMPORT_MAJOR_VERSION = 1
+SOURCES += acceptance.cpp ../../desktop/src/apiclient.cpp ../../desktop/src/panel.cpp ../../desktop/src/appearance.cpp
+HEADERS += ../../desktop/src/apiclient.h ../../desktop/src/panel.h ../../desktop/src/appearance.h
+RESOURCES += ../../desktop/src/resources.qrc

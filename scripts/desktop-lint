@@ -2,7 +2,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 . ./scripts/qt-tools
-clang-format --dry-run --Werror desktop/src/*.cpp desktop/src/*.h desktop/tests/*.cpp desktop/tests/*.h
+clang-format --dry-run --Werror desktop/src/*.cpp desktop/src/*.h desktop/tests/*.cpp desktop/tests/*.h tests/e2e/*.cpp
 # qmake generates accurate metadata from the registered C++ properties/actions.
 ./desktop/bin/build
 mkdir -p desktop/build/Artel
