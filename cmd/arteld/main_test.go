@@ -157,7 +157,7 @@ func TestDaemonLifecycle(t *testing.T) {
 			t.Fatal("credential in startup output")
 		}
 		assertDaemonResponse(t, ctx, address, "/healthz", "", 200)
-		assertDaemonResponse(t, ctx, address, "/v1/snapshot", token, 501)
+		assertDaemonResponse(t, ctx, address, "/v1/snapshot", token, 200)
 		assertSecondBlocked(t, ctx, binary, args, token, base)
 		if err = cmd.Process.Signal(syscall.SIGTERM); err != nil {
 			t.Fatal(err)

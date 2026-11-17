@@ -54,10 +54,14 @@ func TestDiagnostics(t *testing.T) {
 }
 
 func TestDiagnosticBadResponses(t *testing.T) {
-	for _, mode := range []string{"json", "redirect", "large"} {
+	for _, mode := range []string{"json", "redirect", "large", "empty", "array"} {
 		t.Run(mode, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				switch mode {
+				case "empty":
+					_, _ = w.Write([]byte(`{}`))
+				case "array":
+					_, _ = w.Write([]byte(`[]`))
 				case "json":
 					_, _ = w.Write([]byte("not JSON"))
 				case "redirect":

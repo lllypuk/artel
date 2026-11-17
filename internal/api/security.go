@@ -22,18 +22,6 @@ func Error(w http.ResponseWriter, status int, code, message string) {
 	}{code, message})
 }
 
-// SecureHandler protects the local API. host is the actual listener address.
-// Domain routes arrive in Task 4; authenticated /v1 requests explicitly fail meanwhile.
-func SecureHandler(token, host string) http.Handler {
-	return Protect(token, host, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/") {
-			Error(w, http.StatusNotImplemented, "unavailable", "domain API is not implemented yet")
-			return
-		}
-		Handler().ServeHTTP(w, r)
-	}))
-}
-
 // Protect applies transport policy before routing, including to unknown endpoints.
 func Protect(token, host string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -17,4 +17,4 @@ After every code change run `make lint test`. Before completing each plan task r
 
 ## Layout
 
-`cmd/arteld`, `cmd/artelctl`, `internal/api`, `internal/domain`, `internal/store`, `internal/app`, `desktop/src`, `desktop/tests`, `scripts`. The daemon owns `artel.sqlite` under its private locked data directory; domain mutations run in immediate transactions with events/receipts. HTTP still exposes only `/healthz` (domain routes await Task 4); UI explicitly says features are unavailable.
+`cmd/arteld`, `cmd/artelctl`, `internal/api`, `internal/domain`, `internal/store`, `internal/app`, `desktop/src`, `desktop/tests`, `scripts`. The daemon owns `artel.sqlite` under its private locked data directory; domain mutations run in immediate transactions with events/receipts. HTTP exposes authenticated domain CRUD, snapshot/history and replayable SSE alongside public `/healthz`; UI explicitly says features are unavailable until its client/screens arrive.

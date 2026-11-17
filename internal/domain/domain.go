@@ -52,6 +52,9 @@ func (e *Error) Error() string      { return e.Message }
 func Invalid(message string) error  { return &Error{Code: "invalid_request", Message: message} }
 func Conflict(message string) error { return &Error{Code: "conflict", Message: message} }
 func CheckVersion(expected, actual int64) error {
+	if expected < 1 {
+		return Invalid("positive expected version required")
+	}
 	if expected != actual {
 		return &Error{Code: "conflict", Message: "version conflict", CurrentVersion: actual}
 	}

@@ -11,6 +11,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lllypuk/artel/internal/local"
 )
 
@@ -18,7 +19,7 @@ func run(args []string, out, errOut io.Writer) int {
 	if len(args) == 1 {
 		switch args[0] {
 		case "--help", "-h":
-			return printOutput(out, "Usage: artelctl --help | --version | status|snapshot --json [--endpoint URL] [--token-file PATH]\nSnapshot is unavailable until the domain API is implemented.")
+			return printOutput(out, "Usage: artelctl --help | --version | status|snapshot --json [--endpoint URL] [--token-file PATH]")
 		case "--version":
 			return printOutput(out, "artelctl 0.1.0-dev")
 		}
@@ -85,11 +86,32 @@ func diagnostic(args []string, out, errOut io.Writer) int {
 	}
 	const limit = 32 * 1024 * 1024
 	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
-	if err != nil || len(body) > limit || !json.Valid(body) {
+	if err != nil || len(body) > limit || !validResponse(args[0], body) {
 		_, _ = fmt.Fprintln(errOut, "artelctl: invalid API response")
 		return 1
 	}
 	return printOutput(out, string(body))
+}
+
+func validResponse(command string, body []byte) bool {
+	if command == "status" {
+		var status struct {
+			Status string `json:"status"`
+		}
+		return json.Unmarshal(body, &status) == nil && status.Status == "ok"
+	}
+	var snapshot struct {
+		InstanceID string            `json:"instance_id"`
+		EventSeq   *int64            `json:"event_seq"`
+		Projects   []json.RawMessage `json:"projects"`
+		Tasks      []json.RawMessage `json:"tasks"`
+		Queues     []json.RawMessage `json:"queues"`
+	}
+	if json.Unmarshal(body, &snapshot) != nil {
+		return false
+	}
+	id, err := uuid.Parse(snapshot.InstanceID)
+	return err == nil && id.String() == snapshot.InstanceID && snapshot.EventSeq != nil && *snapshot.EventSeq >= 0 && snapshot.Projects != nil && snapshot.Tasks != nil && snapshot.Queues != nil
 }
 
 func printOutput(out io.Writer, text string) int {

@@ -8,6 +8,7 @@ import (
 )
 
 func TestSecurity(t *testing.T) {
+	_, routes := fixture(t)
 	const host = "127.0.0.1:12345"
 	token := strings.Repeat("a", 64)
 	for _, tc := range []struct {
@@ -17,7 +18,7 @@ func TestSecurity(t *testing.T) {
 		{"health", "/healthz", "", host, "", 0, 200},
 		{"missing", "/v1/snapshot", "", host, "", 0, 401},
 		{"wrong", "/v1/snapshot", "Bearer wrong", host, "", 0, 401},
-		{"authenticated", "/v1/snapshot", "Bearer " + token, host, "", 0, 501},
+		{"authenticated", "/v1/snapshot", "Bearer " + token, host, "", 0, 200},
 		{"unknown protected", "/v1/unknown", "", host, "", 0, 401},
 		{"origin", "/healthz", "", host, "https://evil.test", 0, 400},
 		{"origin protected", "/v1/snapshot", "Bearer " + token, host, "null", 0, 400},
@@ -38,7 +39,7 @@ func TestSecurity(t *testing.T) {
 				req.Header.Set("Origin", tc.origin)
 			}
 			w := httptest.NewRecorder()
-			SecureHandler(token, host).ServeHTTP(w, req)
+			Protect(token, host, routes).ServeHTTP(w, req)
 			if w.Code != tc.status {
 				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 			}
@@ -53,6 +54,7 @@ func TestSecurity(t *testing.T) {
 }
 
 func TestEveryContractRouteRequiresOwner(t *testing.T) {
+	_, routes := fixture(t)
 	const host = "127.0.0.1:12345"
 	for _, route := range []struct{ method, path string }{
 		{"GET", "/v1/snapshot"}, {"POST", "/v1/projects"}, {"PATCH", "/v1/projects/id"},
@@ -65,13 +67,17 @@ func TestEveryContractRouteRequiresOwner(t *testing.T) {
 			expected := 401
 			if authenticated {
 				req.Header.Set("Authorization", "Bearer owner")
-				expected = 501
+				expected = 400
+				if route.path == "/v1/snapshot" {
+					expected = 200
+				}
 			}
 			w := httptest.NewRecorder()
-			SecureHandler("owner", host).ServeHTTP(w, req)
+			Protect("owner", host, routes).ServeHTTP(w, req)
 			if w.Code != expected {
 				t.Errorf("%s %s: got %d expected %d", route.method, route.path, w.Code, expected)
 			}
+			checkContract(t, req, w)
 		}
 	}
 }

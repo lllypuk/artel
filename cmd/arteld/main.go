@@ -61,7 +61,7 @@ func serve(ctx context.Context, args []string, out, errOut io.Writer) int {
 		_, _ = fmt.Fprintln(errOut, "arteld: cannot bind local API")
 		return 1
 	}
-	server := &http.Server{Handler: api.SecureHandler(token, listener.Addr().String()), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 * 1024}
+	server := &http.Server{Handler: api.Protect(token, listener.Addr().String(), api.New(ctx, database)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 * 1024}
 	done := make(chan struct{})
 	stopped := make(chan struct{})
 	go func() {
