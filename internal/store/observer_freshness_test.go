@@ -31,7 +31,7 @@ func TestObserverFreshnessIsIndependentOfOtherCandidatesAndOwnerActions(t *testi
 	}
 	now = now.Add(19 * time.Second)
 	mustReport(t, s, verifier, reportFor(a, owner.Generation, 1))
-	owner = mustOwner(t, s, id, "prune", owner.Version, "", "")
+	owner = mustPrune(t, s, id, owner.Version, b.RuntimeID)
 	if owner.PrunedCount != 1 {
 		t.Fatal(owner)
 	}

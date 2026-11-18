@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -259,10 +260,15 @@ type ObserverOwnerMutation struct {
 	Verifier        string
 	RuntimeID       string
 	ProjectID       string
+	// Omit for other actions to preserve the pre-upgrade receipt encoding.
+	ExpectedRuntimeIDs []string `json:"expected_runtime_ids,omitempty"`
 }
 
 func (m ObserverOwnerMutation) validate() error {
 	if !observerUUID(m.ObserverID) || !observerUUID(m.Key) || m.ExpectedVersion < 0 || m.ExpectedVersion > observerMaxCounter {
+		return observerError("invalid_request")
+	}
+	if m.Action != "prune" && len(m.ExpectedRuntimeIDs) != 0 {
 		return observerError("invalid_request")
 	}
 	switch m.Action {
@@ -274,7 +280,11 @@ func (m ObserverOwnerMutation) validate() error {
 		if (m.RuntimeID != "" || m.ProjectID != "") && (!observerUUID(m.RuntimeID) || !observerUUID(m.ProjectID)) {
 			return observerError("invalid_request")
 		}
-	case "revoke", "prune":
+	case "prune":
+		if !ValidObserverPruneIDs(m.ExpectedRuntimeIDs) {
+			return observerError("invalid_request")
+		}
+	case "revoke":
 	default:
 		return observerError("invalid_request")
 	}
@@ -285,6 +295,11 @@ func (s *Store) MutateObserver(ctx context.Context, m ObserverOwnerMutation) (Ob
 	if err := m.validate(); err != nil {
 		return result, err
 	}
+	if m.Action == "prune" {
+		m.ExpectedRuntimeIDs = slices.Clone(m.ExpectedRuntimeIDs)
+		slices.Sort(m.ExpectedRuntimeIDs)
+	}
+	requestHash := observerHash(m)
 	s.observerMu.Lock()
 	defer s.observerMu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -295,7 +310,7 @@ func (s *Store) MutateObserver(ctx context.Context, m ObserverOwnerMutation) (Ob
 	var hash, data string
 	err = tx.QueryRowContext(ctx, "SELECT request_hash,result FROM observer_receipts WHERE principal=? AND key=?", m.ObserverID, m.Key).Scan(&hash, &data)
 	if err == nil {
-		if hash != observerHash(m) {
+		if hash != requestHash {
 			return result, observerError("idempotency_conflict")
 		}
 		if err := json.Unmarshal([]byte(data), &result); err != nil {
@@ -322,7 +337,7 @@ func (s *Store) MutateObserver(ctx context.Context, m ObserverOwnerMutation) (Ob
 	if err != nil {
 		return result, err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO observer_receipts(principal,key,request_hash,result) VALUES(?,?,?,?)", o.ID, m.Key, observerHash(m), string(encoded)); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO observer_receipts(principal,key,request_hash,result) VALUES(?,?,?,?)", o.ID, m.Key, requestHash, string(encoded)); err != nil {
 		return result, err
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO observer_audit(observer_id,action,timestamp) VALUES(?,?,?)", o.ID, m.Action, s.observerClock().UTC().Format(time.RFC3339Nano)); err != nil {
@@ -418,7 +433,7 @@ func observerOwnerApply(ctx context.Context, tx *sql.Tx, m ObserverOwnerMutation
 		o.Revoked = true
 		o.Generation++
 	case "prune":
-		pruned, err = observerPrune(ctx, tx, o)
+		pruned, err = observerPrune(ctx, tx, o, m.ExpectedRuntimeIDs)
 	}
 	if err != nil {
 		return o, 0, 0, err
@@ -480,29 +495,35 @@ func observerBind(ctx context.Context, tx *sql.Tx, o *observerRecord, m Observer
 	}
 	return nil
 }
-func observerPrune(ctx context.Context, tx *sql.Tx, o observerRecord) (int, error) {
+func observerPruneEligible(o observerRecord, r observerRuntime) bool {
+	return (o.Binding == nil || o.Binding.RuntimeID != r.Registration.RuntimeID) &&
+		(r.Disposition == "candidate" || r.Disposition == "superseded" || r.Lifecycle == "stopped")
+}
+
+func observerPrune(ctx context.Context, tx *sql.Tx, o observerRecord, expected []string) (int, error) {
 	runtimes, err := observerRuntimes(ctx, tx, o.ID)
 	if err != nil {
 		return 0, err
 	}
-	count := 0
+	var eligible []string
 	for _, r := range runtimes {
-		id := r.Registration.RuntimeID
-		if o.Binding != nil && o.Binding.RuntimeID == id {
-			continue
+		if observerPruneEligible(o, r) {
+			eligible = append(eligible, r.Registration.RuntimeID)
 		}
-		if r.Disposition != "candidate" && r.Disposition != "superseded" && r.Lifecycle != "stopped" {
-			continue
-		}
+	}
+	// observerRuntimes is ordered by runtime ID and expected is canonicalized.
+	if !slices.Equal(eligible, expected) {
+		return 0, observerError("version_conflict")
+	}
+	for _, id := range eligible {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM observer_runtimes WHERE observer_id=? AND runtime_id=?", o.ID, id); err != nil {
 			return 0, err
 		}
 		if _, err := tx.ExecContext(ctx, "UPDATE observer_identities SET retired=1 WHERE observer_id=? AND runtime_id=?", o.ID, id); err != nil {
 			return 0, err
 		}
-		count++
 	}
-	return count, nil
+	return len(eligible), nil
 }
 
 func (s *Store) Observers(ctx context.Context) (ObserverRegistry, error) {
@@ -532,6 +553,7 @@ func (s *Store) Observers(ctx context.Context) (ObserverRegistry, error) {
 			return registry, err
 		}
 		for _, r := range runtimes {
+			r.PruneEligible = observerPruneEligible(o, r)
 			r.Freshness = "unknown"
 			if r.LastSeen != "" {
 				r.Freshness = "stale"

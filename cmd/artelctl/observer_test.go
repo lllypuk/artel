@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lllypuk/artel/internal/api"
 	"github.com/lllypuk/artel/internal/local"
 	"github.com/lllypuk/artel/internal/store"
@@ -138,13 +139,29 @@ func TestObserverCLIControls(t *testing.T) {
 		t.Fatal(e)
 	}
 	call(0, "observer", "unbind", "--id", c.ObserverID, "--expected-version", "1")
+	var ids []string
+	for range 2 {
+		r := store.ObserverRegistration{RuntimeID: uuid.NewString(), PiSessionID: uuid.NewString(), Reason: "startup", PiVersion: "1", BridgeVersion: "1", Cwd: "/fixture"}
+		if _, err := s.RegisterObserver(t.Context(), c.Payload.Verifier, r); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, r.RuntimeID)
+	}
 	call(1, "observer", "revoke", "--id", c.ObserverID, "--expected-version", "1")
 	response := call(0, "observer", "revoke", "--id", c.ObserverID, "--expected-version", "2")
 	var result store.ObserverOwnerResult
 	if e = json.Unmarshal(response, &result); e != nil || result.Version != 3 {
 		t.Fatal("revoke result", e)
 	}
-	call(0, "observer", "prune", "--id", c.ObserverID, "--expected-version", "3")
+	prune := []string{"observer", "prune", "--id", c.ObserverID, "--expected-version", "3"}
+	call(2, prune...)
+	call(2, append(prune, "--runtime-id", "invalid")...)
+	call(2, append(prune, "--runtime-id", ids[0], "--runtime-id", ids[0])...)
+	call(1, append(prune, "--runtime-id", ids[0])...)
+	response = call(0, append(prune, "--runtime-id", ids[1], "--runtime-id", ids[0])...)
+	if e = json.Unmarshal(response, &result); e != nil || result.PrunedCount != 2 || result.Version != 4 {
+		t.Fatal("prune result", e, result)
+	}
 	call(2, "observer", "bind", "--id", c.ObserverID, "--expected-version", "4")
 	call(2, "observer", "no-such-command")
 	call(2, "observer", "list", "--endpoint", "https://example.invalid")

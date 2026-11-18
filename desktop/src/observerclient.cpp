@@ -90,6 +90,8 @@ bool sanitizeProjection(const QJsonObject &root, QJsonArray &clean) {
           return false;
         result.insert(k, runtime.value(k).toString());
       }
+      if (runtime.value("prune_eligible").isBool())
+        result.insert("prune_eligible", runtime.value("prune_eligible"));
       const auto hint = reg.value("terminal_hint").toObject().toVariantMap();
       if (AgtermAdapter::validHint(hint))
         result.insert("terminal_hint", QJsonObject::fromVariantMap(hint));
@@ -99,6 +101,20 @@ bool sanitizeProjection(const QJsonObject &root, QJsonArray &clean) {
     clean.append(row);
   }
   return true;
+}
+QStringList pruneIDs(const QJsonObject &observer) {
+  QStringList ids;
+  const auto bound = observer.value("binding").toObject().value("runtime_id");
+  for (const auto &entry : observer.value("runtimes").toArray()) {
+    const auto runtime = entry.toObject();
+    const auto eligible = runtime.value("prune_eligible");
+    if (!eligible.isBool())
+      return {};
+    if (eligible.toBool() && runtime.value("runtime_id") != bound)
+      ids.append(runtime.value("runtime_id").toString());
+  }
+  ids.sort();
+  return ids;
 }
 bool navigableRuntime(const QJsonObject &observer, const QJsonObject &runtime) {
   const auto disposition = runtime.value("disposition");
@@ -242,8 +258,9 @@ void ObserverClient::setProject(const QVariantMap &project) {
     return;
   m_project = project;
   m_online = false;
-  // Unbind targets the observer's captured binding, not the manual project.
-  if (m_confirmation.value("action") != "unbind")
+  // Unbind and prune target the observer registry, not the manual project.
+  const auto action = m_confirmation.value("action").toString();
+  if (action != "unbind" && action != "prune")
     m_confirmation.clear();
   resetRead();
   emit changed();
@@ -280,6 +297,7 @@ QVariantList ObserverClient::records(bool onlyProject) const {
   QVariantList result;
   for (const auto &value : m_observers) {
     const auto o = value.toObject();
+    const bool prunable = !pruneIDs(o).isEmpty();
     auto runtimes = o.value("runtimes").toArray();
     if (runtimes.isEmpty())
       runtimes.append(QJsonObject{});
@@ -333,6 +351,7 @@ QVariantList ObserverClient::records(bool onlyProject) const {
                                          ? "revoked"
                                          : row.value("disposition").toString()),
                           stateLabel(activity), stateLabel(freshness)));
+      row.insert("prunable", prunable);
       row.insert("bindable", canBind() && !o.value("revoked").toBool() &&
                                  (row.value("disposition") == "candidate" ||
                                   row.value("disposition") == "bound"));
@@ -437,9 +456,13 @@ QString ObserverClient::confirmation() const {
              m_confirmation.value("binding_project_id").toString());
   else if (action == "revoke")
     question = tr("Revoke this observer credential permanently?");
-  else
-    question = tr("Prune inactive runtimes? Their metadata will be removed "
-                  "permanently; retired IDs cannot reconnect.");
+  else if (action == "prune")
+    return tr("Permanently remove metadata for these runtimes?\nRetired IDs "
+              "cannot reconnect.\n\nObserver: %1\n\nRuntime IDs to retire:\n%2")
+        .arg(m_confirmation.value("observer_id").toString(),
+             m_confirmation.value("expected_runtime_ids")
+                 .toStringList()
+                 .join('\n'));
   return question + "\n\n" +
          tr("Observer: %1\nRuntime: %2\nProject: %3")
              .arg(m_confirmation.value("observer_id").toString(),
@@ -458,6 +481,26 @@ bool ObserverClient::prepare(const QString &action, const QString &observer,
   if (!canManage() ||
       !QStringList{"bind", "unbind", "revoke", "prune"}.contains(action))
     return false;
+  if (action == "prune") {
+    for (const auto &value : m_observers) {
+      const auto o = value.toObject();
+      if (o.value("observer_id") != observer)
+        continue;
+      const auto ids = pruneIDs(o);
+      if (ids.isEmpty())
+        return false;
+      m_actionMessage.clear();
+      m_confirmation = {{"action", action},
+                        {"observer_id", observer},
+                        {"version", o.value("version").toVariant()},
+                        {"generation", o.value("generation").toVariant()},
+                        {"instance", m_instance},
+                        {"expected_runtime_ids", ids}};
+      emit changed();
+      return true;
+    }
+    return false;
+  }
   for (const auto &value : records(false)) {
     const auto row = value.toMap();
     if (row.value("observer_id") != observer ||
@@ -511,6 +554,17 @@ bool ObserverClient::confirm() {
               c.value("binding_project_id");
       break;
     }
+  } else if (action == "prune") {
+    for (const auto &value : m_observers) {
+      const auto observer = value.toObject();
+      if (observer.value("observer_id").toString() != c.value("observer_id"))
+        continue;
+      same =
+          observer.value("version").toVariant() == c.value("version") &&
+          observer.value("generation").toVariant() == c.value("generation") &&
+          pruneIDs(observer) == c.value("expected_runtime_ids").toStringList();
+      break;
+    }
   } else {
     // Recheck the current row and CAS version, not a stale QML delegate.
     if (!prepare(action, c.value("observer_id").toString(),
@@ -543,8 +597,13 @@ bool ObserverClient::confirm() {
                    action == "bind"
                        ? QJsonValue(c.value("project_id").toString())
                        : QJsonValue(QJsonValue::Null));
-  } else
+  } else {
     path += "/" + action;
+    if (action == "prune")
+      payload.insert("expected_runtime_ids",
+                     QJsonArray::fromStringList(
+                         c.value("expected_runtime_ids").toStringList()));
+  }
   resetRead();
   auto *reply = request(
       method, path, QJsonDocument(payload).toJson(QJsonDocument::Compact),
@@ -556,27 +615,32 @@ bool ObserverClient::confirm() {
   m_mutation = reply;
   emit changed();
   const auto instance = m_instance;
-  connect(reply, &QNetworkReply::finished, this, [this, reply, instance] {
-    reply->deleteLater();
-    if (m_mutation != reply)
-      return;
-    m_mutation = nullptr;
-    m_online = false;
-    // Never apply mutation responses to rows. Fetch a fresh projection, even on
-    // lost ACK/CAS/archive failure; no automatic mutation retry or draft reset.
-    const auto status =
-        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    m_actionMessage = status >= 200 && status < 300 && instance == m_instance
-                          ? QString{}
-                      : (status == 409 || status == 404 || status == 400)
-                          ? tr("Observation changed or project unavailable. "
-                               "Refresh and confirm again.")
-                          : tr("Observation action unconfirmed. Refresh before "
-                               "trying again.");
-    emit changed();
-    if (m_active)
-      reload();
-  });
+  connect(
+      reply, &QNetworkReply::finished, this, [this, reply, instance, action] {
+        reply->deleteLater();
+        if (m_mutation != reply)
+          return;
+        m_mutation = nullptr;
+        m_online = false;
+        // Never apply mutation responses to rows. Fetch a fresh projection,
+        // even on lost ACK/CAS/archive failure; no automatic mutation retry or
+        // draft reset.
+        const auto status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        m_actionMessage =
+            status >= 200 && status < 300 && instance == m_instance ? QString{}
+            : (action == "prune" && status == 409)
+                ? tr("Prune approval is no longer current. Refresh "
+                     "and confirm the runtime IDs again.")
+            : (status == 409 || status == 404 || status == 400)
+                ? tr("Observation changed or project unavailable. "
+                     "Refresh and confirm again.")
+                : tr("Observation action unconfirmed. Refresh before "
+                     "trying again.");
+        emit changed();
+        if (m_active)
+          reload();
+      });
   return true;
 }
 

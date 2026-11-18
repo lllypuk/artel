@@ -77,16 +77,17 @@ type ObserverOwnerResult struct {
 	PrunedCount        int    `json:"pruned_count,omitempty"`
 }
 type ObserverRuntimeProjection struct {
-	Registration ObserverRegistration `json:"registration"`
-	Disposition  string               `json:"disposition"`
-	Generation   int64                `json:"generation"`
-	Activity     string               `json:"activity"`
-	Freshness    string               `json:"freshness"`
-	ToolCount    int                  `json:"tool_count"`
-	Lifecycle    string               `json:"lifecycle"`
-	LastSeen     string               `json:"last_seen,omitempty"`
-	Provider     string               `json:"provider,omitempty"`
-	Model        string               `json:"model,omitempty"`
+	Registration  ObserverRegistration `json:"registration"`
+	PruneEligible bool                 `json:"prune_eligible"`
+	Disposition   string               `json:"disposition"`
+	Generation    int64                `json:"generation"`
+	Activity      string               `json:"activity"`
+	Freshness     string               `json:"freshness"`
+	ToolCount     int                  `json:"tool_count"`
+	Lifecycle     string               `json:"lifecycle"`
+	LastSeen      string               `json:"last_seen,omitempty"`
+	Provider      string               `json:"provider,omitempty"`
+	Model         string               `json:"model,omitempty"`
 }
 type ObserverProjection struct {
 	ObserverID    string                      `json:"observer_id"`
@@ -124,6 +125,22 @@ func observerUUID(s string) bool {
 	u, err := uuid.Parse(s)
 	return err == nil && u != uuid.Nil && u.String() == s
 }
+
+// ValidObserverPruneIDs checks the shared exact-set request contract.
+func ValidObserverPruneIDs(ids []string) bool {
+	if len(ids) < 1 || len(ids) > 8 {
+		return false
+	}
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if !observerUUID(id) || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	return true
+}
+
 func observerText(s string, max int, optional bool) bool {
 	if s == "" {
 		return optional

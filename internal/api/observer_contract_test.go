@@ -39,6 +39,14 @@ func TestObserverOpenAPI(t *testing.T) {
 	if count != 8 {
 		t.Fatalf("operations: %d", count)
 	}
+	prune := doc.Paths.Find("/v1/observers/{observer_id}/prune").Post.RequestBody.Value
+	if !prune.Required || prune.Content["application/json"].Schema.Ref != "#/components/schemas/PruneRequest" {
+		t.Fatal("prune does not require the exact-set request")
+	}
+	runtime := doc.Components.Schemas["RuntimeProjection"].Value
+	if !strings.Contains(strings.Join(runtime.Required, ","), "prune_eligible") || !runtime.Properties["prune_eligible"].Value.Type.Is("boolean") {
+		t.Fatal("runtime projection must require boolean eligibility")
+	}
 	const id = "11111111-1111-4111-8111-111111111111"
 	cases := []struct {
 		name, schema, body string
@@ -50,6 +58,11 @@ func TestObserverOpenAPI(t *testing.T) {
 		{"no tool text", "Report", `{"runtime_id":"` + id + `","generation":1,"report_seq":1,"activity":"idle","tool_count":0,"lifecycle":"running","output":"private"}`, false},
 		{"no zero seq", "Report", `{"runtime_id":"` + id + `","generation":1,"report_seq":0,"activity":"idle","tool_count":0,"lifecycle":"running"}`, false},
 		{"duplicate", "ReportResult", `{"runtime_id":"` + id + `","generation":1,"report_seq":1,"result":"duplicate"}`, true},
+		{"prune exact", "PruneRequest", `{"expected_version":1,"expected_runtime_ids":["` + id + `"]}`, true},
+		{"prune legacy", "PruneRequest", `{"expected_version":1}`, false},
+		{"prune null", "PruneRequest", `{"expected_version":1,"expected_runtime_ids":null}`, false},
+		{"prune empty", "PruneRequest", `{"expected_version":1,"expected_runtime_ids":[]}`, false},
+		{"prune duplicate", "PruneRequest", `{"expected_version":1,"expected_runtime_ids":["` + id + `","` + id + `"]}`, false},
 		{"negative version", "CAS", `{"expected_version":-1}`, false},
 		{"unbind", "BindingRequest", `{"expected_version":0,"runtime_id":null,"project_id":null}`, true},
 		{"mixed binding", "BindingRequest", `{"expected_version":0,"runtime_id":"` + id + `","project_id":null}`, false},

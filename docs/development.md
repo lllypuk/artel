@@ -111,11 +111,29 @@ unsupported version/capabilities or unsafe/pending config disables observation.
 Use the list JSON to select full observer/runtime/project UUIDs and current observer
 version. `artelctl observer bind --id UUID --runtime-id UUID --project-id UUID
 --expected-version N` selects a candidate; repeat with another candidate/project
-for explicit rebind. `unbind`, `revoke`, `prune` take `--id UUID --expected-version N`.
+for explicit rebind. `unbind` and `revoke` take `--id UUID --expected-version N`.
 All accept the owner endpoint/token-file options above and `--idempotency-key UUID`;
 retain the same key/body for uncertain mutation retries. A conflict requires fresh
 list/version and an explicit decision, not silent retry. Desktop offers the same
 controls without a credential textbox and keeps manual drafts independent.
+
+For prune, inspect `artelctl observer list --json`. In the target observer, review
+all `runtimes` with `prune_eligible: true` and confirm each `registration.runtime_id`.
+Run `artelctl observer prune --id OBSERVER_UUID --expected-version N --runtime-id
+RUNTIME_UUID`, repeating `--runtime-id` once for every additional confirmed ID.
+The CLI never fetches or approves IDs on your behalf. The owner `POST
+/v1/observers/{observer_id}/prune` JSON body must contain `expected_version` and
+`expected_runtime_ids` (1–8 unique canonical non-nil UUIDs, in any order). If the
+version or the exact eligible set differs, the server returns `409 version_conflict`
+without retiring anything, including when a new candidate registers without a
+version bump. Refresh the registry and reconfirm. With the original key, version
+and equivalent set, replay returns the original result even after retirement.
+
+Upgrade the daemon, desktop and CLI together; the old version-only request now
+returns 400 and the updated clients do not fall back. There is no data migration.
+Reusing a legacy prune key with an exact-set body returns an idempotency conflict.
+If a legacy prune outcome is uncertain, inspect the current registry and any
+available prior result rather than blindly submitting another prune.
 
 Identity separates database UUID, credential-scoped observer UUID, Pi session UUID,
 fresh runtime UUID and server generation. New/reload/resume/fork requires a new

@@ -2313,6 +2313,155 @@ private slots:
       QVERIFY(window->grabWindow().save(path + ".ru.png"));
     QCoreApplication::removeTranslator(&appearance);
   }
+  void observerPruneConfirmsUnfilteredSetAndRejectsRaces() {
+    ObserverFixture fixture;
+    const auto initial = fixture.record();
+    auto record = initial;
+    auto runtimes = record.value("runtimes").toArray();
+    auto hidden = runtimes.last().toObject();
+    hidden.insert("disposition", "superseded");
+    runtimes[1] = hidden;
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    auto *o = panel.observers();
+    o->setActive(true);
+    o->setViewFilter("candidate");
+    QTRY_VERIFY(o->online());
+    QCOMPARE(o->rows().size(), 1);
+    QVERIFY(o->prepare("prune", fixture.observer, fixture.runtime));
+    const auto text = o->confirmation();
+    QVERIFY(text.contains(fixture.observer));
+    QVERIFY(text.contains(fixture.runtime + "\n" + fixture.otherRuntime));
+    QVERIFY(!text.contains("Project:"));
+    QVERIFY(panel.selectProject(fixture.project));
+    o->setOnlyProject(true);
+    QTRY_VERIFY(o->online() && !o->loading());
+    QCOMPARE(o->confirmation(), text);
+    // A newly registered candidate is unknown to the UI until the next read.
+    auto added = hidden;
+    auto reg = added.value("registration").toObject();
+    reg.insert("runtime_id", "88888888-8888-4888-8888-888888888888");
+    added.insert("registration", reg);
+    runtimes.append(added);
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    QVERIFY(o->confirm());
+    QTRY_COMPARE(fixture.mutations.size(), 1);
+    const auto request = fixture.mutations.first();
+    QCOMPARE(
+        QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n") + 4))
+            .object(),
+        (QJsonObject{{"expected_version", 1},
+                     {"expected_runtime_ids",
+                      QJsonArray{fixture.runtime, fixture.otherRuntime}}}));
+    QTRY_VERIFY(o->online() && !o->loading());
+    QVERIFY(o->message().contains("confirm the runtime IDs again"));
+    QCOMPARE(fixture.record(), record);
+    QVERIFY(o->prepare("prune", fixture.observer, fixture.runtime));
+    // A wrong-typed or missing flag on even a hidden row disables all prune.
+    added.insert("prune_eligible", "true");
+    runtimes[2] = added;
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    o->setOnlyProject(false);
+    o->reload();
+    QTRY_VERIFY(o->online() && !o->loading());
+    QVERIFY(!o->rows().first().toMap().value("prunable").toBool());
+    QVERIFY(!o->confirm());
+    QCOMPARE(fixture.mutations.size(), 1);
+    o->reload();
+    QTRY_VERIFY(o->online() && !o->loading());
+    QVERIFY(!o->prepare("prune", fixture.observer, fixture.runtime));
+    record.insert("runtimes", QJsonArray{});
+    fixture.record(record);
+    o->reload();
+    QTRY_VERIFY(o->online() && !o->loading());
+    QVERIFY(!o->prepare("prune", fixture.observer, ""));
+  }
+  void observerPruneLocalizedConfirmationScreenshots() {
+    ObserverFixture fixture;
+    auto record = fixture.record();
+    const auto prototype =
+        record.value("runtimes").toArray().first().toObject();
+    record.insert("runtimes", QJsonArray{prototype});
+    fixture.record(record);
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    writeFile(fixture.directory.filePath("language"), "ru");
+    appearance.refresh();
+    QCoreApplication::installTranslator(&appearance);
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance);
+    QVERIFY(window);
+    window->resize(1000, 680);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    auto *drawer = window->findChild<QObject *>("observerDrawer");
+    QVERIFY(drawer && QMetaObject::invokeMethod(drawer, "open"));
+    QTRY_VERIFY(drawer->property("opened").toBool());
+    auto *o = panel.observers();
+    QTRY_VERIFY(o->online() && !o->loading());
+    const auto prefix = qEnvironmentVariable("ARTEL_PRUNE_SCREENSHOT");
+    QStringList ids{fixture.runtime};
+    for (const int count : {1, 8}) {
+      if (count == 8) {
+        QJsonArray rows{prototype};
+        for (int i = 1; i < 8; ++i) {
+          auto runtime = prototype;
+          auto reg = runtime.value("registration").toObject();
+          ids.append(fixture.runtime.chopped(2) + "0" + QString::number(i));
+          reg.insert("runtime_id", ids.last());
+          runtime.insert("registration", reg);
+          rows.append(runtime);
+        }
+        record.insert("runtimes", rows);
+        fixture.record(record);
+        o->reload();
+        QTRY_VERIFY(o->online() && !o->loading());
+      }
+      QVERIFY(o->prepare("prune", fixture.observer, fixture.runtime));
+      auto *dialog = window->findChild<QObject *>("observerConfirmation");
+      QVERIFY(dialog && QMetaObject::invokeMethod(dialog, "open"));
+      QTRY_VERIFY(dialog->property("opened").toBool());
+      auto *label = item(window, "observerConfirmationText");
+      QVERIFY(label && label->isVisible());
+      const auto text = label->property("text").toString();
+      QVERIFY(text.contains(QString::fromUtf8("ID запусков для удаления")));
+      const auto lines = text.split('\n');
+      for (const auto &id : ids)
+        QVERIFY(lines.contains(id));
+      QCOMPARE(label->property("textFormat").toInt(), int(Qt::PlainText));
+      QTest::qWait(80); // Let the offscreen scene polish and render the dialog.
+      if (!prefix.isEmpty())
+        QVERIFY(window->grabWindow().save(prefix + QString::number(count) +
+                                          ".png"));
+      for (const auto *name :
+           {"observerConfirmAction", "observerCancelAction"}) {
+        auto *button = item(window, name);
+        QVERIFY(button && button->isVisible() && button->isEnabled());
+        const auto bounds = button->mapRectToScene(button->boundingRect());
+        QVERIFY2(
+            QRectF(0, 0, window->width(), window->height()).contains(bounds),
+            qPrintable(QString("%1 at %2,%3 (%4x%5)")
+                           .arg(name)
+                           .arg(bounds.x())
+                           .arg(bounds.y())
+                           .arg(bounds.width())
+                           .arg(bounds.height())));
+      }
+      QVERIFY(QMetaObject::invokeMethod(dialog, "reject"));
+      QTRY_VERIFY(!dialog->property("visible").toBool());
+    }
+    QCoreApplication::removeTranslator(&appearance);
+  }
   void observerCasRebindRevokePruneAndManualPendingAreIndependent() {
     ObserverFixture fixture;
     ApiClient client;

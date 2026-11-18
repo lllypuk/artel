@@ -42,7 +42,7 @@ func TestOwnerBindLostResponseAndGeneration(t *testing.T) {
 	f.request(t, true, "PUT", "/observer/v1/report", f.token, "", report, 200)
 	f.request(t, false, "PATCH", "/v1/observers/"+f.id+"/binding", f.ownerToken, uuid.NewString(), `{"expected_version":2,"runtime_id":null,"project_id":null}`, 200)
 	f.request(t, true, "PUT", "/observer/v1/report", f.token, "", report, 409)
-	f.request(t, false, "POST", "/v1/observers/"+f.id+"/prune", f.ownerToken, uuid.NewString(), `{"expected_version":3}`, 200)
+	f.request(t, false, "POST", "/v1/observers/"+f.id+"/prune", f.ownerToken, uuid.NewString(), map[string]any{"expected_version": 3, "expected_runtime_ids": []string{r.RuntimeID}}, 200)
 	f.request(t, true, "POST", "/observer/v1/register", f.token, "", r, 409)
 	f.request(t, true, "GET", "/observer/v1/context?runtime_id="+r.RuntimeID, f.token, "", nil, 409)
 	after, e := f.s.Snapshot(t.Context())

@@ -2,6 +2,7 @@ package store
 
 import (
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -57,9 +58,9 @@ func TestObserverPruneFaultPreservesPayloadAndIdentity(t *testing.T) {
 	if _, err := s.db.ExecContext(t.Context(), "CREATE TRIGGER injected BEFORE UPDATE ON observer_identities BEGIN SELECT RAISE(ABORT,'injected failure'); END"); err != nil {
 		t.Fatal(err)
 	}
-	_, err := s.MutateObserver(t.Context(), ObserverOwnerMutation{ObserverID: id, Key: uuid.NewString(), Action: "prune", ExpectedVersion: owner.Version})
-	if err == nil {
-		t.Fatal("prune fault not observed")
+	_, err := s.MutateObserver(t.Context(), ObserverOwnerMutation{ObserverID: id, Key: uuid.NewString(), Action: "prune", ExpectedVersion: owner.Version, ExpectedRuntimeIDs: []string{r.RuntimeID}})
+	if err == nil || !strings.Contains(err.Error(), "injected failure") {
+		t.Fatalf("prune did not reach injected fault: %v", err)
 	}
 	if after := observerView(t, s); !reflect.DeepEqual(before, after) {
 		t.Fatal("prune partially committed")

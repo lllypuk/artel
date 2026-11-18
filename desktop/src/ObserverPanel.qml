@@ -250,7 +250,7 @@ Pane {
                     kind: "quiet"
                     objectName: "observerPrune_" + row.modelData.runtime_id
                     text: qsTr("Prune inactive runtimes")
-                    enabled: root.client.online && !root.client.busy
+                    enabled: root.client.online && !root.client.busy && row.modelData.prunable
                     onClicked: root.ask("prune", row.modelData)
                 }
             }
@@ -287,11 +287,13 @@ Pane {
         footer: DialogButtonBox {
             UI.ActionButton {
                 theme: root.theme
+                objectName: "observerConfirmAction"
                 text: qsTr("Confirm observation change")
                 DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
             }
             UI.ActionButton {
                 theme: root.theme
+                objectName: "observerCancelAction"
                 text: qsTr("Cancel")
                 DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
             }
@@ -301,11 +303,19 @@ Pane {
         }
         onAccepted: root.client.confirm()
         onRejected: root.client.cancelConfirmation()
-        UI.StatusLabel {
-            theme: root.theme
-            objectName: "observerConfirmationText"
-            text: root.client.confirmation
-            width: parent.width
+        contentItem: ScrollView {
+            id: confirmationScroll
+            clip: true
+            implicitHeight: Math.min(confirmationText.implicitHeight, Math.max(80, root.height - 180))
+            contentWidth: availableWidth
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            UI.StatusLabel {
+                id: confirmationText
+                theme: root.theme
+                objectName: "observerConfirmationText"
+                text: root.client.confirmation
+                width: confirmationScroll.availableWidth
+            }
         }
     }
 }
