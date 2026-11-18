@@ -1,11 +1,11 @@
-# Artel desktop design system — provisional native primitives
+# Artel desktop design system
 
-Tasks 1–6 of the desktop redesign, 2026-11-18. This describes implemented reusable
-primitives, the team-first shell, observer inspector, connection management,
-manual workspace and narrow/scaled hardening, not a completed redesign. Full
-native full-stack/package acceptance and final documentation follow in later tasks. Mode: Operate,
-native Qt Quick, canon direction with Zed-quality hierarchy/density rather than
-editor imitation.
+Implemented desktop redesign, 2026-11-18. This describes shared native primitives,
+the team-first shell, observer inspector, connection management, manual workspace
+and narrow/scaled behavior. Mode: Operate, native Qt Quick, canon direction with
+Zed-inspired hierarchy/density rather than editor imitation. Source tokens in
+`desktop/src/ui/Theme.qml` are authoritative; this document records their use and
+native verification, not a web/CSS theme or future orchestration contract.
 
 Authority: [product](PRODUCT.md), [approved brief](docs/design/20261118-artel-desktop-brief.md),
 [selected composition and provenance](docs/design/reference/README.md).
@@ -51,7 +51,7 @@ state uses neutral raised/text rather than an unreadable accent/foreground pair.
 ## Components
 
 All resources ship in `resources.qrc`; components import QtQuick.Controls.Basic
-so later reuse does not accidentally inherit stock Material backgrounds.
+so reuse does not accidentally inherit stock Material backgrounds.
 
 - ActionButton: primary, secondary, quiet and destructive roles; text-based
   accessible name; hover/pressed/disabled/focus; keyboard Tab/Space support.
@@ -94,9 +94,9 @@ Reviewed native offscreen/software renders (fictional text only):
 
 All three images were opened and visually inspected. Initial untranslated fixture
 labels were corrected; focus is visible, fields/buttons have consistent alignment,
-and long text remains literal. These are component evidence, not the whole-screen
-DPI/layout acceptance matrix required in later tasks. Actual OS 150/200% device
-scaling and full application screens remain future gates, not claimed complete.
+and long text remains literal. These are component evidence; whole-screen offscreen device-scale coverage is
+recorded in the Task6 matrix below. Physical monitor/compositor testing is not
+claimed.
 
 Capture without reading user settings or a checkout working directory:
 
@@ -115,7 +115,7 @@ Task gates: `make lint test build` passed with Go 1.26.3, golangci-lint 2.10.1,
 Qt 6.12.0 and clang-format 23.1.3. Recursive UI/test-fixture qmllint has zero
 warnings and qmlformat is enforced. Existing manual/observer Qt tests remain
 intact. No owner daemon, data, token, desktop settings or real Pi/agterm sessions
-were used. Full `make check`/package acceptance is reserved for subsequent tasks.
+were used. Full-stack/package acceptance is recorded in the final verification section.
 
 ## Team-first shell (Task 3)
 
@@ -123,15 +123,15 @@ Main.qml retains the lifetime Panel/ObserverClient and uses the C++
 WorkspaceController supplied by main.cpp. The startup route is Team, including
 an empty registry; no sample data is inserted into the application. Persistent
 navigation leads to projects and the existing manual workspace. Connections still
-opens the preserved management drawer; its detailed redesign is not claimed here.
+opens the management drawer described in Task4 below.
 
 TeamOverview.qml uses a virtualized roster, separate text/project/activity filters,
 whole-team versus shown counts, unbound footer and a stable-ID read-only selection.
 The 64-unit two-line roster places status and relative age opposite label/project;
-no UUID/model/version clutter is printed in rows. The initial inspector offers a
-guarded project transition; richer observation details remain Task 4. Thin seams
-separate navigation and the 280-unit inspector. Narrow/scaled adaptation remains
-Task 6, not acceptance inferred from these desktop-size captures.
+no UUID/model/version clutter is printed in rows. The inspector offers a
+guarded project transition and observation details described in Task4. Thin seams
+separate navigation and the 280-unit inspector. Narrow/scaled adaptation is covered by the separate Task6 matrix, not inferred
+from these desktop-size captures.
 
 Read-only Team navigation retains editor text/base identity and shows a return
 banner. Save/Escape are scoped to the workspace; global close protection remains.
@@ -210,8 +210,8 @@ All 15 frames were visually inspected individually or in native capture contact
 sheets. Review corrected stock light popup scrims, accidental opaque overlay and
 unlocalized historical activity. Final surfaces retain visible action text and
 separate candidates/history from the team roster. UUIDs intentionally wrap in the
-narrow technical inspector and remain copyable; full narrow/device-scale acceptance
-belongs to Task 6. No HTML/browser render is counted as native evidence.
+narrow technical inspector and remain copyable; narrow/device-scale coverage is
+recorded in Task6. No HTML/browser render is counted as native evidence.
 
 Reproduce using the private-HOME invocation above with selectors
 `teamOverviewScreenshots observerInspectorAndManagementScreenshots` and variables
@@ -276,8 +276,8 @@ All nine final frames were opened individually or in a native-render contact
 sheet. Review corrected oversized read-only text areas, low-contrast queue buttons
 on selected rows, and an irrelevant Task details heading in the project overview.
 Final normal-size controls and editor labels fit, literal markup stays literal,
-and history uses subdued local timestamps. Narrow/scaled/large-content hardening
-is Task6, not acceptance inferred from these captures. No web detector or HTML
+and history uses subdued local timestamps. Narrow/scaled/large-content evidence
+is recorded separately in Task6, not inferred from these captures. No web detector or HTML
 render is treated as Qt evidence.
 
 Reproduce with the private-HOME invocation above, selectors
@@ -369,4 +369,115 @@ ARTEL_LAYOUT_SCREENSHOT="$ROOT/docs/screenshots/layout-dpi1" (matching each scal
 All 24 rows execute even when no capture prefix is supplied. Task6 gates:
 make lint test build and make observer-check PASS; Qt86+32, qmllint zero warnings,
 Go1.26.3/golangci-lint2.10.1/Qt6.12.0/clang-format23.1.3/Pi1.5.2/Node22.23.2.
-Final full-stack/package acceptance remains Task7; no such completion is claimed.
+Full-stack/package acceptance is recorded below.
+
+## Keyboard and state contract
+
+- Tab/Shift+Tab traverse visible controls; Space activates focused buttons.
+  LongText releases Tab/Backtab to navigation and reveals the caret on focus.
+  Standard copy/paste/select-all works on literal text; IDs/details remain copyable.
+- Standard Save is enabled only for the visible manual editor, online and without
+  pending/conflict/unknown guards. Escape requests confirmation for that editor;
+  neither shortcut changes a draft hidden behind Team. Quit/window close retains
+  dirty/uncertain confirmation regardless of route.
+- Team is the startup route, never last-task restoration. Reading/search/selection
+  has no domain mutation. Return to editing restores the same draft/object/base
+  version. Project navigation still passes the manual guards.
+- Empty registry, loading, no matches and cached/offline are different states.
+  Current unknown activity is never colored/relabelled as working; full original
+  observation timestamps and explicitly historical activity live in details.
+  Connections owns binding candidates/history and explicit CAS confirmations.
+- Conflict preserves text and requires refresh/comparison and explicit version
+  adoption. Unknown result offers only same-key/payload retry; database replacement
+  requires acknowledged abandonment, never automatic replay or silent discard.
+
+## Final native review and handoff (Task 8)
+
+The delivered shell matches the approved canon information hierarchy: persistent
+Team/Projects navigation, filters above the roster, a quieter selected-observer
+inspector, and separate manual workspace/connection management. Against the brief's
+Zed craft reference, the transferable qualities are thin seams, calm tonal surfaces,
+system UI typography, clear selected/focused states and restrained action hierarchy.
+It is not a Zed skin, editor layout, agent executor or pixel-exact HTML translation.
+The roster deliberately uses64-unit two-line rows rather than the brief's initial
+48–56-unit suggestion; label/project plus status/age remain readable. Accent can be
+bright yellow from Appearance; roster selection stays neutral and primary/selected
+manual controls use the contrast-safe foreground. No reference assets were copied.
+
+Final self-review opened a16-frame native contact sheet containing:
+
+- team-overview-en-1280 / team-overview-ru-1440;
+- manual-redesign-en-workspace / ru-editor / en-history / ru-projects;
+- connections-en-confirmation / ru-offline / ru-revoked / en-candidate;
+- layout-dpi1-1000-en-font14-team / 1000-ru-font14-inspector / editor;
+- layout-dpi1.5-1440-en-font21-connections;
+- layout-dpi2-1280-ru-font28-tasks / editor.
+
+These cover1280×820/1440×900 normal EN/RU,1000×680 narrow EN/RU, enlarged
+fonts21/28 and device scales1/1.5/2. The RU1440 rich inspector and RU1280/font28
+DPI2 editor were additionally opened full-size: technical metadata wraps and is
+copyable, long criteria scroll above reachable Save/Discard, and neutral seams
+separate content from navigation. No new visual blocker was found. The large-font
+navigation label can wrap and project labels elide; full values remain available
+in editors/details. This is a deliberate space tradeoff, not hidden critical text.
+
+Five fresh production-QML captures were generated from the current qrc and opened
+in a second contact sheet: [loading](docs/screenshots/final-state-loading.png),
+[empty](docs/screenshots/final-state-empty.png),
+[offline](docs/screenshots/final-state-offline.png),
+[unknown result](docs/screenshots/final-state-unknown.png) and
+[409 retained draft](docs/screenshots/final-state-conflict.png).
+All are1280×820 EN UI; the409 has fictional Cyrillic task/project text and was
+also inspected full-size. Messages, disabled actions, explicit retry/rebase and
+retained fields remain readable, with no overlapping headers/actions. These capture
+hooks only observe existing asserted recovery tests; they never insert demo data
+at normal startup. See the [capture index](docs/screenshots/README.md) for commands,
+provenance and historical images explicitly separated from current screens.
+
+Task7 full-stack evidence: make check, make package-check and three bounded
+consecutive e2e runs passed. Actual temporary daemon restart/CAS/lost-response and
+pinned-Pi deterministic-provider recovery preserve manual state and bound-observer
+counts. Extracted package contains QML/SVG resources and starts without Node/Pi,
+without an observer listener, and without modifying the manual snapshot. Migration,
+provisioning, network security and intentional-failure owned-process/temp cleanup
+remain tested. Packaged smoke is process/resource startup, not packaged mouse UI
+certification. Documentation tests verify links/resources and simulate archiving
+the redesign plan; stable instructions do not depend on its active path.
+
+### Final validation
+
+Task8: `make lint test build`, `make check` and `make package-check` PASS on the
+local feature candidate. Go1.26.3, golangci-lint2.10.1, Qt6.12.0,
+clang-format23.1.3, pinned Pi1.5.2 and Node22.23.2. Qt suites86+32 and native
+acceptance3 pass with zero warnings; all17 Python documentation/delivery tests,
+Go race, observer lint/typecheck/unit/public SDK/PTY4 and full-stack recovery pass.
+Extracted package startup/migration/SDK/unit/privacy and negative cleanup pass;
+the temporary package was removed without installation or activation.
+
+Content review covered the candidate file inventory, lifetime owners/activation,
+bound-only aggregation, stable-ID navigation/unfiltered action lookup and manual
+shortcut/draft boundaries, plus this task's full diff. `git diff --check` PASS.
+Candidate-wide private-key/provider/GitHub/GitLab/AWS signature scan reports no
+hits; path review excludes tokens/SQLite/env files, runtime `.impeccable/`, raw
+review artifacts, dependencies and build outputs. Fictional screenshot text and
+source fixture provenance were visually checked. This is a bounded scan, not a
+guarantee that automated detection finds every possible secret.
+
+Initial link tests correctly failed until the new state PNGs were captured and
+the historical observer-plan-move fixture copied DESIGN.md. Both were corrected.
+Two accidentally duplicated gate launchers were stopped by their owned PID trees;
+the final check/package runs were clean serialized passes, not partial results.
+No external review phase, web preview or real-session navigation was launched.
+
+### Remaining limits and delivery boundaries
+
+- Offscreen/software renders and accessible-name/keyboard/contrast tests are not
+  physical Wayland/monitor or assistive-technology certification. Normal-session
+  owner acceptance is still a separate explicit step, not an automated skip claim.
+- Drafts remain in this window only, not persisted across exit. Observation is
+  telemetry only: no assignment, completion proof, delivery, MR checks or agent
+  launch. Unknown activity and best-effort unverified terminal hints stay explicit.
+- Native/package remote CI is paused by owner decision, not green. Enabled Go CI
+  must pass on the exact published HEAD before publication readiness is claimed.
+- No installation, service restart, owner-daemon/data/token access, user-settings
+  changes, push, merge or deployment is performed by this local handoff.

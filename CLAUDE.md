@@ -8,7 +8,7 @@ After every code change run `make lint test`. Before completing each plan task r
 
 ## Boundaries
 
-- The stable implemented contract, validation gates and isolated examples are in `docs/development.md`. Follow the current approved task; do not rerun completed plans. Architecture/experiment documents describe wider future scope, not permission to implement it.
+- The stable implemented contract, validation gates and isolated examples are in `docs/development.md`. Native visual tokens/layout/keyboard rules are in `DESIGN.md`; fictional capture provenance is in `docs/screenshots/README.md`. Startup is Team; manual drafts and observer filters/selection stay independent. Follow the current approved task; do not rerun completed plans. Architecture/experiment documents describe wider future scope, not permission to implement it.
 - `arteld` owns SQLite; desktop/CLI use HTTP, never direct SQL. C++ owns logic and asynchronous networking; QML owns layout/actions. No shell from QML.
 - Manual state changes do not run agents, verify MRs or deploy anything. Opt-in Pi observation is telemetry only, never delivery, writer assignment or task completion. Keep observer auth/store/polling/mutations separate from owner manual state/drafts; do not collect dialogue/tool payloads. Do not add slash commands or bot tools.
 - Preserve Git history, architecture, experiments and historical completed plans. Cleanup inventory: `docs/legacy-cleanup.md`.

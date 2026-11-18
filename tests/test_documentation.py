@@ -10,13 +10,18 @@ import subprocess
 import tempfile
 from string import Template
 import unittest
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 class DocumentationTests(unittest.TestCase):
     def test_active_document_links_resolve(self):
-        for name in ("README.md", "docs/development.md", "docs/legacy-cleanup.md"):
+        for name in ("README.md", "DESIGN.md", "PRODUCT.md", "docs/development.md",
+                     "docs/screenshots/README.md", "docs/legacy-cleanup.md",
+                     "docs/design/20261118-artel-desktop-brief.md",
+                     "docs/design/20261118-team-overview-exploration.md",
+                     "docs/design/reference/README.md"):
             text = (ROOT / name).read_text()
             for target in re.findall(r"\]\(([^)]+)\)", text):
                 if "://" not in target:
@@ -38,6 +43,7 @@ class DocumentationTests(unittest.TestCase):
             tree = Path(directory)
             shutil.copytree(ROOT / 'docs', tree / 'docs')
             shutil.copytree(ROOT / 'api', tree / 'api')
+            shutil.copyfile(ROOT / 'DESIGN.md', tree / 'DESIGN.md')
             if (tree / active_plan).exists():
                 (tree / active_plan).rename(tree / moved_plan)
             self.assertFalse((tree / active_plan).exists())
@@ -58,6 +64,54 @@ class DocumentationTests(unittest.TestCase):
                 for target in re.findall(r'\]\(([^)]+)\)', text):
                     if '://' not in target:
                         self.assertTrue((destination.parent / target.split('#')[0]).exists(), (name, target))
+
+    def test_native_resources_and_documented_evidence(self):
+        source = ROOT / 'desktop/src'
+        resources = ET.parse(source / 'resources.qrc').findall('.//file')
+        self.assertTrue(resources)
+        aliases = set()
+        for resource in resources:
+            path = source / resource.text
+            self.assertTrue(path.is_file(), path)
+            alias = resource.get('alias', resource.text)
+            self.assertNotIn(alias, aliases)
+            aliases.add(alias)
+        self.assertTrue({'Main.qml', 'TeamOverview.qml', 'ManualWorkspace.qml',
+                         'ObserverPanel.qml', 'ui/Theme.qml', 'ui/icons/search.svg'} <= aliases)
+        for path in (source / 'ui').rglob('*'):
+            if path.suffix in ('.qml', '.svg'):
+                self.assertIn(path.relative_to(source).as_posix(), aliases)
+        evidence = (ROOT / 'docs/screenshots/README.md').read_text()
+        self.assertIn('fictional', evidence)
+        self.assertIn('offscreen', evidence)
+        self.assertIn('historical', evidence)
+        for target in re.findall(r'\]\(([^)]+\.png)\)', evidence):
+            self.assertEqual((ROOT / 'docs/screenshots' / target).read_bytes()[:8],
+                             b'\x89PNG\r\n\x1a\n')
+
+    def test_redesign_links_survive_completed_plan_move(self):
+        active = Path('docs/plans/20261118-artel-desktop-team-redesign.md')
+        with tempfile.TemporaryDirectory(prefix='artel-redesign-docs-') as directory:
+            tree = Path(directory)
+            shutil.copytree(ROOT / 'docs', tree / 'docs')
+            shutil.copytree(ROOT / 'api', tree / 'api')
+            for name in ('README.md', 'DESIGN.md', 'PRODUCT.md', 'CLAUDE.md',
+                         '.claude/CLAUDE.md', '.github/copilot-instructions.md'):
+                destination = tree / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(ROOT / name, destination)
+            if (tree / active).exists():
+                (tree / active).rename(tree / active.parent / 'completed' / active.name)
+            self.assertFalse((tree / active).exists())
+            for name in ('README.md', 'DESIGN.md', 'PRODUCT.md', 'CLAUDE.md',
+                         '.claude/CLAUDE.md', '.github/copilot-instructions.md',
+                         'docs/development.md', 'docs/screenshots/README.md',
+                         'docs/design/reference/README.md'):
+                document = tree / name
+                for target in re.findall(r'\]\(([^)]+)\)', document.read_text()):
+                    if '://' not in target:
+                        self.assertTrue((document.parent / target.split('#')[0]).exists(),
+                                        (name, target))
 
     def test_documented_cli_examples_on_temporary_instance(self):
         text = (ROOT / "docs/development.md").read_text()

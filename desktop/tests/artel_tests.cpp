@@ -898,6 +898,7 @@ private slots:
   void teamEmptyLoadingOfflineRecovery() {
     ObserverFixture fixture;
     fixture.registry.insert("observers", QJsonArray{});
+    const auto capture = qEnvironmentVariable("ARTEL_STATE_SCREENSHOT");
     QPointer<QTcpSocket> delayed;
     fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
       if (request.startsWith("GET /v1/observers ")) {
@@ -921,6 +922,10 @@ private slots:
                 .toString()
                 .contains("Loading"));
     QVERIFY(!item(window, "teamEmptyState")->isVisible());
+    if (!capture.isEmpty()) {
+      QTest::qWait(100);
+      QVERIFY(window->grabWindow().save(capture + "-loading.png"));
+    }
     UiFixture::respond(delayed, 200, fixture.bytes());
     QTRY_VERIFY(panel.observers()->online());
     QVERIFY(item(window, "teamEmptyState")->isVisible());
@@ -931,6 +936,10 @@ private slots:
         window->property("workspace").value<WorkspaceController *>();
     QCOMPARE(workspace->team()->total(), 0);
     QCOMPARE(workspace->team()->shown(), 0);
+    if (!capture.isEmpty()) {
+      QTest::qWait(100);
+      QVERIFY(window->grabWindow().save(capture + "-empty.png"));
+    }
     QVERIFY(panel.project().isEmpty());
     delayed.clear();
     panel.observers()->reload();
@@ -942,6 +951,10 @@ private slots:
                 ->property("text")
                 .toString()
                 .contains("unknown"));
+    if (!capture.isEmpty()) {
+      QTest::qWait(100);
+      QVERIFY(window->grabWindow().save(capture + "-offline.png"));
+    }
     delayed.clear();
     panel.observers()->reload();
     QTRY_VERIFY(delayed);
@@ -2387,6 +2400,11 @@ private slots:
     QTRY_VERIFY(!other.pending() && !other.loading());
     QVERIFY(click(window, "saveButton"));
     QTRY_VERIFY(panel.conflict());
+    if (const auto capture = qEnvironmentVariable("ARTEL_STATE_SCREENSHOT");
+        !capture.isEmpty()) {
+      QTest::qWait(100);
+      QVERIFY(window->grabWindow().save(capture + "-conflict.png"));
+    }
     QCOMPARE(panel.editor().value("description").toString(), draft);
     QVERIFY(click(window, "reloadButton"));
     QTRY_VERIFY(!client.loading());
@@ -2516,6 +2534,11 @@ private slots:
     QTRY_VERIFY(panel.uncertain());
     QVERIFY(!item(window, "saveButton")->isEnabled());
     QVERIFY(item(window, "retryButton")->isVisible());
+    if (const auto capture = qEnvironmentVariable("ARTEL_STATE_SCREENSHOT");
+        !capture.isEmpty()) {
+      QTest::qWait(100);
+      QVERIFY(window->grabWindow().save(capture + "-unknown.png"));
+    }
     QVERIFY(!panel.selectProject(""));
     const auto original = fixture.mutations.last();
     drop = false;
