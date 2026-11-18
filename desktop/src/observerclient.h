@@ -1,9 +1,21 @@
 #pragma once
 #include "agtermadapter.h"
 #include "apiclient.h"
+#include <QAbstractListModel>
 #include <QElapsedTimer>
 #include <QPointer>
 #include <QtQml/qqmlregistration.h>
+
+class ConnectionRows : public QAbstractListModel {
+public:
+  int rowCount(const QModelIndex &parent = {}) const override;
+  QVariant data(const QModelIndex &index, int role) const override;
+  QHash<int, QByteArray> roleNames() const override;
+  void update(const QVariantList &rows);
+
+private:
+  QVariantList m_rows;
+};
 
 // Independent latest-state projection. No manual draft/mutation slots are used.
 class ObserverClient : public QObject {
@@ -11,10 +23,15 @@ class ObserverClient : public QObject {
   QML_ELEMENT
   QML_UNCREATABLE("Provided by the application")
   Q_PROPERTY(QVariantList rows READ rows NOTIFY changed)
+  Q_PROPERTY(QAbstractItemModel *connectionRows READ connectionRows CONSTANT)
+  Q_PROPERTY(bool projectionLoaded READ projectionLoaded NOTIFY changed)
+  Q_PROPERTY(
+      QString viewFilter READ viewFilter WRITE setViewFilter NOTIFY changed)
   Q_PROPERTY(AgtermAdapter *navigation READ navigation CONSTANT)
   Q_PROPERTY(bool active READ active WRITE setActive NOTIFY changed)
   Q_PROPERTY(bool online READ online NOTIFY changed)
   Q_PROPERTY(bool busy READ busy NOTIFY changed)
+  Q_PROPERTY(bool loading READ loading NOTIFY changed)
   Q_PROPERTY(bool canBind READ canBind NOTIFY changed)
   Q_PROPERTY(QString message READ message NOTIFY changed)
   Q_PROPERTY(QString confirmation READ confirmation NOTIFY changed)
@@ -25,6 +42,15 @@ public:
   explicit ObserverClient(ApiClient *owner, QObject *parent = nullptr);
   ~ObserverClient() override;
   QVariantList rows() const;
+  QAbstractItemModel *connectionRows() { return &m_connectionRows; }
+  bool projectionLoaded() const { return m_age.isValid(); }
+  QString viewFilter() const { return m_viewFilter; }
+  void setViewFilter(const QString &value);
+  // Value copies of typed public metadata, never credentials or raw JSON.
+  QVariantList projection() const { return m_observers.toVariantList(); }
+  bool cacheCurrent() const {
+    return m_online && m_age.isValid() && m_age.elapsed() < 4000;
+  }
   AgtermAdapter *navigation() { return &m_navigation; }
   Q_INVOKABLE void openSession(const QString &observer, const QString &runtime);
   bool active() const { return m_active; }
@@ -32,6 +58,7 @@ public:
   void setProject(const QVariantMap &project);
   bool online() const { return m_online; }
   bool busy() const { return m_mutation; }
+  bool loading() const { return m_read; }
   bool canBind() const;
   QString projectName() const { return m_project.value("name").toString(); }
   bool onlyProject() const { return m_onlyProject; }
@@ -63,8 +90,9 @@ private:
   QTimer m_poll;
   QElapsedTimer m_age;
   QJsonArray m_observers;
+  ConnectionRows m_connectionRows;
   QVariantMap m_project, m_confirmation;
-  QString m_instance, m_message, m_actionMessage;
+  QString m_instance, m_message, m_actionMessage, m_viewFilter;
   quint64 m_generation = 0;
   bool m_active = false, m_online = false, m_onlyProject = false;
   int m_timeout = 2000, m_backoff = 2000;

@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/tests">
+        <file alias="Primitives.qml">qml/Primitives.qml</file>
+    </qresource>
+</RCC>

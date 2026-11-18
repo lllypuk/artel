@@ -7,8 +7,8 @@ clang-format --dry-run --Werror desktop/src/*.cpp desktop/src/*.h desktop/tests/
 ./desktop/bin/build
 mkdir -p desktop/build/Artel
 printf 'module Artel\ntypeinfo ../artel.qmltypes\n' > desktop/build/Artel/qmldir
-"$QT_BINS/qmllint" --max-warnings 0 -I desktop/build desktop/src/*.qml
-for file in desktop/src/*.qml; do
+"$QT_BINS/qmllint" --max-warnings 0 --resource desktop/src/resources.qrc -I desktop/build desktop/src/*.qml desktop/src/ui/*.qml desktop/tests/qml/*.qml
+for file in desktop/src/*.qml desktop/src/ui/*.qml desktop/tests/qml/*.qml; do
     formatted=$(mktemp)
     trap 'rm -f "$formatted"' EXIT HUP INT TERM
     "$QT_BINS/qmlformat" "$file" > "$formatted"

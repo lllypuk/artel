@@ -12,6 +12,7 @@ class Panel : public QObject {
   QML_UNCREATABLE("Provided by the application")
   Q_PROPERTY(ObserverClient *observers READ observers CONSTANT)
   Q_PROPERTY(QVariantList projects READ projects NOTIFY changed)
+  Q_PROPERTY(QVariantList allProjects READ projectSnapshot NOTIFY changed)
   Q_PROPERTY(QVariantList tasks READ tasks NOTIFY changed)
   Q_PROPERTY(QVariantList history READ history NOTIFY changed)
   Q_PROPERTY(QVariant project READ project NOTIFY changed)
@@ -39,6 +40,8 @@ public:
   explicit Panel(ApiClient *client, QObject *parent = nullptr);
   ObserverClient *observers() { return &m_observers; }
   QVariantList projects() const;
+  // Owner snapshot names including archived projects, independent of UI filter.
+  QVariantList projectSnapshot() const;
   QVariantList tasks() const;
   QVariantList history() const;
   QVariantMap project() const;

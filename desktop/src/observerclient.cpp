@@ -30,7 +30,7 @@ bool text(const QJsonValue &v, int max) {
   return true;
 }
 // Copy only public, typed metadata into the model; never expose raw responses.
-bool projection(const QJsonObject &root, QJsonArray &clean) {
+bool sanitizeProjection(const QJsonObject &root, QJsonArray &clean) {
   if (!uuid(root.value("database_instance_id")) ||
       !root.value("observers").isArray() ||
       root.value("observers").toArray().size() > 256)
@@ -125,15 +125,70 @@ QString stateLabel(const QString &s) {
 }
 } // namespace
 
+int ConnectionRows::rowCount(const QModelIndex &parent) const {
+  return parent.isValid() ? 0 : m_rows.size();
+}
+QVariant ConnectionRows::data(const QModelIndex &index, int role) const {
+  if (!index.isValid() || index.row() >= m_rows.size() || role != Qt::UserRole)
+    return {};
+  return m_rows.at(index.row());
+}
+QHash<int, QByteArray> ConnectionRows::roleNames() const {
+  return {{Qt::UserRole, "record"}};
+}
+void ConnectionRows::update(const QVariantList &rows) {
+  if (rows == m_rows)
+    return;
+  const auto key = [](const QVariant &record) {
+    const auto row = record.toMap();
+    return row.value("observer_id").toString() + '/' +
+           row.value("runtime_id").toString();
+  };
+  QSet<QString> wanted;
+  for (const auto &record : rows)
+    wanted.insert(key(record));
+  for (int i = m_rows.size() - 1; i >= 0; --i) {
+    if (wanted.contains(key(m_rows.at(i))))
+      continue;
+    beginRemoveRows({}, i, i);
+    m_rows.removeAt(i);
+    endRemoveRows();
+  }
+  for (int i = 0; i < rows.size(); ++i) {
+    const auto target = key(rows.at(i));
+    int found = i;
+    while (found < m_rows.size() && key(m_rows.at(found)) != target)
+      ++found;
+    if (found == m_rows.size()) {
+      beginInsertRows({}, i, i);
+      m_rows.insert(i, rows.at(i));
+      endInsertRows();
+    } else {
+      if (found != i) {
+        beginMoveRows({}, found, found, {}, i);
+        m_rows.move(found, i);
+        endMoveRows();
+      }
+      if (m_rows.at(i) != rows.at(i)) {
+        m_rows[i] = rows.at(i);
+        emit dataChanged(index(i), index(i), {Qt::UserRole});
+      }
+    }
+  }
+}
+
 ObserverClient::ObserverClient(ApiClient *owner, QObject *parent)
     : QObject(parent), m_owner(owner) {
   m_network.setProxy(QNetworkProxy::NoProxy);
+  connect(this, &ObserverClient::changed, this,
+          [this] { m_connectionRows.update(rows()); });
   m_poll.setSingleShot(true);
   connect(&m_poll, &QTimer::timeout, this, &ObserverClient::reload);
   connect(owner, &ApiClient::changed, this, [this] {
     if (m_instance != m_owner->instance()) {
       resetRead();
       m_instance = m_owner->instance();
+      m_age.invalidate();
       m_observers = {};
       m_online = false;
       m_confirmation.clear();
@@ -193,7 +248,22 @@ bool ObserverClient::canBind() const {
   return !m_project.value("id").toString().isEmpty() &&
          !m_project.value("archived").toBool();
 }
-QVariantList ObserverClient::rows() const { return records(m_onlyProject); }
+void ObserverClient::setViewFilter(const QString &value) {
+  if (m_viewFilter == value ||
+      !QStringList{"", "bound", "candidate", "history"}.contains(value))
+    return;
+  m_viewFilter = value;
+  emit changed();
+}
+QVariantList ObserverClient::rows() const {
+  QVariantList result;
+  for (const auto &value : records(m_onlyProject)) {
+    const auto row = value.toMap();
+    if (m_viewFilter.isEmpty() || row.value("category") == m_viewFilter)
+      result.append(row);
+  }
+  return result;
+}
 QVariantList ObserverClient::records(bool onlyProject) const {
   QVariantList result;
   for (const auto &value : m_observers) {
@@ -213,6 +283,25 @@ QVariantList ObserverClient::records(bool onlyProject) const {
                                           row.value("runtime_id").toString() &&
                                       !b.isEmpty());
       row.insert("has_binding", !b.isEmpty());
+      row.insert("binding_runtime_id", b.value("runtime_id").toString());
+      row.insert("binding_project_id", b.value("project_id").toString());
+      row.insert("generation", o.value("generation").toVariant());
+      const bool registrationOnly =
+          row.value("runtime_id").toString().isEmpty();
+      const QString category =
+          o.value("revoked").toBool()           ? "history"
+          : row.value("bound_runtime").toBool() ? "bound"
+          : registrationOnly || row.value("disposition") == "candidate"
+              ? "candidate"
+              : "history";
+      row.insert("category", category);
+      row.insert("category_text",
+                 category == "bound" ? tr("Current binding")
+                 : category == "candidate"
+                     ? (registrationOnly
+                            ? tr("Unbound observer — no runtime yet")
+                            : tr("Candidate runtime"))
+                     : tr("Connection history"));
       const bool offline =
           !m_online || !m_age.isValid() || m_age.elapsed() >= 4000;
       const auto freshness =
@@ -222,15 +311,19 @@ QVariantList ObserverClient::records(bool onlyProject) const {
           "navigable",
           !offline && freshness == "fresh" && !o.value("revoked").toBool() &&
               AgtermAdapter::validHint(row.value("terminal_hint").toMap()));
-      row.insert(
-          "status_text",
-          tr("%1 · %2 · %3")
-              .arg(stateLabel(o.value("revoked").toBool()
-                                  ? "revoked"
-                                  : row.value("disposition").toString()),
-                   stateLabel(offline ? "unknown"
-                                      : row.value("activity").toString()),
-                   stateLabel(freshness)));
+      const bool historical = offline || o.value("revoked").toBool() ||
+                              row.value("disposition") == "superseded";
+      const QString activity = historical                            ? "unknown"
+                               : row.value("lifecycle") == "stopped" ? "stopped"
+                               : freshness != "fresh"
+                                   ? "unknown"
+                                   : row.value("activity").toString();
+      row.insert("status_text",
+                 tr("%1 · %2 · %3")
+                     .arg(stateLabel(o.value("revoked").toBool()
+                                         ? "revoked"
+                                         : row.value("disposition").toString()),
+                          stateLabel(activity), stateLabel(freshness)));
       row.insert("bindable", canBind() && !o.value("revoked").toBool() &&
                                  (row.value("disposition") == "candidate" ||
                                   row.value("disposition") == "bound"));
@@ -297,12 +390,13 @@ void ObserverClient::reload() {
             200 ||
         bytes.size() > responseLimit ||
         error.error != QJsonParseError::NoError || !doc.isObject() ||
-        !projection(doc.object(), clean)) {
+        !sanitizeProjection(doc.object(), clean)) {
       fail(tr(
           "Observation unavailable. Retry after refreshing the connection."));
       return;
     }
     if (doc.object().value("database_instance_id").toString() != m_instance) {
+      m_age.invalidate();
       m_observers = {};
       m_confirmation.clear();
       fail(tr("Observation database changed. Reload the owner connection."));
@@ -316,6 +410,7 @@ void ObserverClient::reload() {
     emit changed();
     m_poll.start(2000);
   });
+  emit changed();
 }
 QString ObserverClient::confirmation() const {
   const auto action = m_confirmation.value("action").toString();
@@ -362,6 +457,9 @@ bool ObserverClient::prepare(const QString &action, const QString &observer,
                       {"observer_id", observer},
                       {"runtime_id", runtime},
                       {"version", row.value("version")},
+                      {"generation", row.value("generation")},
+                      {"binding_runtime_id", row.value("binding_runtime_id")},
+                      {"binding_project_id", row.value("binding_project_id")},
                       {"project_id", m_project.value("id")},
                       {"instance", m_instance}};
     emit changed();
@@ -380,7 +478,13 @@ bool ObserverClient::confirm() {
   if (!prepare(c.value("action").toString(), c.value("observer_id").toString(),
                c.value("runtime_id").toString()))
     return false;
-  const bool same = m_confirmation.value("version") == c.value("version");
+  const bool same =
+      m_confirmation.value("version") == c.value("version") &&
+      m_confirmation.value("generation") == c.value("generation") &&
+      m_confirmation.value("binding_runtime_id") ==
+          c.value("binding_runtime_id") &&
+      m_confirmation.value("binding_project_id") ==
+          c.value("binding_project_id");
   m_confirmation.clear();
   if (!same) {
     fail(tr("Observation changed. Refresh and confirm again."));
@@ -441,7 +545,7 @@ bool ObserverClient::confirm() {
 
 void ObserverClient::openSession(const QString &observer,
                                  const QString &runtime) {
-  for (const auto &v : rows()) {
+  for (const auto &v : records(false)) {
     const auto row = v.toMap();
     if (row.value("observer_id") == observer &&
         row.value("runtime_id") == runtime && row.value("navigable").toBool()) {

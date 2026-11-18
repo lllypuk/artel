@@ -158,6 +158,32 @@ and its storage/http/extension/desktop/navigation/recovery records. Completed pl
 are historical evidence, not active runtime instructions; this stable page remains
 the entry point when ralphex archives a plan.
 
+## Desktop presentation contract
+
+Startup always opens Team, including an empty observer registry. One non-revoked
+observer with a binding contributes one roster row; additional candidates belong
+to Connections. Stale/offline rows retain identity but report current activity as
+unknown; stopped is not completed. Filters and stable-ID selection never mutate
+manual state. Counts distinguish the full roster from filtered results.
+
+Main.qml owns one lifetime Panel/ObserverClient/WorkspaceController. The C++
+TeamOverviewModel consumes sanitized existing projection data, not SQLite or a
+second network client. WorkspaceController owns safe route/selection changes.
+Observation polls only while Team or Connections is visible and the window is not
+minimized. Owner SSE and manual requests/drafts remain independent.
+
+Team navigation preserves a dirty/conflicted/uncertain manual editor and its base
+identity. Save/Cancel affect only the visible manual editor; global close retains
+confirmation guards. Project changes and observer confirmations recheck current
+identity/CAS state. There is no background save or draft persistence across exit.
+
+Shared Theme/Basic Controls use the native UI font and read-only Appearance inputs;
+QML receives no credential. At narrow content widths or larger fonts, details use
+the same window with Back, not a new read modal. Long editors/metadata scroll.
+See [DESIGN.md](../DESIGN.md) for tokens, keyboard/contrast/matrix evidence and
+[fictional screenshots](screenshots/README.md) for reproducible private captures.
+These stable links do not depend on a plan remaining in its active directory.
+
 ## Implementation map and invariants
 
 - `internal/local`: private XDG paths/overrides, credential checks and lifetime

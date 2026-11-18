@@ -1,6 +1,7 @@
 #include "apiclient.h"
 #include "appearance.h"
 #include "panel.h"
+#include "workspacecontroller.h"
 #include <QCommandLineParser>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
@@ -33,11 +34,13 @@ int main(int argc, char *argv[]) {
   QObject::connect(&appearance, &Appearance::changed, &panel, &Panel::changed);
   QObject::connect(&appearance, &Appearance::changed, panel.observers(),
                    &ObserverClient::changed);
+  WorkspaceController workspace(&panel);
   QQmlApplicationEngine engine;
   QObject::connect(&appearance, &Appearance::changed, &engine,
                    &QQmlEngine::retranslate);
   engine.setInitialProperties(
-      {{"panel", QVariant::fromValue(&panel)},
+      {{"workspace", QVariant::fromValue(&workspace)},
+       {"panel", QVariant::fromValue(&panel)},
        {"appearance", QVariant::fromValue(&appearance)}});
   engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
   if (engine.rootObjects().isEmpty())
