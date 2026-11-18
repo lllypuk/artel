@@ -17,6 +17,9 @@ func TestObserverOpenAPI(t *testing.T) {
 	if err = doc.Validate(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(doc.Info.Description, "Implemented opt-in observer pilot contract") || !strings.Contains(doc.Info.Description, "Owner paths are also referenced from openapi.yaml") {
+		t.Fatal("observer contract must describe its implemented surfaces")
+	}
 	count := 0
 	for path, item := range doc.Paths.Map() {
 		for _, op := range item.Operations() {
@@ -52,7 +55,12 @@ func TestObserverOpenAPI(t *testing.T) {
 		{"mixed binding", "BindingRequest", `{"expected_version":0,"runtime_id":"` + id + `","project_id":null}`, false},
 		{"no plaintext credential", "ProvisionRequest", `{"label":"Fixture","verifier":"plaintext"}`, false},
 		{"no arbitrary navigation", "TerminalHint", `{"window_id":"` + id + `","session_id":"` + id + `","pane_id":"` + id + `","command":"sh"}`, false},
+		{"non-BMP identifier at limit", "Identifier", `"` + strings.Repeat("🚀", 256) + `"`, true},
+		{"non-BMP identifier over limit", "Identifier", `"` + strings.Repeat("🚀", 257) + `"`, false},
 		{"no prefix id", "UUID", `"1111"`, false},
+		{"no nil id", "UUID", `"00000000-0000-0000-0000-000000000000"`, false},
+		{"no nil binding runtime", "BindingRequest", `{"expected_version":1,"runtime_id":"00000000-0000-0000-0000-000000000000","project_id":"` + id + `"}`, false},
+		{"no nil binding project", "BindingRequest", `{"expected_version":1,"runtime_id":"` + id + `","project_id":"00000000-0000-0000-0000-000000000000"}`, false},
 		{"retired", "Error", `{"error":"runtime_retired"}`, true},
 		{"capacity", "Error", `{"error":"capacity_exceeded","capacity":"runtime_identities"}`, true},
 		{"no error echo", "Error", `{"error":"unauthorized","token":"private"}`, false},

@@ -5,8 +5,14 @@ import { createServer } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ObserverClient, ObserverFailure, unixTransport, type Activity, type Registration, type Transport } from "../src/client.ts";
+import { ObserverClient, ObserverFailure, UUID, unixTransport, type Activity, type Registration, type Transport } from "../src/client.ts";
 import type { ObserverConfig } from "../src/config.ts";
+
+test("UUID validation matches the non-nil canonical observer contract", () => {
+  assert.equal(UUID.test(randomUUID()), true);
+  for (const value of ["00000000-0000-0000-0000-000000000000", "not-a-uuid", "{11111111-1111-4111-8111-111111111111}", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"])
+    assert.equal(UUID.test(value), false);
+});
 
 const sleep = (n: number) => new Promise(resolve => setTimeout(resolve, n));
 async function until(predicate: () => boolean) {

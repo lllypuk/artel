@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -58,7 +59,7 @@ func reply(w http.ResponseWriter, value any, err error) {
 func failure(w http.ResponseWriter, code string) { reply(w, nil, &store.ObserverError{Code: code}) }
 
 // Reject duplicate keys at every depth, null root, unknown and missing fields.
-func decode(w http.ResponseWriter, r *http.Request, target any, required ...string) bool {
+func decode(w http.ResponseWriter, r *http.Request, target any, allowed []string, required ...string) bool {
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBody))
 	if err != nil {
 		failure(w, "body_too_large")
@@ -70,6 +71,16 @@ func decode(w http.ResponseWriter, r *http.Request, target any, required ...stri
 		return false
 	}
 	for name, value := range fields {
+		// encoding/json also matches case-folded struct field names. Check the
+		// exact operation contract before decoding so aliases cannot replace CAS.
+		if !slices.Contains(allowed, name) {
+			failure(w, "invalid_request")
+			return false
+		}
+		if name == "terminal_hint" && !validTerminalKeys(value) {
+			failure(w, "invalid_request")
+			return false
+		}
 		if (name == "provider" || name == "model") && bytes.Equal(bytes.TrimSpace(value), []byte(`""`)) {
 			failure(w, "invalid_request")
 			return false
@@ -95,6 +106,18 @@ func decode(w http.ResponseWriter, r *http.Request, target any, required ...stri
 	if d.Decode(target) != nil {
 		failure(w, "invalid_request")
 		return false
+	}
+	return true
+}
+func validTerminalKeys(value json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(value, &fields) != nil || len(fields) != 3 {
+		return false
+	}
+	for _, name := range []string{"window_id", "session_id", "pane_id"} {
+		if _, ok := fields[name]; !ok {
+			return false
+		}
 	}
 	return true
 }
@@ -172,7 +195,7 @@ func New(s *store.Store) http.Handler {
 	})
 	mux.HandleFunc("POST /observer/v1/register", func(w http.ResponseWriter, r *http.Request) {
 		var body store.ObserverRegistration
-		if !decode(w, r, &body, "runtime_id", "pi_session_id", "reason", "pi_version", "bridge_version", "cwd") {
+		if !decode(w, r, &body, []string{"runtime_id", "pi_session_id", "reason", "pi_version", "bridge_version", "cwd", "provider", "model", "terminal_hint"}, "runtime_id", "pi_session_id", "reason", "pi_version", "bridge_version", "cwd") {
 			return
 		}
 		v, e := s.RegisterObserver(r.Context(), verifier(r), body)
@@ -180,7 +203,7 @@ func New(s *store.Store) http.Handler {
 	})
 	mux.HandleFunc("PUT /observer/v1/report", func(w http.ResponseWriter, r *http.Request) {
 		var body store.ObserverReport
-		if !decode(w, r, &body, "runtime_id", "generation", "report_seq", "activity", "tool_count", "lifecycle") {
+		if !decode(w, r, &body, []string{"runtime_id", "generation", "report_seq", "activity", "tool_count", "lifecycle", "provider", "model"}, "runtime_id", "generation", "report_seq", "activity", "tool_count", "lifecycle") {
 			return
 		}
 		c, e := s.ObserverContext(r.Context(), verifier(r), body.RuntimeID)
@@ -260,7 +283,7 @@ func MountOwner(mux *http.ServeMux, s *store.Store) {
 					Label    string `json:"label"`
 					Verifier string `json:"verifier"`
 				}
-				if !decode(w, r, &b, "label", "verifier") {
+				if !decode(w, r, &b, []string{"label", "verifier"}, "label", "verifier") {
 					return
 				}
 				m.Label, m.Verifier = b.Label, b.Verifier
@@ -270,7 +293,7 @@ func MountOwner(mux *http.ServeMux, s *store.Store) {
 					RuntimeID       *string `json:"runtime_id"`
 					ProjectID       *string `json:"project_id"`
 				}
-				if !decode(w, r, &b, "expected_version", "runtime_id", "project_id") {
+				if !decode(w, r, &b, []string{"expected_version", "runtime_id", "project_id"}, "expected_version", "runtime_id", "project_id") {
 					return
 				}
 				if b.ExpectedVersion == nil || (b.RuntimeID == nil) != (b.ProjectID == nil) {
@@ -289,7 +312,7 @@ func MountOwner(mux *http.ServeMux, s *store.Store) {
 				var b struct {
 					ExpectedVersion *int64 `json:"expected_version"`
 				}
-				if !decode(w, r, &b, "expected_version") {
+				if !decode(w, r, &b, []string{"expected_version"}, "expected_version") {
 					return
 				}
 				if b.ExpectedVersion == nil {

@@ -255,7 +255,11 @@ private slots:
         "Run observer acceptance through tests/e2e/observer_acceptance.py");
     Daemon daemon;
     daemon.endpoint = QUrl(qEnvironmentVariable("ARTEL_OBSERVER_ENDPOINT"));
-    QVERIFY(QDir().mkpath(daemon.dir.filePath("private")));
+    const auto privateDir = daemon.dir.filePath("private");
+    QVERIFY(QDir().mkpath(privateDir));
+    // Do not rely on the invoking shell's umask: the client requires 0700.
+    QVERIFY(QFile::setPermissions(
+        privateDir, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
     QVERIFY(QFile::copy(qEnvironmentVariable("ARTEL_OBSERVER_OWNER_TOKEN"),
                         daemon.tokenPath()));
     Oracle oracle(daemon.endpoint, daemon.tokenPath());

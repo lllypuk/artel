@@ -2,7 +2,7 @@ import { request } from "node:http";
 import { performance } from "node:perf_hooks";
 import type { ObserverConfig } from "./config.ts";
 
-export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const UUID = /^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export interface Metadata { provider?: string; model?: string }
 export interface Activity extends Metadata {
   activity: "unknown" | "idle" | "working" | "waiting_user";

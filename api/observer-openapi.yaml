@@ -3,12 +3,13 @@ info:
   title: Artel opt-in Pi observer contract
   version: 0.1.0
   description: |
-    Executable pilot contract, not an implemented API yet. Owner endpoints use the
+    Implemented opt-in observer pilot contract. Owner endpoints use the
     existing numeric-loopback listener; observer endpoints exist only on the opt-in
     private Unix socket. Security schemes are never interchangeable. No task writes,
     delivery, prompts or automatic binding. Same-UID code is not sandboxed by tokens.
     JSON bodies are strict and at most 16384 bytes. Strings reject control characters.
-    Owner paths will also be referenced from openapi.yaml when implemented.
+    Owner paths are also referenced from openapi.yaml. UUIDs must be canonical,
+    lowercase and non-nil; nullable binding IDs use null only for explicit unbind.
 servers:
   - url: http://artel-observer
     description: Observer HTTP over owner-configured Unix socket, not DNS/TCP
@@ -238,6 +239,7 @@ components:
     UUID:
       type: string
       format: uuid
+      not: {enum: ['00000000-0000-0000-0000-000000000000']}
       pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
     Counter: {type: integer, minimum: 0, maximum: 9007199254740991}
     Identifier: {type: string, minLength: 1, maxLength: 256, pattern: '^[^\x00-\x1f\x7f]+$'}
@@ -271,8 +273,8 @@ components:
             project_id: {type: string, nullable: true, enum: [null]}
       properties:
         expected_version: {$ref: '#/components/schemas/Counter'}
-        runtime_id: {type: string, format: uuid, nullable: true}
-        project_id: {type: string, format: uuid, nullable: true}
+        runtime_id: {type: string, format: uuid, nullable: true, not: {enum: ['00000000-0000-0000-0000-000000000000']}}
+        project_id: {type: string, format: uuid, nullable: true, not: {enum: ['00000000-0000-0000-0000-000000000000']}}
     Binding:
       type: object
       additionalProperties: false

@@ -120,7 +120,10 @@ type observerRuntime struct {
 	Hash string
 }
 
-func observerUUID(s string) bool { u, err := uuid.Parse(s); return err == nil && u.String() == s }
+func observerUUID(s string) bool {
+	u, err := uuid.Parse(s)
+	return err == nil && u != uuid.Nil && u.String() == s
+}
 func observerText(s string, max int, optional bool) bool {
 	if s == "" {
 		return optional

@@ -20,7 +20,9 @@ bool choice(const QJsonValue &v, const QStringList &values) {
   return v.isString() && values.contains(v.toString());
 }
 bool text(const QJsonValue &v, int max) {
-  if (!v.isString() || v.toString().size() > max)
+  // OpenAPI maxLength and the Go/TS peers count Unicode code points, not
+  // QString's UTF-16 code units (non-BMP characters occupy two units).
+  if (!v.isString() || v.toString().toUcs4().size() > max)
     return false;
   for (const auto c : v.toString())
     if (c.category() == QChar::Other_Control)
@@ -38,7 +40,7 @@ bool projection(const QJsonObject &root, QJsonArray &clean) {
     const auto o = v.toObject();
     const auto id = o.value("observer_id");
     if (!uuid(id) || observers.contains(id.toString()) ||
-        !text(o.value("label"), 256) || !counter(o.value("version")) ||
+        !text(o.value("label"), 128) || !counter(o.value("version")) ||
         !counter(o.value("generation")) || !o.value("revoked").isBool() ||
         !o.value("runtimes").isArray() ||
         o.value("runtimes").toArray().size() > 8)

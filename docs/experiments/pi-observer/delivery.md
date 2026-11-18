@@ -99,3 +99,39 @@ its plan is deferred to acceptance (not claimed executed early). At that point r
 `python3 -B -m unittest discover -s tests -p 'test_documentation.py'`. Installation,
 normal-session desktop/agterm smoke and real-session provisioning require the
 owner's separate decision. Do not auto-connect a working user session.
+
+## Post-review corrections (2026-11-18)
+
+The three successful round-01 sources plus the successful adversarial retry
+reported four minor defects: stale contract status, nil UUID acceptance that could
+invalidate the desktop registry, case-folded JSON aliases overriding exact fields,
+and UTF-16 length counting rejecting valid non-BMP metadata. All four were fixed:
+non-nil canonical UUID checks now agree across storage/config/bridge/OpenAPI;
+observer HTTP checks exact per-operation and nested terminal keys before decoding;
+Qt counts Unicode code points (including the contract's 128-code-point label
+limit); the contract identifies the implemented surfaces and owner references.
+
+Regression tests failed on the old nil/alias implementation and on ten non-BMP
+projection cases before fixes. Coverage includes every request field across all
+six mutation operations, nested terminal aliases, no mutation on invalid CAS,
+no registry capacity consumed by nil registrations, config/bridge UUID agreement,
+and Unicode bounds below/at/above the limit. Existing valid requests/unbind and
+full-stack lifecycle/recovery coverage remain enabled.
+
+`make lint test` passed. The first full `make check` exposed a fixture dependency
+on the caller's umask: the external-QML test copied a token into a directory
+created as 0755 under umask 022. The fixture now explicitly sets that temporary
+directory to 0700; production credential validation was not relaxed. A complete
+`umask 022; GOTOOLCHAIN=go1.26.3 GOLANGCI_LINT=/tmp/artel-pi-bridge-Fd40ok1E/tools/golangci-lint make check package-check`
+then passed: 14 Python tests, all Go/race tests, 47 Artel Qt results, 32 client Qt
+results, 12 observer unit tests, 4 real SDK/PTY tests, native and full-stack recovery
+acceptance plus both intentional-failure cleanup probes, no mandatory skips.
+Staged no-Pi startup/migration, standalone extension and package inspection passed.
+
+The disposable package build emitted the existing qmake generated-metatypes
+warning, a transitive `node-domexception` npm deprecation warning and a nonfatal
+libfakeroot diagnostic. Subsequent generated-file build and independent package
+payload/type/ownership/mode checks passed; these host/dependency diagnostics are
+recorded, not presented as a warning-free package build. No packages/services
+were installed or activated. No push, merge, remote CI, live pilot or new independent
+review of these fixes was performed.

@@ -41,6 +41,26 @@ func TestObserverConfigAtomicConfirmation(t *testing.T) {
 	if e != nil || got != c {
 		t.Fatal("confirmed config invalid", e)
 	}
+	for _, field := range []string{"observer_id", "database_instance_id", "provisioning_key"} {
+		t.Run("nil/"+field, func(t *testing.T) {
+			invalid := c
+			switch field {
+			case "observer_id":
+				invalid.ObserverID = uuid.Nil.String()
+			case "database_instance_id":
+				invalid.DatabaseInstanceID = uuid.Nil.String()
+			case "provisioning_key":
+				invalid.ProvisioningKey = uuid.Nil.String()
+			}
+			invalidPath := filepath.Join(filepath.Dir(path), field+".json")
+			if err := WriteObserverConfig(invalidPath, invalid, false); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReadObserverConfig(invalidPath, true); err == nil {
+				t.Fatal("nil identity accepted in private config")
+			}
+		})
+	}
 	c.Payload.Verifier = strings.Repeat("ff", 32)
 	if e = WriteObserverConfig(path, c, true); e == nil {
 		t.Fatal("verifier changed")

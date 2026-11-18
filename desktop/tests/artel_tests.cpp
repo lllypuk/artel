@@ -616,6 +616,64 @@ private slots:
     QCOMPARE(client.draft(), draft);
     QVERIFY(client.uncertain());
   }
+  void observerMetadataUsesUnicodeCodePoints_data() {
+    QTest::addColumn<QString>("field");
+    QTest::addColumn<int>("length");
+    QTest::addColumn<bool>("valid");
+    for (const auto *field :
+         {"model", "provider", "pi_version", "bridge_version", "label"}) {
+      const int limit = QString(field) == "label" ? 128 : 256;
+      for (int length : {limit / 2 + 1, limit, limit + 1}) {
+        const auto name = QString("%1-%2").arg(field).arg(length);
+        QTest::newRow(qPrintable(name))
+            << QString(field) << length << (length <= limit);
+      }
+    }
+  }
+  void observerMetadataUsesUnicodeCodePoints() {
+    QFETCH(QString, field);
+    QFETCH(int, length);
+    QFETCH(bool, valid);
+    ObserverFixture fixture;
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(panel.selectProject(fixture.project));
+    auto record = fixture.record();
+    // U+1F680 occupies two UTF-16 units but one Unicode code point.
+    const auto value = QString::fromUtf8("\xf0\x9f\x9a\x80").repeated(length);
+    if (field == "label") {
+      record.insert(field, value);
+    } else {
+      auto runtimes = record.value("runtimes").toArray();
+      auto runtime = runtimes.first().toObject();
+      if (field == "pi_version" || field == "bridge_version") {
+        auto registration = runtime.value("registration").toObject();
+        registration.insert(field, value);
+        runtime.insert("registration", registration);
+      } else {
+        runtime.insert(field, value);
+      }
+      runtimes[0] = runtime;
+      record.insert("runtimes", runtimes);
+    }
+    fixture.record(record);
+    auto *observer = panel.observers();
+    observer->setActive(true);
+    QTRY_VERIFY(fixture.reads > 0);
+    QTRY_VERIFY(observer->online() || !observer->message().isEmpty());
+    QCOMPARE(observer->online(), valid);
+    if (valid) {
+      QCOMPARE(observer->rows().size(), 2);
+      QCOMPARE(observer->rows().first().toMap().value(field).toString(), value);
+      QVERIFY(observer->prepare("bind", fixture.observer, fixture.runtime));
+    } else {
+      QVERIFY(!observer->prepare("bind", fixture.observer, fixture.runtime));
+    }
+    observer->setActive(false);
+  }
   void observerOfflineDelayedReplyReplacementAndWhitelist() {
     ObserverFixture fixture;
     ApiClient client;

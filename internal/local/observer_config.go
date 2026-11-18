@@ -84,7 +84,7 @@ func ReadObserverConfig(path string, confirmedOnly bool) (ObserverConfig, error)
 	if d.Decode(&c) != nil || d.Decode(new(any)) != io.EOF {
 		return c, errors.New("invalid observer config")
 	}
-	validID := func(s string) bool { u, e := uuid.Parse(s); return e == nil && u.String() == s }
+	validID := func(s string) bool { u, e := uuid.Parse(s); return e == nil && u != uuid.Nil && u.String() == s }
 	if !validID(c.ObserverID) || !validID(c.DatabaseInstanceID) || !validID(c.ProvisioningKey) || !filepath.IsAbs(c.ObserverSocket) || len(c.ObserverSocket) > 107 || (c.Status != "pending" && c.Status != "confirmed") || confirmedOnly && c.Status != "confirmed" {
 		return c, errors.New("observer config not usable")
 	}
