@@ -8,6 +8,7 @@ RowLayout {
     required property Theme theme
     property alias text: search.text
     property string label: ""
+    signal textEdited
     spacing: theme.space2
     Image {
         objectName: "searchIcon"
@@ -22,6 +23,7 @@ RowLayout {
         id: search
         theme: control.theme
         placeholderText: control.label
+        onTextEdited: control.textEdited()
         Accessible.name: control.label
         Layout.fillWidth: true
     }

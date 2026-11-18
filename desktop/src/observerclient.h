@@ -15,6 +15,7 @@ class ObserverClient : public QObject {
   Q_PROPERTY(bool active READ active WRITE setActive NOTIFY changed)
   Q_PROPERTY(bool online READ online NOTIFY changed)
   Q_PROPERTY(bool busy READ busy NOTIFY changed)
+  Q_PROPERTY(bool loading READ loading NOTIFY changed)
   Q_PROPERTY(bool canBind READ canBind NOTIFY changed)
   Q_PROPERTY(QString message READ message NOTIFY changed)
   Q_PROPERTY(QString confirmation READ confirmation NOTIFY changed)
@@ -37,6 +38,7 @@ public:
   void setProject(const QVariantMap &project);
   bool online() const { return m_online; }
   bool busy() const { return m_mutation; }
+  bool loading() const { return m_read; }
   bool canBind() const;
   QString projectName() const { return m_project.value("name").toString(); }
   bool onlyProject() const { return m_onlyProject; }

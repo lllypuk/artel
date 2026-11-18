@@ -131,7 +131,6 @@ void TeamOverviewModel::rebuild() {
     rows.append(row);
   }
   const bool changedRows = rows != m_rows;
-  const bool changedState = current != m_current;
   if (changedRows)
     beginResetModel();
   m_current = current;
@@ -141,7 +140,9 @@ void TeamOverviewModel::rebuild() {
   m_counts = counts;
   if (changedRows)
     endResetModel();
-  else if (changedState && !m_rows.isEmpty())
+  else if (!m_rows.isEmpty())
+    // The same sanitized data can have new presentation labels after a live
+    // language change. Notify delegates without resetting stable selection.
     emit dataChanged(index(0), index(m_rows.size() - 1));
   emit changed();
 }

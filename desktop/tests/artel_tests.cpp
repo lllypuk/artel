@@ -59,11 +59,19 @@ void writeFile(const QString &path, const QByteArray &bytes) {
   QCOMPARE(file.write(bytes), bytes.size());
 }
 QQuickWindow *load(QQmlApplicationEngine &engine, Panel &panel,
-                   Appearance &appearance) {
+                   Appearance &appearance, bool manual = true) {
+  auto *workspace = new WorkspaceController(&panel, &engine);
   engine.setInitialProperties(
       {{"panel", QVariant::fromValue(&panel)},
+       {"workspace", QVariant::fromValue(workspace)},
        {"appearance", QVariant::fromValue(&appearance)}});
   engine.load(QUrl("qrc:/Main.qml"));
+  if (manual && !engine.rootObjects().isEmpty()) {
+    auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+    if (!window || !click(window, "projectsNavButton"))
+      return nullptr;
+    workspace->returnToEditor();
+  }
   return engine.rootObjects().size() == 1
              ? qobject_cast<QQuickWindow *>(engine.rootObjects().first())
              : nullptr;
@@ -762,22 +770,283 @@ private slots:
       QVERIFY(!QFileInfo::exists("/proc/" + child));
     }
   }
+  void teamStartupNavigationPollingAndDraft() {
+    ObserverFixture fixture;
+    auto record = fixture.record();
+    record.insert("binding", QJsonObject{{"runtime_id", fixture.runtime},
+                                         {"project_id", fixture.project}});
+    auto runtimes = record.value("runtimes").toArray();
+    auto bound = runtimes.first().toObject();
+    bound.insert("disposition", "bound");
+    runtimes[0] = bound;
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance, false);
+    QVERIFY(window);
+    auto *workspace =
+        window->property("workspace").value<WorkspaceController *>();
+    QVERIFY(workspace);
+    QCOMPARE(workspace->route(), QString("team"));
+    QVERIFY(item(window, "teamOverview")->isVisible());
+    QVERIFY(!item(window, "createProjectButton")->isVisible());
+    QVERIFY(panel.project().isEmpty());
+    client.reload();
+    QTRY_VERIFY(client.online());
+    auto *observer = panel.observers();
+    QTRY_VERIFY(observer->online());
+    QCOMPARE(workspace->team()->total(), 1);
+    QCOMPARE(workspace->team()->unbound(), 0);
+    QCOMPARE(observer->rows().size(), 2); // Candidate is not a team member.
+    const auto member = "teamMember_" + fixture.observer;
+    QTRY_VERIFY(item(window, member));
+    item(window, member)->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_Space);
+    QCOMPARE(workspace->selectedObserver().value("observer_id").toString(),
+             fixture.observer);
+    QVERIFY(panel.project().isEmpty());
+    QVERIFY(click(window, "teamOpenProjectButton"));
+    QCOMPARE(workspace->route(), QString("workspace"));
+    QCOMPARE(panel.project().value("id").toString(), fixture.project);
+    QVERIFY(!observer->active());
+    const int reads = fixture.reads;
+    QTest::qWait(2100);
+    QCOMPARE(fixture.reads, reads);
+    QVERIFY(panel.selectTask(fixture.task));
+    QVERIFY(click(window, "editTaskButton"));
+    QVERIFY(
+        enter(window, "nameField", "Retain this draft across team navigation"));
+    const auto draft = client.draft();
+    QVERIFY(click(window, "teamNavButton"));
+    QTRY_VERIFY(observer->active());
+    QTRY_VERIFY(observer->online());
+    QVERIFY(workspace->draftHidden());
+    QVERIFY(item(window, "returnToEditorButton")->isVisible());
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTest::keyClick(window, Qt::Key_Escape);
+    QCOMPARE(client.draft(), draft);
+    QVERIFY(!client.pending());
+    QVERIFY(!window->findChild<QObject *>("discardDialog")
+                 ->property("visible")
+                 .toBool());
+    QVERIFY(click(window, member));
+    QVERIFY(click(window, "teamOpenProjectButton")); // Existing manual guard.
+    QCOMPARE(workspace->route(), QString("team"));
+    QCOMPARE(client.draft(), draft);
+    auto *filter = item(window, "teamFilterBar");
+    QVERIFY(filter);
+    QQuickItem *search = nullptr;
+    for (auto *child : filter->childItems())
+      if (child->inherits("QQuickTextField"))
+        search = child;
+    QVERIFY(search);
+    search->forceActiveFocus();
+    QInputMethodEvent input;
+    input.setCommitString("no-match-fictional");
+    QCoreApplication::sendEvent(search, &input);
+    QTRY_COMPARE(workspace->team()->shown(), 0);
+    QVERIFY(item(window, "teamEmptyState")->isVisible());
+    QCOMPARE(item(window, "teamEmptyState")->property("title").toString(),
+             QString("No matching observations"));
+    QVERIFY(workspace->selectedObserver().isEmpty());
+    QCOMPARE(panel.task().value("id").toString(), fixture.task);
+    QCOMPARE(client.draft(), draft);
+    QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClick(window, Qt::Key_Backspace);
+    QTRY_COMPARE(workspace->team()->shown(), 1);
+    item(window, "teamNavButton")->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_Tab);
+    QVERIFY(item(window, "projectsNavButton")->hasActiveFocus());
+    window->setVisibility(QWindow::Minimized);
+    QTRY_VERIFY(!observer->active());
+    QVERIFY(!workspace->team()->visible());
+    window->showNormal();
+    QTRY_VERIFY(observer->active());
+    QTRY_VERIFY(observer->online());
+    window->hide();
+    QTRY_VERIFY(!observer->active());
+    window->show();
+    QTRY_VERIFY(observer->active());
+    QTRY_VERIFY(observer->online());
+    QVERIFY(click(window, "returnToEditorButton"));
+    QCOMPARE(workspace->route(), QString("workspace"));
+    QCOMPARE(client.draft(), draft);
+    QVERIFY(item(window, "nameField")->isVisible());
+    QVERIFY(!observer->active());
+    QVERIFY(click(window, "observersButton"));
+    QTRY_VERIFY(workspace->connectionsOpen());
+    QTRY_VERIFY(observer->active());
+    auto *drawer = window->findChild<QObject *>("observerDrawer");
+    QVERIFY(drawer);
+    QVERIFY(QMetaObject::invokeMethod(drawer, "close"));
+    QTRY_VERIFY(!workspace->connectionsOpen());
+    QTRY_VERIFY(!observer->active());
+    QCOMPARE(client.draft(), draft);
+    QVERIFY(fixture.mutations.isEmpty());
+  }
+  void teamEmptyLoadingOfflineRecovery() {
+    ObserverFixture fixture;
+    fixture.registry.insert("observers", QJsonArray{});
+    QPointer<QTcpSocket> delayed;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/observers ")) {
+        ++fixture.reads;
+        delayed = socket;
+      } else
+        fixture.normal(socket, request);
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance, false);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(delayed);
+    QVERIFY(item(window, "teamConnectionStatus")
+                ->property("text")
+                .toString()
+                .contains("Loading"));
+    QVERIFY(!item(window, "teamEmptyState")->isVisible());
+    UiFixture::respond(delayed, 200, fixture.bytes());
+    QTRY_VERIFY(panel.observers()->online());
+    QVERIFY(item(window, "teamEmptyState")->isVisible());
+    QCOMPARE(item(window, "teamEmptyState")->property("title").toString(),
+             QString("No connected team yet"));
+    QCOMPARE(panel.observers()->projection().size(), 0);
+    auto *workspace =
+        window->property("workspace").value<WorkspaceController *>();
+    QCOMPARE(workspace->team()->total(), 0);
+    QCOMPARE(workspace->team()->shown(), 0);
+    QVERIFY(panel.project().isEmpty());
+    delayed.clear();
+    panel.observers()->reload();
+    QTRY_VERIFY(delayed);
+    UiFixture::respond(delayed, 503, "{}");
+    QTRY_VERIFY(!panel.observers()->online());
+    QVERIFY(workspace->team()->cached());
+    QVERIFY(item(window, "teamConnectionStatus")
+                ->property("text")
+                .toString()
+                .contains("unknown"));
+    delayed.clear();
+    panel.observers()->reload();
+    QTRY_VERIFY(delayed);
+    UiFixture::respond(delayed, 200, fixture.bytes());
+    QTRY_VERIFY(panel.observers()->online());
+    QVERIFY(!workspace->team()->cached());
+    QVERIFY(click(window, "projectsNavButton"));
+    QVERIFY(item(window, "createProjectButton")->isVisible());
+    QVERIFY(!panel.observers()->active());
+    QVERIFY(fixture.mutations.isEmpty());
+  }
+  void teamOverviewScreenshots() {
+    ObserverFixture fixture;
+    QJsonArray records;
+    const QStringList labels{"Interface developer", "Продакт · планирование",
+                             "Backend reviewer", "Documentation",
+                             "Build checks"};
+    const QStringList activities{"working", "waiting_user", "idle", "working",
+                                 "idle"};
+    for (int i = 0; i < labels.size(); ++i) {
+      auto record = fixture.record();
+      record.insert("observer_id", QString("%1-4444-4444-8444-444444444444")
+                                       .arg(i + 10, 8, 10, QChar('0')));
+      record.insert("label", labels[i]);
+      record.insert("binding", QJsonObject{{"runtime_id", fixture.runtime},
+                                           {"project_id", fixture.project}});
+      auto runtimes = record.value("runtimes").toArray();
+      auto bound = runtimes.first().toObject();
+      bound.insert("disposition", "bound");
+      bound.insert("activity", activities[i]);
+      bound.insert("freshness", i == 3 ? "stale" : "fresh");
+      bound.insert("last_seen",
+                   QDateTime::currentDateTimeUtc().addSecs(-i * 120).toString(
+                       Qt::ISODate));
+      runtimes[0] = bound;
+      record.insert("runtimes", runtimes);
+      records.append(record);
+    }
+    fixture.registry.insert("observers", records);
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QCoreApplication::installTranslator(&appearance);
+    QQmlApplicationEngine engine;
+    QObject::connect(&appearance, &Appearance::changed, &engine,
+                     &QQmlEngine::retranslate);
+    auto *window = load(engine, panel, appearance, false);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(panel.observers()->online());
+    auto *workspace =
+        window->property("workspace").value<WorkspaceController *>();
+    QCOMPARE(workspace->team()->total(), 5);
+    const auto prefix = qEnvironmentVariable("ARTEL_TEAM_SCREENSHOT");
+    for (const auto &language : {QString("en"), QString("ru")}) {
+      writeFile(fixture.directory.filePath("language"), language.toUtf8());
+      appearance.refresh();
+      emit panel.changed();
+      for (const auto &size : {QSize(1280, 820), QSize(1440, 900)}) {
+        window->resize(size);
+        QTRY_VERIFY(
+            item(window, "teamMember_00000010-4444-4444-8444-444444444444"));
+        QVERIFY(
+            click(window, "teamMember_00000010-4444-4444-8444-444444444444"));
+        QTest::qWait(80);
+        auto *member =
+            item(window, "teamMember_00000010-4444-4444-8444-444444444444");
+        QCOMPARE(
+            member->property("record").toMap().value("status_text").toString(),
+            language == "ru" ? QString::fromUtf8("Работает")
+                             : QString("Working"));
+        for (const auto *name :
+             {"teamCounts", "teamFooter", "teamOpenProjectButton",
+              "teamConnectionsButton", "teamActivityFilter"}) {
+          auto *control = item(window, name);
+          QVERIFY(control && control->isVisible());
+          const auto rect = control->mapRectToScene(control->boundingRect());
+          QVERIFY(rect.left() >= 0 && rect.right() <= window->width());
+          QVERIFY(rect.top() >= 0 && rect.bottom() <= window->height());
+        }
+        if (!prefix.isEmpty())
+          QVERIFY(window->grabWindow().save(prefix + "-" + language + "-" +
+                                            QString::number(size.width()) +
+                                            ".png"));
+      }
+    }
+    QVERIFY(fixture.mutations.isEmpty());
+    QCoreApplication::removeTranslator(&appearance);
+  }
   void russianCatalogCoversVisibleQmlStrings() {
-    QFile catalog(":/i18n/ru.json"), qml(":/Main.qml");
+    QFile catalog(":/i18n/ru.json");
     QVERIFY(catalog.open(QIODevice::ReadOnly));
-    QVERIFY(qml.open(QIODevice::ReadOnly));
     const auto strings = QJsonDocument::fromJson(catalog.readAll()).object();
     QVERIFY(!strings.isEmpty());
     const QRegularExpression expression("qsTr\\(\"([^\"]*)\"");
-    auto matches = expression.globalMatch(QString::fromUtf8(qml.readAll()));
-    while (matches.hasNext()) {
-      const auto key =
-          QJsonDocument::fromJson(
-              ("[\"" + matches.next().captured(1) + "\"]").toUtf8())
-              .array()
-              .first()
-              .toString();
-      QVERIFY2(strings.contains(key), qPrintable(key));
+    for (const auto *path :
+         {":/Main.qml", ":/ManualWorkspace.qml", ":/TeamOverview.qml"}) {
+      QFile qml(path);
+      QVERIFY(qml.open(QIODevice::ReadOnly));
+      auto matches = expression.globalMatch(QString::fromUtf8(qml.readAll()));
+      while (matches.hasNext()) {
+        const auto key =
+            QJsonDocument::fromJson(
+                ("[\"" + matches.next().captured(1) + "\"]").toUtf8())
+                .array()
+                .first()
+                .toString();
+        QVERIFY2(strings.contains(key), qPrintable(key));
+      }
     }
   }
   void observerCatalogCoversQmlAndClient() {

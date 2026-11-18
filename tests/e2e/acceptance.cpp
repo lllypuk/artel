@@ -1,6 +1,7 @@
 #include "apiclient.h"
 #include "appearance.h"
 #include "panel.h"
+#include "workspacecontroller.h"
 #include <QFile>
 #include <QInputMethodEvent>
 #include <QJsonDocument>
@@ -153,6 +154,7 @@ QJsonObject find(const QJsonArray &rows, const QString &id) {
 struct Window {
   ApiClient client;
   Panel panel{&client};
+  WorkspaceController workspace{&panel};
   Appearance appearance;
   QQmlApplicationEngine engine;
   QQuickWindow *window = nullptr;
@@ -161,11 +163,15 @@ struct Window {
     if (!client.configure(daemon.endpoint, daemon.tokenPath()))
       return;
     engine.setInitialProperties(
-        {{"panel", QVariant::fromValue(&panel)},
+        {{"workspace", QVariant::fromValue(&workspace)},
+         {"panel", QVariant::fromValue(&panel)},
          {"appearance", QVariant::fromValue(&appearance)}});
     engine.load(QUrl("qrc:/Main.qml"));
     if (engine.rootObjects().size() == 1)
       window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+    if (window)
+      click(window, "projectsNavButton");
+    workspace.returnToEditor();
     client.reload();
   }
 };

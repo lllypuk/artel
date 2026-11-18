@@ -1,10 +1,11 @@
 # Artel desktop design system — provisional native primitives
 
-Task 1 of the desktop redesign, 2026-11-18. This describes implemented reusable
-primitives, not a completed redesign. The existing Main.qml startup, manual flows
-and ObserverPanel are unchanged; shell, roster and workspace migration follow in
-later tasks. Mode: Operate, native Qt Quick, canon direction with Zed-quality
-hierarchy/density rather than editor imitation.
+Tasks 1–3 of the desktop redesign, 2026-11-18. This describes implemented reusable
+primitives and the team-first shell, not a completed redesign. Manual content is
+preserved in ManualWorkspace.qml; its visual redesign, the detailed observer
+inspector and connection-management redesign follow in later tasks. Mode: Operate,
+native Qt Quick, canon direction with Zed-quality hierarchy/density rather than
+editor imitation.
 
 Authority: [product](PRODUCT.md), [approved brief](docs/design/20261118-artel-desktop-brief.md),
 [selected composition and provenance](docs/design/reference/README.md).
@@ -115,3 +116,52 @@ Qt 6.12.0 and clang-format 23.1.3. Recursive UI/test-fixture qmllint has zero
 warnings and qmlformat is enforced. Existing manual/observer Qt tests remain
 intact. No owner daemon, data, token, desktop settings or real Pi/agterm sessions
 were used. Full `make check`/package acceptance is reserved for subsequent tasks.
+
+## Team-first shell (Task 3)
+
+Main.qml retains the lifetime Panel/ObserverClient and uses the C++
+WorkspaceController supplied by main.cpp. The startup route is Team, including
+an empty registry; no sample data is inserted into the application. Persistent
+navigation leads to projects and the existing manual workspace. Connections still
+opens the preserved management drawer; its detailed redesign is not claimed here.
+
+TeamOverview.qml uses a virtualized roster, separate text/project/activity filters,
+whole-team versus shown counts, unbound footer and a stable-ID read-only selection.
+The 64-unit two-line roster places status and relative age opposite label/project;
+no UUID/model/version clutter is printed in rows. The initial inspector offers a
+guarded project transition; richer observation details remain Task 4. Thin seams
+separate navigation and the 280-unit inspector. Narrow/scaled adaptation remains
+Task 6, not acceptance inferred from these desktop-size captures.
+
+Read-only Team navigation retains editor text/base identity and shows a return
+banner. Save/Escape are scoped to the workspace; global close protection remains.
+Observation runs for a visible, non-minimized team screen or open management drawer;
+manual owner streaming stays independent. A dedicated read-only loading property
+avoids mistaking an observation read for a pending mutation. RU/EN changes now
+refresh roster presentation without resetting the model or selection.
+
+Production-QML fictional fixtures, captured with offscreen/software Qt and private
+HOME/XDG, opened and visually reviewed:
+
+- [English, 1280×820](docs/screenshots/team-overview-en-1280.png)
+- [English, 1440×900](docs/screenshots/team-overview-en-1440.png)
+- [Russian, 1280×820](docs/screenshots/team-overview-ru-1280.png)
+- [Russian, 1440×900](docs/screenshots/team-overview-ru-1440.png)
+
+All four show five bound observers (plus excluded runtime candidates), selected
+details and a stale observation with explicitly unknown current activity. Initial
+review caught untranslated roster labels after live language changes and an
+over-wide inspector; both were fixed and captures repeated. Final frames have
+readable labels, aligned two-line rows and no clipped actions at these sizes.
+These are authored fixture renders, not owner data or copied reference assets.
+
+Reproduce with the private-HOME invocation above, replacing the test selector with
+`teamOverviewScreenshots` and the output variable with
+`ARTEL_TEAM_SCREENSHOT="$ROOT/docs/screenshots/team-overview"`.
+
+Task 3 gates: `make lint test build`, `make observer-check`, and `make test-e2e`
+PASS; Qt suites 57+32, zero qmllint warnings, existing manual semantic assertions
+retained. New production-QML tests exercise startup, empty/loading/offline/recovery,
+keyboard navigation/search, draft return and hidden shortcuts, route/hide/minimize
+polling lifecycle, management activation and no server mutations from reading.
+No global settings, owner process/data, real Pi session or agterm navigation used.

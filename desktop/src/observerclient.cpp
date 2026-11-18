@@ -316,6 +316,7 @@ void ObserverClient::reload() {
     emit changed();
     m_poll.start(2000);
   });
+  emit changed();
 }
 QString ObserverClient::confirmation() const {
   const auto action = m_confirmation.value("action").toString();
