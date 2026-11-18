@@ -1,0 +1,141 @@
+# Artel desktop: whole-team overview and canon/Zed-quality redesign
+
+## Overview
+
+Перестроить технический Qt-прототип в аккуратное ежедневное рабочее приложение. При открытии владелец видит **всю подключённую команду по всем проектам**, а не последнюю карточку задачи. Ручные проекты/задачи/очереди остаются отдельным полноценным workspace. Выбранное направление — `canon` (вариант 4), эталон качества — Zed Editor; остальные детали пользователь делегировал.
+
+Это desktop redesign, не новый backend/orchestrator. Сохранить существующие процессы, API/SQLite, auth/CAS/idempotency, observation-only Pi, навигацию agterm, manual state и защиту черновиков. Не добавлять delivery, task assignment, роли команды, inbox, MR workflow, запуск агентов, command palette для произвольного shell, remote/mobile/macOS implementation или несуществующие показатели.
+
+**План подготовлен; один независимый review сабагентом выполнен, оба механических замечания внесены (см. Review outcome). 2026-11-18 владелец поручил запустить исполнение через ralphex в отдельной agterm-сессии, без дополнительных review-фаз.** Режим: implementation-only, Pi `openai-codex/gpt-6.1-sol`, medium, до 50 итераций, skip-finalize, external review none. Обязательные тесты, visual/self-check внутри задач сохраняются; отдельный revmux/сабагент review не запускать. Владелец уже использует локальное приложение и оставил `arteld` работающим: не останавливать/перезапускать/подменять этот процесс, не читать его token/DB и не менять его данные. Никакой автоматической установки, изменения desktop settings, global Pi/agterm config, merge/main push/deploy. Не открывать preview/overlay пользователю без запроса.
+
+## Context (from discovery)
+
+- База `main`: `17fb27e`. Observer feature и review fixes влиты. Локальные `make check`/`make package-check` прошли; Go CI прошёл. Remote native/package CI временно отключён **по решению владельца**, не считается зелёным. Не включать/ослаблять его в рамках дизайна.
+- Продукт: `PRODUCT.md`; подробный контракт дизайна: `docs/design/20261118-artel-desktop-brief.md`; история выбора: `docs/design/20261118-team-overview-exploration.md`. Эти документы передать исполнителю вместе с планом, не оставлять единственный контекст в чате или runtime `.impeccable/`.
+- До передачи исполнения закоммитить **вместе** этот план, PRODUCT.md, design brief, историю выбора и `docs/design/reference/{README.md,canon-team-overview.html,canon-team-overview.png}` в новую feature-ветку. Проверить наличие файлов в tracked tree до запуска; оставлять их untracked до Task 8 нельзя. Временные `.impeccable/` downloads/questions/review/browser artifacts исключить из handoff, план от них не зависит.
+- Выбранный статический sketch: `docs/design/reference/canon-team-overview.{html,png}`, provenance в соседнем README. Это fictional-data composition reference, не web-приложение и не pixel-exact итоговый comp. В sketch есть условная общая History navigation; **не реализовывать новый глобальный history endpoint/экран**: сохранить существующую историю задачи в workspace.
+- Zed: https://zed.dev/docs/appearance и https://zed.dev/img/parallel-agents/sidebar.webp просмотрены как ориентиры. Брать плотность, поверхности, selection/focus, тонкие швы; не переносить editor layout/agent execution, кодовый шрифт, copyright assets или Zed settings.
+- `desktop/src/Main.qml`: монолитный трёхколоночный layout, локальный PanelButton, ручные editor/details/history, observer Drawer; root 1280×820, minimum 1000×680. `ObserverPanel.qml` сейчас выводит весь technical registration metadata и управление.
+- `desktop/src/{panel,apiclient,observerclient}.{h,cpp}`: один lifetime owner client/Panel и отдельный observer request/mutation slot. `Panel.project/task` — рабочая manual selection; observer фильтры не должны незаметно её менять. `ObserverClient::records()` сейчас flatten всех runtime; такой список **нельзя** напрямую назвать командой.
+- `desktop/src/appearance.{h,cpp}`: read-only Omarchy accent/language/radius, перевод RU/EN. Token читает только ApiClient; не вводить secret в QML.
+- Native test hooks: `desktop/tests/{artel_tests.cpp,apiclient_tests.cpp,observerfixture.h,uifixture.h}`, `tests/e2e/{acceptance.cpp,observer_acceptance.py}`. Все существующие тесты предполагают прежний startup flow: переводить их на явный переход в workspace, не удалять assertions или скрывать реальные регрессии.
+- Build/resource hooks: `desktop/artel.pro`, `desktop/tests/*.pro`, `tests/e2e/acceptance.pro`, `desktop/src/resources.qrc`, `scripts/{desktop-lint,e2e,package-check}`, `tests/test_{documentation,delivery}.py`. Пакет собирается из source allowlist; extracted artifact и no-Pi baseline остаются обязательными.
+
+## Development Approach
+
+- TDD для roster aggregation, navigation/selection, async reply и draft boundaries. Каждый task включает tests, визуальную проверку там, где меняется UI, и gates до следующего task.
+- После изменений кода `make lint test`; минимум завершения каждого task **`make lint test build`**, плюс отдельные проверки task. Полные gates не ослаблять из-за переноса UI, objectName или увеличения сложности fixtures.
+- Работать в новой feature-ветке от принятого main. Один writer. Tests/fixtures используют private HOME/XDG, временные data/token/ports/Pi directories и fake clocks/CLI, не сервер владельца. Разрешены существующие изолированные pinned-Pi SDK/PTY fixtures с настоящим тестовым Pi CLI и loopback deterministic provider: это необходимо для `make observer-check`/`make check`. Запрещены пользовательские Pi-сессии, унаследованные credentials/resources и внешние/оплачиваемые LLM providers. Не делать реальную agterm navigation.
+- Сначала общий theme/component слой и viewmodels, затем shell/default team, затем content/secondary states. Не наращивать второй set networking или duplicate editor state в QML.
+- До реализации UI читать Impeccable `reference/craft-floor.md`, `reference/mode-operate.md` и проектный brief. Выбор `canon` уже сделан: новый concept roll/опрос направления не нужен. Qt — native surface; web DOM detector/Chromium не являются проверкой результата QML.
+- Visual evidence собирать после пачки осмысленных изменений на **production QML**; смотреть изображения, а не только проверять exit code renderer. HTML/sketch screenshots не заменяют native renders. Не делать screenshot после каждой мелкой правки.
+- Scope/contract blocker фиксировать в плане и остановиться. Дополнительные API или потеря данных не являются допустимым способом упростить редизайн.
+
+## UX and Technical Contract
+
+### Shell и навигация
+
+- Старт всегда **Команда**. Постоянная навигация: Команда / Проекты и существующие проекты. В root сохраняются одни ApiClient, Panel, Appearance и ObserverClient; смена страницы не пересоздаёт сетевых владельцев или manual request/draft.
+- `WorkspaceController` (новый C++ presentation-only QObject в `desktop/src/`) хранит route, observer selection и безопасные переходы. QML содержит layout/action binding, не domain/navigation branching. Если иной маленький файл выполняет ровно эту роль, назвать его в отчёте; не создавать универсальный router framework.
+- Из редактора можно уйти в read-only team overview без потери текста, ID/base version и unknown request. Показать «Черновик сохранён в этом окне — Вернуться к редактированию». Не отправлять silent save/discard. Выбор другого manual project/task и новые мутации защищены прежними guards; «Открыть проект» из observer details не обходит их.
+- Global Quit/close сохраняет подтверждения dirty/uncertain. Save shortcut активен только в видимом manual editor; Escape не стирает скрытый draft. Observer selection/filter не меняет `Panel.project/task`; в частности проектный фильтр команды не вызывает `Panel.selectProject`.
+- `ObserverClient.active` true, когда видим team screen или открыто встроенное управление подключениями, window visible и не minimized. Отображение деталей не запускает второго poller. При уходе на иной экран/минимизации сетевое наблюдение останавливается прежним cleanup механизмом; возврат требует свежей projection. Owner/manual SSE независим.
+
+### Модель всей команды
+
+- Новый `TeamOverviewModel` в C++ получает **sanitized observer records одного существующего ObserverClient**, проектные имена из owner snapshot и status/age connection. Раскрыть read-only immutable public projection/records API, если текущего недостаточно; не читать SQLite, не получать verifier/token и не делать второй запрос к API.
+- Текущий состав — одна запись на **non-revoked observer с текущей binding**, даже stale/stopped. Stable key `(observer_id, bound_runtime_id)`; counters наблюдателей по observer ID, не по runtime. Нет binding — отдельная непривязанная область; additional candidates bound observer — только в подключениях; superseded/revoked — history/management filter, не текущая команда.
+- Привязанная runtime отсутствует в malformed projection — не придумывать здоровую запись: явная ошибка/inconsistent state, не перезаписывать manual UI. Неизвестный/архивный проект отображается безопасно по ID/метке недоступности; отсутствие имени не даёт перепривязать автоматически.
+- Фильтры: label/project text search, project ID, activity/freshness. Counts подписаны как общий состав и показано после фильтра; empty registry и no search results — разные состояния. Bound observers без свежих данных не исчезают из общего состава. Технические IDs/версии/модель доступны в inspector, не перегружают строки.
+- Fresh working/idle/waiting_user — «Работает» / «Свободен» / «Ожидает ввода в Pi». Stale/offline/unknown означает **текущая активность неизвестна**; сохранённый last activity можно показать только явно как прошлое в details. Graceful stopped отдельно, не «задача завершена». Ни одно count/status не назначает/принимает задачу.
+- Relative timestamps локализованы, обновляются ограниченным UI timer (≤1 tick/s), пока экран видим; не генерируют network requests/новые events. Использовать injectable clock для tests. Полный исходный timestamp — в details. При API offline/local cache age устаревшие counts явно cached/unknown, не «live».
+- Сохранить выбранного observer при reorder/filter refresh только по stable IDs; если selection отфильтрован или runtime заменена, очистить inspector/показать явный deselected state, не перенести действие на соседнюю строку. Перед confirm/rebind/open navigation сверять актуальный observer/runtime/project и captured CAS state. Existing `ObserverClient::openSession()` ищет в `rows()` с management `onlyProject` фильтром: перевести lookup для действий на **нефильтрованные sanitized records**, а не на визуальную выборку/индекс. Management scope и team filters не являются полномочиями или допустимой причиной молча не открыть видимого в overview наблюдателя. Сохранить freshness/revocation/runtime checks и fixed AgtermAdapter command whitelist. Existing no-cross-generation protections сохраняются.
+
+### Visual system и компоненты
+
+- Добавить `desktop/src/ui/Theme.qml` (QtObject, не глобальные settings) с semantic tokens для canvas/panel/raised/selected/border/text/muted/disabled/focus/critical/warning и spacing/type/radius. Исходная canon палитра: canvas #1d2026, panel #282d35, foreground #eef0f4; окончательные оттенки проверять по contrast/render, а не копировать screenshot sampling Zed.
+- Учитывать Appearance accent/radius/language; яркий/тёмный accent не делает текст/selection нечитаемым: semantic selected fill/foreground и видимый focus имеют contrast-safe fallback. Неизвестная среда использует bundled defaults, без обращения к global settings. Никакой смены текущей темы пользователя.
+- Общие Quick Controls компоненты в `desktop/src/ui/`: кнопки primary/secondary/quiet/destructive, поля/длинный текст, toolbar/filter, status label с текстом, empty/error state, section/inspector. Icons — QIcon theme с bundled minimal SVG fallback либо свой единый набор; без emoji/Unicode glyph вместо иконок, remote assets, загрузки/установки шрифтов. QML resources входят в qrc и проходят qmllint без warnings.
+- System UI font, не моноширинный body. Стартовая шкала body14/secondary≥12/panel18/screen24 logical units, связанная с system font; отступы 4/8/12/16/24/32, контролы32–36, строки48–56. Уточнять по реальному native render на DPI/font scaling, не фиксировать physical pixels.
+- Тонкие 1px seams, умеренный radius, ясные hover/focus/pressed/disabled/selected, один заметный primary action по месту. Destructive отдельно; скрывать неприменимые переходы задачи, но сохранять информацию о причинах disabled там, где она нужна для обнаружения правила queue-head/archive/read-only.
+- No decorative metrics/charts/gradients/glow/hero, все semantic colors дублируются текстом/иконкой. Long text остаётся plain text, выбираемым/копируемым в details. Нельзя менять strings на HTML rich text ради styling.
+
+### Остальные экраны и диапазоны
+
+- Проекты: компактный список/overview, archived filter, create/edit/archive по прежним правилам. Workspace: project header, task groups/queue ordering и task inspector/editor/history. Перестать печатать ISO timestamps в project list; форматировать локально в C++ presentation. Сырые DTO и сохранённые значения не менять.
+- Keep все функции: project/task CRUD, criteria, queued start только head, reordering/remove, done/cancel/reopen manual, archive/unarchive read-only, paginated before/after history, conflict rebase, same-key retry и cross-DB acknowledged abandonment. Owner observer controls provision instruction/bind/unbind/revoke/prune остаются доступны в secondary connection-management view с прежними confirmations.
+- Цели: 1440×900, 1280×820, 1000×680; 100/150/200% scaling и увеличенный UI font. Minimum window не менять без полной проверки. При узкой ширине правый inspector становится inline/отдельной вкладкой внутри того же окна с явным Back, не обрезается; nav/buttons остаются доступны. Не создавать нового modal для обычного чтения.
+- Проверить 0/1/12/256 observers, 8 runtimes у одного observer, long/duplicate/cyrillic/non-BMP labels, много проектов, старые registrations без runtime, lost observation, loading и no matches. ListView с virtualization; не создавать по QML subtree на все 2048 runtime или постоянно пересоздавать список по UI clock tick.
+
+## Testing Strategy
+
+- C++ unit для grouping/counters/filter/selection/clock/navigation guards, без зависимости на язык QML и network timing. Fixtures должны различать одну binding и дополнительные runtime одного observer.
+- Production-QML mouse/keyboard tests для overview→project→task/edit→overview→return, poll lifecycle, empty/offline/recovery, management, manual save/conflict/unknown reply, async reorder/runtime replacement. Текущие assertions перенести на новые доступные controls, не удалить ради изменения topology.
+- Native screenshots в fictional fixtures: overview/selected observer/connections, project list, workspace/task editor/history, empty/loading/offline/409/unknown; RU/EN, normal/narrow/scaled. Автоматические geometry/visibility/focus/color-contrast assertions плюс визуальный просмотр. Не вводить fragile full-image byte equality.
+- Full-stack: прежний deterministic-provider observer daemon/SDK/PTY lifecycle + production QML; no-Pi packaged startup; migrations/storage не меняются, прежние проверки остаются. Проверять нет мутаций сервера от search/filter/route/selection.
+- Gates: каждый task `make lint test build`, дополнительно `make observer-check` когда observer presentation/hooks меняются; финально `make check` и `make package-check`. Enabled remote Go CI нужен при последующей публикации; paused native CI не объявлять успешным.
+
+## Progress Tracking
+
+Checkboxes только внутри Task. Отмечать после тестов и gates, не за написанный код. Фиксировать evidence команд, versions, screenshot matrix и реальные ограничения. Визуальное мнение не заменяет функциональную приёмку и наоборот.
+
+## Implementation Steps
+
+### Task 1: Introduce shared native theme and UI primitives
+- [ ] Добавить Theme и минимальные Quick Controls компоненты в `desktop/src/ui/`, qrc/qmllint wiring; связать с Appearance без global settings и без смены существующего поведения/стартовой страницы. Не добавлять QML raw network/shell.
+- [ ] Написать theme/component Qt tests: RU/EN, font scaling, bright/dark accent, radius0/6/12, focus/disabled/primary/destructive, contrast≥4.5 для обычного текста и≥3 для крупного; ресурсы/icons работают из qrc без checkout filesystem. Ошибочный theme input использует defaults.
+- [ ] Снять/посмотреть native primitive fixture, исправить замечания и выполнить `make lint test build`. Подготовить запись в DESIGN.md как фактическую provisional систему компонентов, не утверждать завершение всего редизайна.
+
+### Task 2: Add whole-team presentation model and safe navigation state
+- [ ] Реализовать TeamOverviewModel, read-only sanitized ObserverClient projection access и WorkspaceController по контракту. Сохранить единственные network owners и raw model semantics, отдельные фильтры, stable IDs, injectable UI clock и observation activation policy.
+- [ ] Написать tests grouping/counts: bound+2candidates одного observer, revoked/superseded/empty runtimes, missing project, stale/idle/waiting/stopped, duplicate labels, 256 observers, filter/no-match, replaced runtime и delayed reply. Сверять все counts с принадлежностью составу, без выдуманного task assignment.
+- [ ] Написать guard/shortcut tests dirty/pending/conflict/unknown/cross-DB переходов и read-only overview; UI clock не запускает запросы и не продлевает server freshness. Выполнить `make lint test build` и `make observer-check`.
+
+### Task 3: Replace root shell and make team the startup screen
+- [ ] Выделить прежний manual content в отдельные QML files, добавить постоянную navigation и TeamOverview с list/filters/status footer/inspector, root lifetime owners оставить прежними. Default route Команда, пустой roster не загружает demo data.
+- [ ] Обновить existing Qt/e2e helpers на **явную навигацию** к manual workspace и observer list, сохранив старые semantic assertions. Добавить startup team, activate/deactivate polling, minimized/background, keyboard focus/tab order, no-match/loading/offline и no-manual-mutation tests.
+- [ ] Снять/посмотреть production-QML overview в RU/EN на1280×820 и1440×900 с fictional data, проверить отсутствие technical clutter/обрезания. Прогнать `make lint test build` и `make observer-check` до следующей задачи.
+
+### Task 4: Finish observer inspector and connection management
+- [ ] Перестроить ObserverPanel/новые inspector и management views на общих компонентах: выбранная binding/данные/age/model/versions, кандидаты отдельно, bind/unbind/revoke/prune secondary с confirmations; explicit claimed agterm navigation через прежний adapter, без новых commands.
+- [ ] Добавить tests rebind/revoke/prune и filtered-out/replaced selection, missing/archived project, malformed/unavailable projection и old pending reply. Проверить ни stale snapshot, ни соседняя строка не получает подтверждённое ранее действие. Добавить явный regression: management оставлен в `Selected project A`, global overview показывает fresh bound observer проекта B; переход к B успешно использует unfiltered records, не меняет manual project A и не ослабляет freshness/revoked checks. Цвет не единственный носитель состояния.
+- [ ] Production-QML fixtures проверяют fake agterm click/no-agterm, observer changes при сохранённом manual draft и независимом manual request; visual inspector/empty candidates/revoked/offline. Выполнить `make lint test build` и `make observer-check`.
+
+### Task 5: Redesign projects, task workspace and history without changing behavior
+- [ ] Перевести projects list/header/task groups/queue actions/task inspector/editor/history на Theme и единый action hierarchy. Убрать постоянную россыпь disabled переходов, сохранив discoverability причин, manual labels и обязательные формы всех существующих операций.
+- [ ] Добавить/адаптировать native tests полного manual CRUD/criteria/reorder/start/done/cancel/reopen/archive/history flows, keyboard/save/cancel/close и long text. Вернуться из overview к сохранённому draft, не сбросив ID/version; delayed create/retry не создаёт дубликатов и не оставляет выбранную задачу прежнего проекта.
+- [ ] Повторить two-client409/rebase/unknown-same-key/database-replacement-abandonment, snapshot refresh while editor focused и hidden editor shortcuts. Снять/посмотреть native project/workspace/editor/history states; выполнить `make lint test build` и `make test-e2e`.
+
+### Task 6: Harden layout, accessibility and large-content states
+- [ ] Реализовать compact/narrow layout без смены API: inspector внутри текущего окна с понятным возвратом, resizable content/scroll, persistent field labels, no truncation critical actions; отказ от тяжёлой бесконечной анимации и model rebuild на clock tick.
+- [ ] Добавить automated geometry/visibility/keyboard/accessibility tests на1000×680/1280×820/1440×900, scaling100/150/200 и увеличенный font, RU/EN, 0/1/12/256 observers, long paths/labels/non-BMP/criteria, search no-result и offline fallback. Контент может scroll, но не перекрывает actions/headers и не теряет текущий ввод.
+- [ ] Проверить selection/focus контраст на light/dark Omarchy accents через private fixtures. Снять батч native screenshots matrix и просмотреть, исправить весь обнаруженный ряд проблем, повторить `make lint test build` и `make observer-check`.
+
+### Task 7: Verify native full-stack behavior and package independence
+- [ ] Обновить `tests/e2e/acceptance.cpp` и observer process fixtures на новый startup flow. Проверить UI/API restart/recovery, Pi stale/rebind/revoke и observer counts, сохранность manual state; read-only overview/filter/navigation не порождают server mutations. Реальные session/service владельца не использовать.
+- [ ] Добавить regression negative assertions с owned-process/temp cleanup и packaged new QML resources/icons. Default no-Pi desktop стартует с понятным empty overview, manual projects доступны без Node/Pi и без observer listener; migration/provision/network security tests сохраняются.
+- [ ] Выполнить `make check`, `make package-check`, повторить затронутые native acceptance минимум трижды с bounded timeouts. Missing dependency — blocker, не skip; documented environmental diagnostics отличать от failed checks.
+
+### Task 8: Document, review the rendered result and hand off
+- [ ] Завершить DESIGN.md по реально построенной системе: tokens/components/state/keyboard/layout/Omarchy mapping, scale matrix, native screenshot links и provenance. Сверить результат с brief и Zed craft reference, а не с HTML как будто это финальный web UI. Честно перечислить оставшиеся ограничения и не смешивать отклонённые концепты.
+- [ ] Обновить README/screenshots/development/instructions только по факту реализации. В screenshots лишь fictional data. Сохранить selected reference/provenance/PRODUCT/brief; не публиковать runtime `.impeccable/questions`, reference downloads, browser profiles или невыбранные варианты. Добавить docs/resource link tests устойчивые к ralphex move completed plan.
+- [ ] Содержательно проверить diff и сделать один финальный native visual/accessibility pass: startup team, main workspace, observer management, long/narrow/scaled/error/draft states. Исправить найденное; screenshot наличия файла не считать visual review. Записать список проверенных кадров/размеров/языков и выводы.
+- [ ] Финально выполнить `make lint test build`, `make check`, `make package-check`, `git diff --check`, privacy/secret scan и no-unexpected-files check. Зафиксировать команды/versions/results/limitations. Коммитить feature candidate только с зелёными gates; не выполнять push/main merge/install/service restart автоматически.
+
+## Success Criteria
+
+- Startup показывает весь известный подключённый состав без открытия drawer; bound/candidate/runtime/freshness не путаются и counts честные.
+- Интерфейс соответствует выбранному canon и уровню Zed по иерархии, плотности, typography, focus/selection и аккуратности; не является editor skin или набором крупных stock Material buttons.
+- Manual flows и draft/conflict/idempotency guarantees сохранены сквозь новую navigation и async updates. Нет silent save/discard, cross-project stale selection или нового network/control backend.
+- Main/empty/error/narrow/scaled состояния реально отрендерены в Qt и проверены; keyboard/labels/contrast/locale покрыты, старые обязательные tests сохранены.
+- Владелец получает локально проверяемый feature candidate и понятный отчёт; его работающий daemon/data/config не изменены исполнителем.
+
+## Review outcome
+
+Один независимый read-only review плана выполнен сабагентом. Два механических замечания учтены: запрет user/external Pi отделён от разрешённых isolated pinned-Pi SDK/PTY fixtures с deterministic provider; action lookup отделён от management-onlyProject фильтра, добавлен межпроектный navigation regression. Дополнительно pre-execution handoff требует совместного commit всех сейчас untracked документов/selected reference, без временных `.impeccable/` artifacts. Новых решений владельца об эстетике или расширении scope не требуется. Повторный review не выполнялся; это устранение замечаний плана, не доказательство работоспособности ещё не реализованного UI.
+
+## Post-Completion
+
+Владелец отдельно разрешает выполнение плана, затем локальный запуск нового UI против своего сервера и пользовательскую приёмку. Desktop можно проверить отдельно от перезапуска daemon, но использование реальных данных требует явного шага владельца, не автоматического smoke исполнителя. Установка, service restart, merge/main push/deploy остаются отдельными решениями.
+
+При публикации нужен exact-HEAD enabled Go CI; remote native/package CI остаётся в согласованной паузе, пока отдельная задача не исправит container RuntimeDirectory для systemd user verification. Следующие agent/messaging/product этапы не входят в редизайн. Не продолжать автоматически к новому плану после этого.
