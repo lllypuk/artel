@@ -36,10 +36,12 @@ bool click(QQuickWindow *window, const QString &name) {
   auto *control = item(window, name);
   if (!control || !control->isVisible() || !control->isEnabled())
     return false;
+  // Task rows contain independent queue buttons below their title. Select the
+  // title area, not the geometric center which may legitimately hit Remove/Up.
+  const auto y = name.startsWith("task_") ? 20.0 : control->height() / 2;
   QTest::mouseClick(
       window, Qt::LeftButton, {},
-      control->mapToScene(QPointF(control->width() / 2, control->height() / 2))
-          .toPoint());
+      control->mapToScene(QPointF(control->width() / 2, y)).toPoint());
   return true;
 }
 bool enter(QQuickWindow *window, const QString &name, const QString &text) {
@@ -1981,14 +1983,29 @@ private slots:
       QTRY_COMPARE(panel.tasks().last().toMap().value("state").toString(),
                    QString("queued"));
     }
-    QVERIFY(panel.queue(ids[2], -1));
+    QTest::qWait(50);
+    QVERIFY(click(window, "up_" + ids[2]));
     QTRY_VERIFY(!client.pending() && !client.loading());
     QCOMPARE(panel.tasks()[1].toMap().value("id").toString(), ids[2]);
-    QVERIFY(panel.queue(ids[2], -1));
+    QTest::qWait(50);
+    QVERIFY(click(window, "up_" + ids[2]));
     QTRY_VERIFY(!client.pending() && !client.loading());
     QCOMPARE(panel.tasks()[0].toMap().value("id").toString(), ids[2]);
+    QTest::qWait(50);
+    QVERIFY(click(window, "task_" + ids[0]));
+    QTRY_COMPARE(panel.task().value("id").toString(), ids[0]);
+    QTest::qWait(50);
+    QVERIFY(item(window, "startButton")->isVisible());
+    QVERIFY(!item(window, "startButton")->isEnabled());
+    QVERIFY(item(window, "queueStartNotice")->isVisible());
+    QVERIFY(!item(window, "doneButton")->isVisible());
     QVERIFY(click(window, "task_" + ids[2]));
     QTRY_VERIFY(panel.allowed("in_progress"));
+    // State-dependent actions need a rendered layout pass before a mouse hit.
+    QTest::qWait(50);
+    if (qEnvironmentVariableIsSet("ARTEL_MANUAL_SCREENSHOT"))
+      QVERIFY(window->grabWindow().save(
+          qEnvironmentVariable("ARTEL_MANUAL_SCREENSHOT") + "-queued.png"));
     QVERIFY(click(window, "startButton"));
     QTRY_COMPARE(panel.task().value("state").toString(),
                  QString("in_progress"));
@@ -2444,6 +2461,93 @@ private slots:
              QString("Draft belongs to the original database"));
     panel.discard();
     QVERIFY(!panel.dirty());
+    client.stop();
+  }
+  void manualPresentationAndScreenshots() {
+    UiFixture fixture;
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    QCoreApplication::installTranslator(&appearance);
+    connect(&appearance, &Appearance::changed, &engine,
+            &QQmlEngine::retranslate);
+    connect(&appearance, &Appearance::changed, &panel, &Panel::changed);
+    auto *window = load(engine, panel, appearance);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    const auto prefix = qEnvironmentVariable("ARTEL_MANUAL_SCREENSHOT");
+    auto capture = [&](const QString &state) {
+      QTest::qWait(100);
+      const auto image = window->grabWindow();
+      return !image.isNull() &&
+             image.save(prefix.isEmpty()
+                            ? fixture.directory.filePath(state + ".png")
+                            : prefix + "-" + state + ".png");
+    };
+    for (const auto &language : {QString("en"), QString("ru")}) {
+      writeFile(fixture.directory.filePath("language"), language.toUtf8());
+      appearance.refresh();
+      QTRY_COMPARE(appearance.language(), language);
+      QVERIFY(panel.selectProject(""));
+      QVERIFY(capture(language + "-projects"));
+      QVERIFY(panel.selectProject(fixture.project));
+      QVERIFY(panel.selectTask(fixture.task));
+      QTRY_VERIFY(!panel.history().isEmpty());
+      QTest::qWait(50);
+      QVERIFY(!item(window, "startButton")->isVisible());
+      QVERIFY(!item(window, "doneButton")->isVisible());
+      QVERIFY(!item(window, "reopenButton")->isVisible());
+      QVERIFY(item(window, "cancelTaskButton")->isVisible());
+      QVERIFY(!item(window, "up_" + fixture.task)->isVisible());
+      QVERIFY(!item(window, "down_" + fixture.task)->isVisible());
+      auto *description = item(window, "taskDescription");
+      QVERIFY(description->property("readOnly").toBool());
+      QVERIFY(description->property("selectByMouse").toBool());
+      QCOMPARE(description->property("textFormat").toInt(),
+               static_cast<int>(Qt::PlainText));
+      QCOMPARE(panel.history().first().toMap().value("timestamp").toString(),
+               QString("2026-11-17T12:00:00Z"));
+      QCOMPARE(
+          panel.history().first().toMap().value("displayTimestamp").toString(),
+          QLocale().toString(
+              QDateTime::fromString("2026-11-17T12:00:00Z", Qt::ISODate)
+                  .toLocalTime(),
+              QLocale::ShortFormat));
+      QVERIFY(capture(language + "-workspace"));
+      QVERIFY(click(window, "historyChanges_25"));
+      QVERIFY(capture(language + "-history"));
+      QVERIFY(click(window, "editTaskButton"));
+      QVERIFY(enter(window, "descriptionField",
+                    "Literal <b>draft</b> · Кириллица · 😀"));
+      QVERIFY(
+          enter(window, "criteriaField", "Keep manual decisions explicit."));
+      const auto draft = panel.editor();
+      const auto base = panel.task();
+      QVERIFY(capture(language + "-editor"));
+      QVERIFY(click(window, "teamNavButton"));
+      QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+      QTest::keyClick(window, Qt::Key_Escape);
+      QCOMPARE(panel.editor(), draft);
+      QCOMPARE(panel.task(), base);
+      QVERIFY(fixture.mutations.isEmpty());
+      QVERIFY(click(window, "returnToEditorButton"));
+      QCOMPARE(panel.editor(), draft);
+      QCOMPARE(panel.task(), base);
+      // Snapshot refresh must not overwrite focused text or advance its base.
+      item(window, "descriptionField")->forceActiveFocus();
+      panel.reload();
+      QTRY_VERIFY(!client.loading());
+      QCOMPARE(panel.editor(), draft);
+      QCOMPARE(item(window, "descriptionField")->property("text").toString(),
+               draft.value("description").toString());
+      panel.discard();
+      QVERIFY(!panel.dirty());
+    }
+    QCoreApplication::removeTranslator(&appearance);
     client.stop();
   }
   void fixtureScreenshot() {

@@ -1,9 +1,9 @@
 # Artel desktop design system — provisional native primitives
 
-Tasks 1–4 of the desktop redesign, 2026-11-18. This describes implemented reusable
-primitives, the team-first shell, observer inspector and connection management,
-not a completed redesign. Manual content is preserved in ManualWorkspace.qml;
-its visual redesign and the narrow/scaled application matrix follow in later tasks. Mode: Operate,
+Tasks 1–5 of the desktop redesign, 2026-11-18. This describes implemented reusable
+primitives, the team-first shell, observer inspector, connection management and
+manual workspace, not a completed redesign. The narrow/scaled application matrix
+and full package acceptance follow in later tasks. Mode: Operate,
 native Qt Quick, canon direction with Zed-quality hierarchy/density rather than
 editor imitation.
 
@@ -227,3 +227,67 @@ mutation while an independent manual save remains pending. Existing CAS rebind,
 unbind, revoke, prune and old-database delayed-reply assertions remain intact.
 Same-version binding replacement and disappeared-runtime confirmations send no
 mutation. No owner daemon/data/token/settings or real sessions were used.
+
+## Manual projects, tasks and history (Task 5)
+
+ManualWorkspace.qml now uses Basic controls and shared Theme/ActionButton/Field/
+LongText/StatusLabel/EmptyState primitives rather than Material buttons. Compact
+project rows show names and manual-state counts, not raw ISO timestamps. Task
+groups retain ordered queues and independent Remove/Up/Down controls; backlog
+rows hide irrelevant ordering actions. Thin seams distinguish project list,
+workspace and inspector. One primary creation action belongs to the task list;
+Save or the applicable manual start/complete action belongs to the inspector.
+Destructive archive/cancel/discard actions have a separate semantic treatment.
+
+Editor fields have persistent labels. Read-only task title, description, criteria
+and conflict text are selectable plain text; history changes remain selectable
+and expandable. Presentation-only displayTimestamp uses local QLocale formatting,
+while the original timestamp and all DTO/state/version/idempotency data remain
+unchanged. Inapplicable state transitions are hidden; a queued non-head still
+shows disabled Start with an explicit queue-head/no-current-task explanation.
+Archived/read-only and unavailable-path notices remain discoverable.
+
+New production-QML tests cover EN/RU action visibility, hidden backlog ordering,
+copyable literal text, original/localized history timestamps, history expansion,
+overview return with unchanged draft/task identity/version, hidden Save/Escape,
+and snapshot refresh while the description field is focused. The real-daemon
+CRUD test now clicks queue Up controls and verifies non-head disabled Start and
+its explanation. Its mouse helper targets task titles rather than the independent
+queue buttons at the row's geometric center; reordered/state-dependent controls
+receive a layout pass before mouse input. Existing CRUD/criteria/start/done/cancel/
+reopen/archive, two-client409/rebase, long text, keyboard/close/discard, history
+pagination, delayed create/retry identity and database-replacement abandonment
+assertions remain intact and pass.
+
+Reviewed fictional production-QML captures, all 1280×820 offscreen/software:
+
+- Projects: [EN](docs/screenshots/manual-redesign-en-projects.png),
+  [RU](docs/screenshots/manual-redesign-ru-projects.png).
+- Workspace: [EN](docs/screenshots/manual-redesign-en-workspace.png),
+  [RU](docs/screenshots/manual-redesign-ru-workspace.png).
+- Editor: [EN](docs/screenshots/manual-redesign-en-editor.png),
+  [RU](docs/screenshots/manual-redesign-ru-editor.png).
+- Expanded history: [EN](docs/screenshots/manual-redesign-en-history.png),
+  [RU](docs/screenshots/manual-redesign-ru-history.png).
+- [Queue/head actions](docs/screenshots/manual-redesign-queued.png): real temporary
+  daemon, fictional Cyrillic project/tasks and private temporary workspace path.
+
+All nine final frames were opened individually or in a native-render contact
+sheet. Review corrected oversized read-only text areas, low-contrast queue buttons
+on selected rows, and an irrelevant Task details heading in the project overview.
+Final normal-size controls and editor labels fit, literal markup stays literal,
+and history uses subdued local timestamps. Narrow/scaled/large-content hardening
+is Task6, not acceptance inferred from these captures. No web detector or HTML
+render is treated as Qt evidence.
+
+Reproduce with the private-HOME invocation above, selectors
+`manualPresentationAndScreenshots realQmlCrudQueueConflictHistoryAndClose`,
+`ARTEL_MANUAL_SCREENSHOT="$ROOT/docs/screenshots/manual-redesign"` and
+`ARTEL_TEST_DAEMON="$ROOT/build/bin/arteld"`.
+
+Task5 gates: `make lint test build` and `make test-e2e` PASS; Qt62+32, zero
+qmllint warnings, Go1.26.3/golangci-lint2.10.1/Qt6.12.0/clang-format23.1.3.
+Full-stack observer Pi1.5.2/Node22.23.2 recovery and intentional-failure owned-process
+cleanup pass. Standalone capture rerun from a private cwd/HOME also passes.
+Only private fixtures were used; owner daemon/data/token/settings, real sessions,
+API/store contracts and network owners are untouched.

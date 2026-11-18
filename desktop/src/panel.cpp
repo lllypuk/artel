@@ -68,6 +68,12 @@ QVariantList Panel::history() const {
   QVariantList result;
   for (const auto &value : m_history) {
     auto row = value.toMap();
+    const auto timestamp =
+        QDateTime::fromString(row.value("timestamp").toString(), Qt::ISODate);
+    row.insert("displayTimestamp",
+               timestamp.isValid() ? QLocale().toString(timestamp.toLocalTime(),
+                                                        QLocale::ShortFormat)
+                                   : row.value("timestamp").toString());
     row.insert("label", labels.value(row.value("action").toString(),
                                      tr("Manual change")));
     row.insert("details",

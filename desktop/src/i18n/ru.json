@@ -138,6 +138,7 @@
   "Edit task": "Изменить задачу",
   "No task selected": "Задача не выбрана",
   "Start manually": "Начать вручную",
+  "Only the queue head can start, with no task already in progress.": "Начать можно только первую задачу очереди, если нет задачи в работе.",
   "Complete manually": "Завершить вручную",
   "Cancel task": "Отменить задачу",
   "Return to backlog": "Вернуть в бэклог",
