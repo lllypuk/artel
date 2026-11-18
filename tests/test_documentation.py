@@ -47,7 +47,7 @@ class DocumentationTests(unittest.TestCase):
             if (tree / active_plan).exists():
                 (tree / active_plan).rename(tree / moved_plan)
             self.assertFalse((tree / active_plan).exists())
-            for name in ('CLAUDE.md', '.claude/CLAUDE.md', '.github/copilot-instructions.md',
+            for name in ('AGENTS.md', '.github/copilot-instructions.md',
                          'README.md', 'docs/development.md', 'docs/legacy-cleanup.md'):
                 text = (ROOT / name).read_text()
                 destination = tree / name
@@ -95,16 +95,16 @@ class DocumentationTests(unittest.TestCase):
             tree = Path(directory)
             shutil.copytree(ROOT / 'docs', tree / 'docs')
             shutil.copytree(ROOT / 'api', tree / 'api')
-            for name in ('README.md', 'DESIGN.md', 'PRODUCT.md', 'CLAUDE.md',
-                         '.claude/CLAUDE.md', '.github/copilot-instructions.md'):
+            for name in ('README.md', 'DESIGN.md', 'PRODUCT.md', 'AGENTS.md',
+                         '.github/copilot-instructions.md'):
                 destination = tree / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(ROOT / name, destination)
             if (tree / active).exists():
                 (tree / active).rename(tree / active.parent / 'completed' / active.name)
             self.assertFalse((tree / active).exists())
-            for name in ('README.md', 'DESIGN.md', 'PRODUCT.md', 'CLAUDE.md',
-                         '.claude/CLAUDE.md', '.github/copilot-instructions.md',
+            for name in ('README.md', 'DESIGN.md', 'PRODUCT.md', 'AGENTS.md',
+                         '.github/copilot-instructions.md',
                          'docs/development.md', 'docs/screenshots/README.md',
                          'docs/design/reference/README.md'):
                 document = tree / name

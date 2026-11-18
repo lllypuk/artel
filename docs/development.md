@@ -1,7 +1,7 @@
 # Developing Artel v2
 
 Artel is a local manual panel with opt-in Pi observation, not an agent orchestrator.
-Read [CLAUDE.md](../CLAUDE.md) and this stable development contract before changing
+Read [AGENTS.md](../AGENTS.md) and this stable development contract before changing
 code. Architecture and experiments describe wider future work, not permission to
 implement delivery, Product roles, chat, MR verification or remote access.
 Historical completed bot plans are not active instructions.
