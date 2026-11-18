@@ -34,6 +34,7 @@ ApplicationWindow {
     Material.accent: appearance.accent
     UI.Theme {
         id: appTheme
+        objectName: "appTheme"
         appearance: window.appearance
     }
     Binding {
@@ -189,6 +190,7 @@ ApplicationWindow {
                         theme: appTheme
                         width: navProjects.width
                         text: navProject.modelData.name
+                        elideText: true
                         kind: "quiet"
                         objectName: "navProject_" + navProject.modelData.id
                         enabled: !window.panel.dirty && !window.panel.busy && !window.panel.uncertain

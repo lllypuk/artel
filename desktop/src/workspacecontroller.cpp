@@ -2,7 +2,15 @@
 
 WorkspaceController::WorkspaceController(Panel *panel, QObject *parent)
     : QObject(parent), m_panel(panel), m_team(panel, this) {
-  connect(panel, &Panel::changed, this, &WorkspaceController::changed);
+  connect(panel, &Panel::changed, this, [this] {
+    const auto task = m_panel->task().value("id").toString();
+    const auto editor = m_panel->editorKind();
+    if (task != m_task || editor != m_editor)
+      m_manualDetails = !task.isEmpty() || !editor.isEmpty();
+    m_task = task;
+    m_editor = editor;
+    emit changed();
+  });
   connect(&m_team, &TeamOverviewModel::changed, this, [this] {
     if (selectedObserver().isEmpty()) {
       m_observer.clear();
@@ -36,7 +44,24 @@ void WorkspaceController::setRoute(const QString &value) {
 }
 void WorkspaceController::showTeam() { setRoute("team"); }
 void WorkspaceController::showProjects() { setRoute("projects"); }
-void WorkspaceController::returnToEditor() { setRoute("workspace"); }
+void WorkspaceController::returnToEditor() {
+  m_manualDetails = true;
+  setRoute("workspace");
+  emit changed();
+}
+void WorkspaceController::showManualList() {
+  m_manualDetails = false;
+  emit changed();
+}
+void WorkspaceController::showManualDetails() {
+  m_manualDetails = true;
+  emit changed();
+}
+void WorkspaceController::clearObserver() {
+  m_observer.clear();
+  m_runtime.clear();
+  emit changed();
+}
 bool WorkspaceController::openProject(const QString &id) {
   // Do not route away or silently discard when the existing manual guard
   // refuses.

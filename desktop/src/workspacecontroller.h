@@ -17,6 +17,7 @@ class WorkspaceController : public QObject {
   Q_PROPERTY(bool minimized READ minimized WRITE setMinimized NOTIFY changed)
   Q_PROPERTY(bool draftHidden READ draftHidden NOTIFY changed)
   Q_PROPERTY(bool closeAllowed READ closeAllowed NOTIFY changed)
+  Q_PROPERTY(bool manualDetails READ manualDetails NOTIFY changed)
 public:
   explicit WorkspaceController(Panel *panel, QObject *parent = nullptr);
   QString route() const { return m_route; }
@@ -27,6 +28,12 @@ public:
   bool minimized() const { return m_minimized; }
   bool draftHidden() const;
   bool closeAllowed() const;
+  bool manualDetails() const {
+    return m_manualDetails || !m_panel->editorKind().isEmpty();
+  }
+  Q_INVOKABLE void showManualList();
+  Q_INVOKABLE void showManualDetails();
+  Q_INVOKABLE void clearObserver();
   void setConnectionsOpen(bool value);
   void setWindowVisible(bool value);
   void setMinimized(bool value);
@@ -51,6 +58,7 @@ private:
   void updateActivation();
   Panel *m_panel;
   TeamOverviewModel m_team;
-  QString m_route = "team", m_observer, m_runtime;
+  QString m_route = "team", m_observer, m_runtime, m_task, m_editor;
+  bool m_manualDetails = false;
   bool m_connections = false, m_visible = false, m_minimized = false;
 };

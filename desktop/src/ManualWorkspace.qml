@@ -15,14 +15,55 @@ Item {
     signal discardRequested
     signal abandonRequested
 
+    readonly property bool compact: width < 1050 || manual.theme.body > 18
+    readonly property bool detailPage: workspace.manualDetails
     readonly property alias theme: theme
+    readonly property var detailViewport: detailsScroll.contentItem
+    function revealField(field: Item, cursorY: real) {
+        if (!visible || !field.activeFocus || !detailViewport || !detailViewport.contentItem)
+            return;
+        let ancestor = field.parent;
+        while (ancestor && ancestor !== detailsScroll)
+            ancestor = ancestor.parent;
+        if (!ancestor)
+            return;
+        const top = field.mapToItem(detailViewport.contentItem, 0, cursorY).y;
+        const bottom = top + manual.theme.body + 24;
+        if (top < detailViewport.contentY)
+            detailViewport.contentY = Math.max(0, top - 8);
+        else if (bottom > detailViewport.contentY + detailViewport.height)
+            detailViewport.contentY = Math.min(detailViewport.contentHeight - detailViewport.height, bottom - detailViewport.height);
+    }
+    function revealTaskControl(control: Item) {
+        if (!visible || !taskList.visible || !control)
+            return;
+        let ancestor = control.parent;
+        while (ancestor && ancestor !== taskList.contentItem)
+            ancestor = ancestor.parent;
+        if (!ancestor)
+            return;
+        const top = control.mapToItem(taskList.contentItem, 0, 0).y;
+        const bottom = top + Math.min(control.height, manual.theme.controlHeight);
+        if (top < taskList.contentY)
+            taskList.contentY = top - 8;
+        else if (bottom > taskList.contentY + taskList.height)
+            taskList.contentY = bottom - taskList.height + 8;
+    }
+    Connections {
+        target: manual.Window.window
+        function onActiveFocusItemChanged() {
+            manual.revealTaskControl(manual.Window.window.activeFocusItem);
+        }
+    }
     UI.Theme {
         id: theme
+        objectName: "manualTheme"
         appearance: manual.appearance
     }
     component PanelButton: UI.ActionButton {
         theme: manual.theme
         kind: "quiet"
+        onActiveFocusChanged: manual.revealField(this, 0)
     }
     component Caption: Label {
         font.family: manual.theme.systemFont.family
@@ -60,16 +101,19 @@ Item {
             Caption {
                 objectName: "connectionLabel"
                 text: manual.panel.connection
+                elide: Text.ElideRight
                 color: theme.muted
                 Layout.fillWidth: true
             }
             Caption {
+                visible: !manual.compact
                 text: qsTr("Updated: %1").arg(manual.panel.updated)
                 font.pixelSize: theme.secondary
                 color: theme.muted
             }
             PanelButton {
                 objectName: "observersButton"
+                visible: !manual.compact
                 text: qsTr("Pi observations")
                 onClicked: manual.openConnections()
             }
@@ -121,8 +165,10 @@ Item {
             Layout.fillHeight: true
             spacing: theme.space4
             ColumnLayout {
+                visible: !manual.compact || (manual.workspace.route === "projects" && manual.panel.editorKind === "") || (!manual.panel.project.id && manual.panel.editorKind === "")
+                Layout.fillWidth: manual.compact
                 Layout.preferredWidth: 220
-                Layout.maximumWidth: 220
+                Layout.maximumWidth: manual.compact ? Infinity : 220
                 Layout.fillHeight: true
                 Toggle {
                     objectName: "archivedFilter"
@@ -152,7 +198,7 @@ Item {
                         id: projectRow
                         required property var modelData
                         width: projectList.width
-                        height: 80
+                        height: Math.max(80, contentItem.implicitHeight + 16)
                         padding: theme.space2
                         objectName: "project_" + projectRow.modelData.id
                         highlighted: manual.panel.project.id === projectRow.modelData.id
@@ -186,82 +232,103 @@ Item {
                 }
             }
             Rectangle {
+                visible: !manual.compact
                 Layout.fillHeight: true
                 implicitWidth: 1
                 color: theme.border
             }
             ColumnLayout {
                 Layout.preferredWidth: 300
-                Layout.maximumWidth: 320
+                Layout.maximumWidth: manual.compact ? Infinity : 320
+                Layout.fillWidth: manual.compact
                 Layout.fillHeight: true
-                visible: !!manual.panel.project.id
-                Caption {
-                    objectName: "projectName"
-                    text: manual.panel.project.name || ""
-                    font.pixelSize: theme.panelTitle
-                    wrapMode: Text.Wrap
-                    Layout.fillWidth: true
-                }
-                Caption {
-                    text: manual.panel.project.root_path || ""
-                    color: theme.muted
-                    elide: Text.ElideMiddle
-                    Layout.fillWidth: true
-                }
-                Caption {
-                    text: manual.panel.project.description || ""
-                    wrapMode: Text.Wrap
-                    maximumLineCount: 3
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                }
-                UI.StatusLabel {
-                    theme: manual.theme
-                    objectName: "pathWarning"
-                    text: qsTr("Path unavailable")
-                    visible: manual.panel.project.pathAvailable === false
-                    severity: "warning"
-                }
-                Caption {
-                    text: qsTr("Archived — read-only")
-                    visible: !!manual.panel.project.archived
-                    color: theme.warning
-                }
-                RowLayout {
-                    PanelButton {
-                        objectName: "editProjectButton"
-                        text: qsTr("Edit project")
-                        enabled: manual.panel.writable && !manual.panel.dirty && !manual.panel.project.archived
-                        onClicked: manual.panel.editProject(false)
-                    }
-                    PanelButton {
-                        objectName: "archiveButton"
-                        text: manual.panel.project.archived ? qsTr("Unarchive") : qsTr("Archive")
-                        kind: manual.panel.project.archived ? "secondary" : "destructive"
-                        enabled: manual.panel.canArchive
-                        onClicked: manual.panel.archive()
-                    }
-                }
-                PanelButton {
-                    objectName: "createTaskButton"
-                    text: qsTr("Create task")
-                    kind: "primary"
-                    enabled: manual.panel.writable && !manual.panel.dirty && !manual.panel.project.archived
-                    onClicked: manual.panel.editTask(true)
-                }
+                visible: !!manual.panel.project.id && (!manual.compact || (manual.workspace.route !== "projects" && !manual.detailPage))
                 ListView {
                     id: taskList
                     objectName: "taskList"
+                    onVisibleChanged: {
+                        if (visible)
+                            Qt.callLater(positionViewAtBeginning);
+                    }
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
                     model: manual.panel.tasks
                     spacing: theme.space1
+                    ScrollBar.vertical: ScrollBar {}
+                    header: ColumnLayout {
+                        width: taskList.width
+                        spacing: theme.space3
+                        PanelButton {
+                            objectName: "manualShowDetailsButton"
+                            visible: manual.compact && !!manual.panel.task.id
+                            text: qsTr("Task details")
+                            onClicked: manual.workspace.showManualDetails()
+                        }
+                        Caption {
+                            objectName: "projectName"
+                            text: manual.panel.project.name || ""
+                            maximumLineCount: 2
+                            elide: Text.ElideRight
+                            font.pixelSize: theme.panelTitle
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true
+                        }
+                        Caption {
+                            text: manual.panel.project.root_path || ""
+                            color: theme.muted
+                            elide: Text.ElideMiddle
+                            Layout.fillWidth: true
+                        }
+                        Caption {
+                            text: manual.panel.project.description || ""
+                            wrapMode: Text.Wrap
+                            maximumLineCount: 3
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
+                        UI.StatusLabel {
+                            theme: manual.theme
+                            objectName: "pathWarning"
+                            text: qsTr("Path unavailable")
+                            visible: manual.panel.project.pathAvailable === false
+                            severity: "warning"
+                        }
+                        Caption {
+                            text: qsTr("Archived — read-only")
+                            visible: !!manual.panel.project.archived
+                            color: theme.warning
+                        }
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: theme.space2
+                            PanelButton {
+                                objectName: "editProjectButton"
+                                text: qsTr("Edit project")
+                                enabled: manual.panel.writable && !manual.panel.dirty && !manual.panel.project.archived
+                                onClicked: manual.panel.editProject(false)
+                            }
+                            PanelButton {
+                                objectName: "archiveButton"
+                                text: manual.panel.project.archived ? qsTr("Unarchive") : qsTr("Archive")
+                                kind: manual.panel.project.archived ? "secondary" : "destructive"
+                                enabled: manual.panel.canArchive
+                                onClicked: manual.panel.archive()
+                            }
+                        }
+                        PanelButton {
+                            objectName: "createTaskButton"
+                            text: qsTr("Create task")
+                            kind: "primary"
+                            enabled: manual.panel.writable && !manual.panel.dirty && !manual.panel.project.archived
+                            onClicked: manual.panel.editTask(true)
+                        }
+                    }
                     delegate: ItemDelegate {
                         id: taskRow
                         required property var modelData
                         width: taskList.width
-                        height: taskRow.modelData.sectionStart ? 116 : 92
+                        height: Math.max(taskRow.modelData.sectionStart ? 116 : 92, contentItem.implicitHeight + 16)
                         padding: theme.space2
                         objectName: "task_" + taskRow.modelData.id
                         highlighted: manual.panel.task.id === taskRow.modelData.id
@@ -287,7 +354,9 @@ Item {
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
                             }
-                            RowLayout {
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: theme.space1
                                 visible: taskRow.modelData.state === "backlog" || taskRow.modelData.state === "queued"
                                 enabled: manual.panel.writable && !manual.panel.project.archived
                                 PanelButton {
@@ -318,20 +387,28 @@ Item {
                 }
             }
             Rectangle {
-                visible: !!manual.panel.project.id
+                visible: !!manual.panel.project.id && !manual.compact
                 Layout.fillHeight: true
                 implicitWidth: 1
                 color: theme.border
             }
             ScrollView {
+                id: detailsScroll
                 objectName: "detailsScroll"
+                visible: !manual.compact || manual.panel.editorKind !== "" || (manual.workspace.route !== "projects" && manual.detailPage && !!manual.panel.project.id)
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 clip: true
                 contentWidth: availableWidth
                 ColumnLayout {
-                    width: parent.width
+                    width: detailsScroll.availableWidth
                     spacing: theme.space3
+                    PanelButton {
+                        objectName: "manualBackButton"
+                        visible: manual.compact && manual.panel.editorKind === ""
+                        text: qsTr("Back to tasks")
+                        onClicked: manual.workspace.showManualList()
+                    }
                     Caption {
                         text: manual.panel.editorKind === "project" ? qsTr("Project editor") : manual.panel.editorKind === "task" ? qsTr("Task editor") : qsTr("Task details")
                         visible: manual.panel.editorKind !== "" || !!manual.panel.task.id
@@ -346,6 +423,7 @@ Item {
                         UI.Field {
                             theme: manual.theme
                             objectName: "nameField"
+                            onActiveFocusChanged: manual.revealField(this, 0)
                             Layout.fillWidth: true
                             placeholderText: manual.panel.editorKind === "project" ? qsTr("Project name") : qsTr("Task title")
                             Accessible.name: placeholderText
@@ -359,6 +437,7 @@ Item {
                         UI.Field {
                             theme: manual.theme
                             objectName: "rootField"
+                            onActiveFocusChanged: manual.revealField(this, 0)
                             Layout.fillWidth: true
                             visible: manual.panel.editorKind === "project"
                             placeholderText: qsTr("Absolute project directory")
@@ -372,8 +451,10 @@ Item {
                         UI.LongText {
                             theme: manual.theme
                             objectName: "descriptionField"
+                            onActiveFocusChanged: manual.revealField(this, cursorRectangle.y)
+                            onCursorRectangleChanged: manual.revealField(this, cursorRectangle.y)
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 140
+                            Layout.preferredHeight: Math.max(140, implicitHeight)
                             placeholderText: qsTr("Description")
                             Accessible.name: placeholderText
                             text: manual.panel.editor.description || ""
@@ -389,9 +470,11 @@ Item {
                         UI.LongText {
                             theme: manual.theme
                             objectName: "criteriaField"
+                            onActiveFocusChanged: manual.revealField(this, cursorRectangle.y)
+                            onCursorRectangleChanged: manual.revealField(this, cursorRectangle.y)
                             visible: manual.panel.editorKind === "task"
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 140
+                            Layout.preferredHeight: Math.max(140, implicitHeight)
                             placeholderText: qsTr("Acceptance criteria")
                             Accessible.name: placeholderText
                             text: manual.panel.editor.acceptance_criteria || ""
@@ -400,7 +483,9 @@ Item {
                                     manual.panel.field("acceptance_criteria", text);
                             }
                         }
-                        RowLayout {
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: theme.space2
                             PanelButton {
                                 objectName: "saveButton"
                                 text: qsTr("Save")

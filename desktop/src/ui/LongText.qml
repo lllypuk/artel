@@ -18,6 +18,14 @@ TextArea {
     textFormat: TextEdit.PlainText
     wrapMode: TextEdit.Wrap
     selectByMouse: true
+    Keys.onTabPressed: event => {
+        nextItemInFocusChain(true).forceActiveFocus(Qt.TabFocusReason);
+        event.accepted = true;
+    }
+    Keys.onBacktabPressed: event => {
+        nextItemInFocusChain(false).forceActiveFocus(Qt.BacktabFocusReason);
+        event.accepted = true;
+    }
     background: Rectangle {
         color: control.theme.canvas
         radius: control.theme.radius

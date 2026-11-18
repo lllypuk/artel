@@ -1,9 +1,9 @@
 # Artel desktop design system — provisional native primitives
 
-Tasks 1–5 of the desktop redesign, 2026-11-18. This describes implemented reusable
-primitives, the team-first shell, observer inspector, connection management and
-manual workspace, not a completed redesign. The narrow/scaled application matrix
-and full package acceptance follow in later tasks. Mode: Operate,
+Tasks 1–6 of the desktop redesign, 2026-11-18. This describes implemented reusable
+primitives, the team-first shell, observer inspector, connection management,
+manual workspace and narrow/scaled hardening, not a completed redesign. Full
+native full-stack/package acceptance and final documentation follow in later tasks. Mode: Operate,
 native Qt Quick, canon direction with Zed-quality hierarchy/density rather than
 editor imitation.
 
@@ -291,3 +291,82 @@ Full-stack observer Pi1.5.2/Node22.23.2 recovery and intentional-failure owned-p
 cleanup pass. Standalone capture rerun from a private cwd/HOME also passes.
 Only private fixtures were used; owner daemon/data/token/settings, real sessions,
 API/store contracts and network owners are untouched.
+
+## Compact layout and large-content hardening (Task 6)
+
+Below 1050 logical content units (excluding navigation), or above an 18-unit UI
+body font, Team switches between its roster and same-window inspector. Back to
+team clears only the observer selection. Manual projects, task list and details
+occupy separate same-window surfaces; Back to tasks retains task identity, and
+Task details reopens it. WorkspaceController owns the manual detail selection;
+any editor stays visible on the compact manual surface and returning from Team
+restores that editor, never an independently copied draft. The minimum window
+remains 1000×680. Wide, normal-font surfaces retain their split layout.
+
+Task-list project headers and connection-management headings are inside their
+virtualized ListViews, so long text/large fonts cannot consume all row space.
+The task header starts at the beginning on showing the list. Inspector metadata
+and manual editors scroll; long description/criteria fields grow with content,
+not paint outside a fixed-height box. Visible field labels remain above inputs.
+Tab/Backtab leave long-text fields; focus reveals the relevant field/caret/action
+in manual details, team inspector and connections. No infinite animation is used.
+Long navigation/project headings may elide; full observer/project labels remain
+copyable in inspector metadata and project editor. Critical action labels never
+elide. Buttons measure an independent unwrapped native Text label and account
+for actual horizontal padding, avoiding Basic-style short-action wrapping.
+
+TeamOverviewModel updates changed identity ranges with row insert/remove signals,
+preserving unchanged prefix/suffix identities and avoiding asynchronous-delegate
+reset cancellation during rapid filtering. Same-identity snapshot/clock refreshes
+use dataChanged, not a new delegate tree. Selection still uses observer/runtime IDs,
+not row indices; no requests or freshness extension come from presentation ticks.
+
+### Native matrix and provenance
+
+responsiveNativeMatrix loads production qrc Main.qml and real C++ presentation
+owners, backed only by an ephemeral fictional HTTP fixture, private HOME/XDG and
+no real agterm/Pi/settings. All 24 combinations of 1000×680, 1280×820, 1440×900;
+EN/RU; and UI fonts 14/21/28/32 logical units pass. Each tests 0/1/12/256 observers,
+eight runtimes each, duplicate 128-unit-bound Cyrillic/non-BMP labels, 41 projects,
+long paths/descriptions/criteria, no matches, offline cached fallback/recovery,
+stable selection/back, retained dirty editor, hidden Save/Escape, Tab/Backtab,
+accessible action names and white/black accent selection/focus contrast. Geometry
+assertions include every clipping ancestor, not just the outer window. Management
+Prune focus is revealed below long headers without dispatching a mutation. The
+256-observer fixture has a bounded visible delegate count, not 2048 QML subtrees.
+
+The whole test is rerun with QT_SCALE_FACTOR=1, 1.5 and 2 (actual offscreen device
+pixel ratios, not a resize of a screenshot): 72 test rows / 288 roster cases.
+NativePrimitives additionally retains its independent ≥4.5 text/≥3 focus contrast,
+bright/dark accent, radius and keyboard checks. No host settings are changed.
+
+84 final native PNGs were opened in three contact sheets, with additional full-size
+inspection of long task-header and management renders. The complete capture naming
+scheme under docs/screenshots is:
+
+layout-dpi{1,1.5,2}-{1000-en-font14,1000-ru-font14,1280-ru-font28,1440-en-font21}-{connections,editor,inspector,projects,tasks,team,workspace}.png
+
+Each DPI has the same four layout/language/font rows and seven states. These links
+sample the inspected matrix, not substitute HTML or historical screenshots:
+
+| Device scale | Narrow team | Long task header | Dirty editor | Connections |
+| --- | --- | --- | --- | --- |
+| 100% | [EN1000](docs/screenshots/layout-dpi1-1000-en-font14-team.png) | [RU1280/font28](docs/screenshots/layout-dpi1-1280-ru-font28-tasks.png) | [RU1000](docs/screenshots/layout-dpi1-1000-ru-font14-editor.png) | [EN1440/font21](docs/screenshots/layout-dpi1-1440-en-font21-connections.png) |
+| 150% | [EN1000](docs/screenshots/layout-dpi1.5-1000-en-font14-team.png) | [RU1280/font28](docs/screenshots/layout-dpi1.5-1280-ru-font28-tasks.png) | [RU1000](docs/screenshots/layout-dpi1.5-1000-ru-font14-editor.png) | [EN1440/font21](docs/screenshots/layout-dpi1.5-1440-en-font21-connections.png) |
+| 200% | [EN1000](docs/screenshots/layout-dpi2-1000-en-font14-team.png) | [RU1280/font28](docs/screenshots/layout-dpi2-1280-ru-font28-tasks.png) | [RU1000](docs/screenshots/layout-dpi2-1000-ru-font14-editor.png) | [EN1440/font21](docs/screenshots/layout-dpi2-1440-en-font21-connections.png) |
+
+Review corrected short-action wrapping, header clipping/scroll-origin handling,
+large-text overflow and premature captures during the existing drawer transition.
+At larger fonts headers/metadata intentionally require scrolling; ordinary details
+stay in the same window and the explicit Back remains available at the top. This
+is automated offscreen Qt/software mouse/keyboard/accessibility-interface evidence,
+not a physical monitor/compositor or screen-reader certification. No real user
+services/sessions, current system theme or data were read or modified.
+
+Reproduce using the private-HOME invocation above with selector
+responsiveNativeMatrix, QT_SCALE_FACTOR=1 (then 1.5 and 2), and
+ARTEL_LAYOUT_SCREENSHOT="$ROOT/docs/screenshots/layout-dpi1" (matching each scale).
+All 24 rows execute even when no capture prefix is supplied. Task6 gates:
+make lint test build and make observer-check PASS; Qt86+32, qmllint zero warnings,
+Go1.26.3/golangci-lint2.10.1/Qt6.12.0/clang-format23.1.3/Pi1.5.2/Node22.23.2.
+Final full-stack/package acceptance remains Task7; no such completion is claimed.

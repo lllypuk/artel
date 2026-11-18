@@ -5,6 +5,7 @@
 #include "panel.h"
 #include "uifixture.h"
 #include "workspacecontroller.h"
+#include <QAccessible>
 #include <QFile>
 #include <QFileInfo>
 #include <QInputMethodEvent>
@@ -950,6 +951,311 @@ private slots:
     QVERIFY(item(window, "createProjectButton")->isVisible());
     QVERIFY(!panel.observers()->active());
     QVERIFY(fixture.mutations.isEmpty());
+  }
+  void responsiveNativeMatrix_data() {
+    QTest::addColumn<QSize>("size");
+    QTest::addColumn<QString>("language");
+    QTest::addColumn<int>("fontSize");
+    for (const auto size :
+         {QSize(1000, 680), QSize(1280, 820), QSize(1440, 900)})
+      for (const auto &language : {QString("en"), QString("ru")})
+        for (const int fontSize : {14, 21, 28, 32})
+          QTest::newRow(qPrintable(QString("%1-%2-font%3")
+                                       .arg(size.width())
+                                       .arg(language)
+                                       .arg(fontSize)))
+              << size << language << fontSize;
+  }
+  void responsiveNativeMatrix() {
+    QFETCH(QSize, size);
+    QFETCH(QString, language);
+    QFETCH(int, fontSize);
+    ObserverFixture fixture;
+    auto prototype = fixture.record();
+    prototype.insert("binding", QJsonObject{{"runtime_id", fixture.runtime},
+                                            {"project_id", fixture.project}});
+    auto runtimes = prototype.value("runtimes").toArray();
+    auto bound = runtimes.first().toObject();
+    bound.insert("disposition", "bound");
+    bound.insert("last_seen",
+                 QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+    runtimes[0] = bound;
+    // A full candidate set still represents only one team member.
+    while (runtimes.size() < 8) {
+      auto candidate = runtimes.last().toObject();
+      auto registration = candidate.value("registration").toObject();
+      registration.insert("runtime_id",
+                          QString("%1-7777-4777-8777-777777777777")
+                              .arg(runtimes.size(), 8, 10, QChar('0')));
+      candidate.insert("registration", registration);
+      runtimes.append(candidate);
+    }
+    auto snapshot = QJsonDocument::fromJson(fixture.state).object();
+    auto project = snapshot.value("projects").toArray().first().toObject();
+    project.insert("name",
+                   QString::fromUtf8("Очень длинный проект 😀 / ").repeated(5));
+    project.insert("root_path",
+                   "/fictional/" + QString("long-path/").repeated(30));
+    project.insert("description",
+                   QString::fromUtf8("Описание проекта / ").repeated(25));
+    QJsonArray projects{project};
+    for (int i = 0; i < 40; ++i) {
+      auto other = project;
+      other.insert("id", QString("%1-2222-4222-8222-222222222222")
+                             .arg(i + 20, 8, 10, QChar('0')));
+      projects.append(other);
+    }
+    snapshot.insert("projects", projects);
+    fixture.state = QJsonDocument(snapshot).toJson();
+    prototype.insert("runtimes", runtimes);
+    prototype.insert("label",
+                     QString::fromUtf8("Длинное имя 😀 / ").repeated(7));
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    writeFile(fixture.directory.filePath("language"), language.toUtf8());
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QCoreApplication::installTranslator(&appearance);
+    const auto translatorGuard =
+        qScopeGuard([&] { QCoreApplication::removeTranslator(&appearance); });
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance, false);
+    QVERIFY(window);
+    window->resize(size);
+    QFont font;
+    font.setPixelSize(fontSize);
+    for (const auto *name : {"appTheme", "manualTheme"}) {
+      auto *theme = window->findChild<QObject *>(name);
+      QVERIFY(theme);
+      QVERIFY(theme->setProperty("systemFont", font));
+    }
+    auto *workspace =
+        window->property("workspace").value<WorkspaceController *>();
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    auto fits = [&](const char *name) {
+      auto *control = item(window, name);
+      if (!control || !control->isVisible() || control->width() <= 0 ||
+          control->height() <= 0)
+        return false;
+      const auto rect = control->mapRectToScene(control->boundingRect());
+      for (auto *parent = control->parentItem(); parent;
+           parent = parent->parentItem()) {
+        if (!parent->clip())
+          continue;
+        const auto clip = parent->mapRectToScene(parent->boundingRect())
+                              .adjusted(-1, -1, 1, 1);
+        if (!clip.contains(rect))
+          return false;
+      }
+      return rect.left() >= -1 && rect.top() >= -1 &&
+             rect.right() <= window->width() + 1 &&
+             rect.bottom() <= window->height() + 1;
+    };
+    auto reveal = [&](const char *scrollName, const char *controlName) {
+      auto *scroll = item(window, scrollName);
+      auto *control = item(window, controlName);
+      if (!scroll || !control)
+        return false;
+      auto *flick = scroll->property("contentY").isValid()
+                        ? scroll
+                        : scroll->property("contentItem").value<QQuickItem *>();
+      if (!flick)
+        return false;
+      const auto offset = control->mapToScene(QPointF()).y() -
+                          scroll->mapToScene(QPointF()).y();
+      const auto *header = flick->property("headerItem").value<QQuickItem *>();
+      const double minimum = header ? header->y() : 0.0;
+      const auto maximum = std::max(
+          minimum, minimum + flick->property("contentHeight").toDouble() -
+                       flick->height());
+      flick->setProperty(
+          "contentY",
+          std::clamp(flick->property("contentY").toDouble() + offset - 8,
+                     minimum, maximum));
+      return true;
+    };
+    const auto prefix = qEnvironmentVariable("ARTEL_LAYOUT_SCREENSHOT");
+    const bool captureRow =
+        (size.width() == 1000 && fontSize == 14) ||
+        (size.width() == 1280 && fontSize == 28 && language == "ru") ||
+        (size.width() == 1440 && fontSize == 21 && language == "en");
+    auto capture = [&](const QString &state) {
+      if (prefix.isEmpty() || !captureRow)
+        return true;
+      const auto filename = prefix + "-" +
+                            QString::fromLatin1(QTest::currentDataTag()) + "-" +
+                            state + ".png";
+      return window->grabWindow().save(filename);
+    };
+    for (const int count : {0, 1, 12, 256}) {
+      QJsonArray records;
+      for (int i = 0; i < count; ++i) {
+        auto record = prototype;
+        record.insert("observer_id", QString("%1-4444-4444-8444-444444444444")
+                                         .arg(i + 10, 8, 10, QChar('0')));
+        records.append(record);
+      }
+      fixture.registry.insert("observers", records);
+      panel.observers()->reload();
+      QTRY_VERIFY(panel.observers()->online());
+      QTRY_COMPARE(workspace->team()->total(), count);
+      QTest::qWait(25);
+      for (const auto *name : {"teamNavButton", "projectsNavButton",
+                               "connectionsNavButton", "teamConnectionsButton",
+                               "teamList", "teamFooter", "teamActivityFilter"})
+        QVERIFY2(fits(name), name);
+      workspace->team()->setSearch("absent-result");
+      QCOMPARE(workspace->team()->shown(), 0);
+      QTRY_VERIFY(item(window, "teamEmptyState")->isVisible());
+      workspace->team()->setSearch("");
+      if (count == 256) {
+        // Virtualization: no subtree for every runtime/observer, even with 8
+        // each.
+        QVERIFY(item(window, "teamList")
+                    ->childItems()
+                    .first()
+                    ->childItems()
+                    .size() < 80);
+        QVERIFY(capture("team"));
+      }
+    }
+    QVERIFY(click(window, "teamMember_00000010-4444-4444-8444-444444444444"));
+    QTest::qWait(30);
+    const bool compact =
+        item(window, "teamOverview")->property("compact").toBool();
+    if (compact) {
+      QVERIFY(!item(window, "teamList")->isVisible());
+      QVERIFY(fits("teamBackButton"));
+      auto *backLabel = item(window, "teamBackButton")
+                            ->property("contentItem")
+                            .value<QQuickItem *>();
+      QVERIFY(backLabel);
+      QCOMPARE(backLabel->property("lineCount").toInt(), 1);
+      item(window, "teamBackButton")->forceActiveFocus(Qt::TabFocusReason);
+      QTest::keyClick(window, Qt::Key_Space);
+      QTRY_VERIFY(item(window, "teamList")->isVisible());
+      QVERIFY(click(window, "teamMember_00000010-4444-4444-8444-444444444444"));
+    }
+    QVERIFY(reveal("teamInspectorScroll", "teamOpenProjectButton"));
+    QTest::qWait(30);
+    QVERIFY(fits("teamOpenProjectButton"));
+    QVERIFY(capture("inspector"));
+    // Light/dark private accent inputs preserve selected and focus contrast.
+    auto *theme = window->findChild<QObject *>("appTheme");
+    for (const auto &accent : {QString("#ffffff"), QString("#000000")}) {
+      theme->setProperty("accentInput", accent);
+      auto *button = item(window, "teamNavButton");
+      button->forceActiveFocus(Qt::TabFocusReason);
+      QVERIFY(button->hasActiveFocus());
+      auto *accessible = QAccessible::queryAccessibleInterface(button);
+      QVERIFY(accessible);
+      QVERIFY(!accessible->text(QAccessible::Name).isEmpty());
+      const QColor foreground = button->property("foreground").value<QColor>();
+      const QColor surface = button->property("surface").value<QColor>();
+      auto luminance = [](QColor c) {
+        auto linear = [](double v) {
+          return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+        };
+        return .2126 * linear(c.redF()) + .7152 * linear(c.greenF()) +
+               .0722 * linear(c.blueF());
+      };
+      const auto a = luminance(foreground), b = luminance(surface);
+      QVERIFY((std::max(a, b) + .05) / (std::min(a, b) + .05) >= 4.5);
+      QCOMPARE(button->property("focusColor").value<QColor>(), foreground);
+    }
+    theme->setProperty("accentInput", "#a8c7fa");
+    // Cached fallback stays explicit and does not collapse the full roster.
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/observers "))
+        UiFixture::respond(socket, 503, "{}");
+      else
+        fixture.normal(socket, request);
+    };
+    panel.observers()->reload();
+    QTRY_VERIFY(!panel.observers()->online());
+    QVERIFY(workspace->team()->cached());
+    QCOMPARE(workspace->team()->total(), 256);
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      fixture.observation(socket, request);
+    };
+    panel.observers()->reload();
+    QTRY_VERIFY(panel.observers()->online());
+    workspace->showProjects();
+    QTest::qWait(30);
+    QVERIFY(fits("createProjectButton"));
+    QVERIFY(capture("projects"));
+    QVERIFY(workspace->openProject(fixture.project));
+    workspace->showManualList();
+    QTest::qWait(30);
+    QVERIFY(reveal("taskList", "createTaskButton"));
+    QTest::qWait(30);
+    QVERIFY(fits("createTaskButton"));
+    QVERIFY(capture("tasks"));
+    QVERIFY(panel.selectTask(fixture.task));
+    QTest::qWait(30);
+    QVERIFY(reveal("detailsScroll", "editTaskButton"));
+    QTest::qWait(30);
+    QVERIFY(fits("editTaskButton"));
+    QVERIFY(capture("workspace"));
+    if (compact) {
+      QVERIFY(reveal("detailsScroll", "manualBackButton"));
+      QTest::qWait(20);
+      QVERIFY(click(window, "manualBackButton"));
+      QTest::qWait(20);
+      QVERIFY(fits("taskList"));
+      QCOMPARE(panel.task().value("id").toString(), fixture.task);
+      QVERIFY(click(window, "manualShowDetailsButton"));
+    }
+    panel.editTask(false);
+    QTest::qWait(30);
+    QVERIFY(enter(window, "descriptionField",
+                  QString::fromUtf8("Long plain text <b>Кириллица 😀</b>\n")
+                      .repeated(40)));
+    QVERIFY(enter(window, "criteriaField",
+                  QString::fromUtf8("Критерий 😀 / ").repeated(120)));
+    QTest::qWait(30);
+    const auto draft = panel.editor();
+    QVERIFY(reveal("detailsScroll", "saveButton"));
+    QTest::qWait(30);
+    QVERIFY(fits("saveButton"));
+    QVERIFY(fits("discardButton"));
+    // Tab/Backtab must reveal the focused field/action without mouse scrolling.
+    item(window, "saveButton")->forceActiveFocus(Qt::TabFocusReason);
+    QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+    QTRY_VERIFY(item(window, "criteriaField")->hasActiveFocus());
+    QTest::keyClick(window, Qt::Key_Tab);
+    QTRY_VERIFY(item(window, "saveButton")->hasActiveFocus());
+    QVERIFY(fits("saveButton"));
+    QVERIFY(capture("editor"));
+    QVERIFY(click(window, "teamNavButton"));
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTest::keyClick(window, Qt::Key_Escape);
+    QCOMPARE(panel.editor(), draft);
+    QVERIFY(click(window, "returnToEditorButton"));
+    QCOMPARE(panel.editor(), draft);
+    // Connections remain independent of the long dirty editor.
+    QVERIFY(click(window, "connectionsNavButton"));
+    QTRY_VERIFY(panel.observers()->online());
+    QTest::qWait(300);
+    QVERIFY(capture("connections"));
+    // Keyboard focus reveals management actions below long metadata/header.
+    const auto pruneName = ("observerPrune_" + fixture.runtime).toUtf8();
+    auto *prune = item(window, QString::fromUtf8(pruneName));
+    QVERIFY(prune);
+    prune->forceActiveFocus(Qt::TabFocusReason);
+    QTest::qWait(30);
+    QVERIFY(fits(pruneName.constData()));
+    const auto pruneRect = prune->mapRectToScene(prune->boundingRect());
+    auto *management = item(window, "observerPanel");
+    const auto panelRect =
+        management->mapRectToScene(management->boundingRect());
+    QVERIFY(pruneRect.left() >= panelRect.left());
+    QVERIFY(pruneRect.right() <= panelRect.right());
+    QCOMPARE(panel.editor(), draft);
+    QVERIFY(fixture.mutations.isEmpty());
+    client.stop();
   }
   void teamOverviewScreenshots() {
     ObserverFixture fixture;
@@ -1962,7 +2268,10 @@ private slots:
              QString("Учебный проект"));
     QStringList ids;
     for (int i = 0; i < 3; ++i) {
+      QTest::qWait(
+          30); // ListView header geometry follows the selected project.
       QVERIFY(click(window, "createTaskButton"));
+      QTRY_COMPARE(panel.editorKind(), QString("task"));
       QVERIFY(enter(window, "nameField", QString("Задача %1").arg(i + 1)));
       QVERIFY(enter(window, "criteriaField", "Кириллица: проверка приёмки"));
       QVERIFY(click(window, "saveButton"));

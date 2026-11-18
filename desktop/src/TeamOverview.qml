@@ -14,7 +14,20 @@ Item {
     required property var projects
     readonly property TeamOverviewModel team: workspace.team
     readonly property var selected: workspace.selectedObserver
+    readonly property bool compact: width < 1050 || theme.body > 18
+    readonly property bool inspecting: compact && !!selected.observer_id
     signal openConnections
+    readonly property var inspectorViewport: inspectorScroll.contentItem
+    function revealControl(control: Item) {
+        if (!visible || !control.activeFocus || !inspectorViewport || !inspectorViewport.contentItem)
+            return;
+        const top = control.mapToItem(inspectorViewport.contentItem, 0, 0).y;
+        const bottom = top + Math.min(control.height, overview.theme.controlHeight);
+        if (top < inspectorViewport.contentY)
+            inspectorViewport.contentY = Math.max(0, top - 8);
+        else if (bottom > inspectorViewport.contentY + inspectorViewport.height)
+            inspectorViewport.contentY = Math.min(inspectorViewport.contentHeight - inspectorViewport.height, bottom - inspectorViewport.height);
+    }
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 24
@@ -46,12 +59,15 @@ Item {
             objectName: "teamFilterBar"
             theme: overview.theme
             Layout.fillWidth: true
+            visible: !overview.inspecting
             label: qsTr("Search team or project")
             onTextEdited: overview.team.search = text
         }
         RowLayout {
             Layout.fillWidth: true
+            visible: !overview.inspecting
             Label {
+                visible: !overview.compact
                 text: qsTr("Project")
                 color: overview.theme.muted
             }
@@ -71,6 +87,7 @@ Item {
                 onActivated: overview.team.projectId = currentValue
             }
             Label {
+                visible: !overview.compact
                 text: qsTr("Activity / freshness")
                 color: overview.theme.muted
             }
@@ -87,6 +104,8 @@ Item {
             Layout.fillHeight: true
             spacing: 24
             ColumnLayout {
+                visible: !overview.inspecting
+                Layout.minimumWidth: 0
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 spacing: 0
@@ -138,6 +157,8 @@ Item {
                                     text: member.record.status_text
                                     color: member.record.status === "unknown" || member.record.status === "inconsistent" ? overview.theme.warning : overview.theme.text
                                     font.pixelSize: overview.theme.secondary
+                                    wrapMode: Text.Wrap
+                                    Layout.maximumWidth: roster.width * 0.55
                                 }
                             }
                             RowLayout {
@@ -168,21 +189,32 @@ Item {
                 }
             }
             Rectangle {
+                visible: !overview.compact
                 implicitWidth: 1
                 Layout.fillHeight: true
                 color: overview.theme.border
             }
             ScrollView {
                 id: inspectorScroll
+                objectName: "teamInspectorScroll"
+                visible: !overview.compact || overview.inspecting
                 Layout.preferredWidth: 280
-                Layout.maximumWidth: 280
-                Layout.fillWidth: false
+                Layout.maximumWidth: overview.compact ? Infinity : 320
+                Layout.fillWidth: overview.compact
                 Layout.fillHeight: true
                 contentWidth: availableWidth
                 clip: true
                 ColumnLayout {
                     width: inspectorScroll.availableWidth
                     spacing: 12
+                    UI.ActionButton {
+                        objectName: "teamBackButton"
+                        onActiveFocusChanged: overview.revealControl(this)
+                        visible: overview.compact
+                        theme: overview.theme
+                        text: qsTr("Back to team")
+                        onClicked: overview.workspace.clearObserver()
+                    }
                     Label {
                         text: qsTr("Observer details")
                         color: overview.theme.text
@@ -198,6 +230,8 @@ Item {
                     Label {
                         visible: !!overview.selected.observer_id
                         text: overview.selected.label || ""
+                        maximumLineCount: 2
+                        elide: Text.ElideRight
                         textFormat: Text.PlainText
                         color: overview.theme.text
                         font.pixelSize: overview.theme.panelTitle
@@ -213,6 +247,8 @@ Item {
                     Label {
                         visible: !!overview.selected.observer_id
                         text: overview.selected.project_name || ""
+                        maximumLineCount: 2
+                        elide: Text.ElideRight
                         textFormat: Text.PlainText
                         color: overview.theme.muted
                         wrapMode: Text.Wrap
@@ -220,6 +256,7 @@ Item {
                     }
                     UI.ActionButton {
                         objectName: "teamOpenProjectButton"
+                        onActiveFocusChanged: overview.revealControl(this)
                         visible: !!overview.selected.observer_id
                         theme: overview.theme
                         text: qsTr("Open project")
@@ -236,6 +273,7 @@ Item {
                     }
                     UI.ActionButton {
                         objectName: "teamOpenSessionButton"
+                        onActiveFocusChanged: overview.revealControl(this)
                         visible: !!overview.selected.observer_id
                         theme: overview.theme
                         text: qsTr("Open declared agterm session")
@@ -258,10 +296,11 @@ Item {
                     }
                     UI.LongText {
                         objectName: "teamObserverMetadata"
+                        onActiveFocusChanged: overview.revealControl(this)
                         visible: !!overview.selected.observer_id
                         theme: overview.theme
                         readOnly: true
-                        text: qsTr("Last seen: %1\nAge: %2\nLast reported activity (not current): %3\nProvider / model: %4 / %5\nPi / bridge: %6 / %7\nObserver: %8\nRuntime: %9\nVersion: %10").arg(overview.selected.last_seen || "—").arg(overview.selected.age_text || "—").arg(overview.selected.last_activity_text || "—").arg(overview.selected.provider || "—").arg(overview.selected.model || "—").arg(overview.selected.pi_version || "—").arg(overview.selected.bridge_version || "—").arg(overview.selected.observer_id || "—").arg(overview.selected.runtime_id || "—").arg(overview.selected.version || "—")
+                        text: (overview.selected.label || "") + "\n" + (overview.selected.project_name || "") + "\n\n" + qsTr("Last seen: %1\nAge: %2\nLast reported activity (not current): %3\nProvider / model: %4 / %5\nPi / bridge: %6 / %7\nObserver: %8\nRuntime: %9\nVersion: %10").arg(overview.selected.last_seen || "—").arg(overview.selected.age_text || "—").arg(overview.selected.last_activity_text || "—").arg(overview.selected.provider || "—").arg(overview.selected.model || "—").arg(overview.selected.pi_version || "—").arg(overview.selected.bridge_version || "—").arg(overview.selected.observer_id || "—").arg(overview.selected.runtime_id || "—").arg(overview.selected.version || "—")
                         Accessible.name: qsTr("Connection metadata")
                         wrapMode: Text.Wrap
                         Layout.fillWidth: true

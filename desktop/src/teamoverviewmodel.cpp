@@ -137,19 +137,40 @@ void TeamOverviewModel::rebuild() {
       continue;
     rows.append(row);
   }
-  const bool changedRows = rows != m_rows;
-  if (changedRows)
-    beginResetModel();
   m_current = current;
   m_all = all;
-  m_rows = rows;
   m_unbound = unbound;
   m_counts = counts;
-  if (changedRows)
-    endResetModel();
-  else if (!m_rows.isEmpty())
-    // The same sanitized data can have new presentation labels after a live
-    // language change. Notify delegates without resetting stable selection.
+  // Preserve unchanged identities and avoid resetting an asynchronously
+  // incubating ListView on every search keystroke or snapshot heartbeat.
+  const auto sameIdentity = [](const QVariant &a, const QVariant &b) {
+    const auto x = a.toMap(), y = b.toMap();
+    return x.value("observer_id") == y.value("observer_id") &&
+           x.value("runtime_id") == y.value("runtime_id");
+  };
+  int prefix = 0, suffix = 0;
+  while (prefix < m_rows.size() && prefix < rows.size() &&
+         sameIdentity(m_rows[prefix], rows[prefix]))
+    ++prefix;
+  while (suffix < m_rows.size() - prefix && suffix < rows.size() - prefix &&
+         sameIdentity(m_rows[m_rows.size() - 1 - suffix],
+                      rows[rows.size() - 1 - suffix]))
+    ++suffix;
+  const int removed = m_rows.size() - prefix - suffix;
+  if (removed) {
+    beginRemoveRows({}, prefix, prefix + removed - 1);
+    m_rows.remove(prefix, removed);
+    endRemoveRows();
+  }
+  const int inserted = rows.size() - prefix - suffix;
+  if (inserted) {
+    beginInsertRows({}, prefix, prefix + inserted - 1);
+    for (int i = 0; i < inserted; ++i)
+      m_rows.insert(prefix + i, rows[prefix + i]);
+    endInsertRows();
+  }
+  m_rows = rows;
+  if (!m_rows.isEmpty())
     emit dataChanged(index(0), index(m_rows.size() - 1));
   emit changed();
 }
