@@ -14,4 +14,4 @@
 *.token
 /.ralphex/
 __pycache__/
-.revmux/tasks/feat-artel-v2-foundation-desktop/
+.revmux/
