@@ -2313,6 +2313,53 @@ private slots:
       QVERIFY(window->grabWindow().save(path + ".ru.png"));
     QCoreApplication::removeTranslator(&appearance);
   }
+  void observerPruneDisabledOnLegacyDaemon() {
+    ObserverFixture fixture;
+    auto record = fixture.record();
+    auto runtimes = record.value("runtimes").toArray();
+    for (int i = 0; i < runtimes.size(); ++i) {
+      auto runtime = runtimes[i].toObject();
+      runtime.remove("prune_eligible");
+      runtimes[i] = runtime;
+    }
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("POST /v1/observers/") &&
+          request.contains("/prune ")) {
+        const auto body = QJsonDocument::fromJson(
+                              request.mid(request.indexOf("\r\n\r\n") + 4))
+                              .object();
+        // The legacy endpoint would accept a version-only prune.
+        const bool legacy = body == QJsonObject{{"expected_version", 1}};
+        UiFixture::respond(socket, legacy ? 200 : 400,
+                           legacy ? "{\"version\":2,\"pruned_count\":2}"
+                                  : "{\"code\":\"invalid_request\"}");
+      } else {
+        fixture.observation(socket, request);
+      }
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance, false);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    auto *o = panel.observers();
+    QTRY_VERIFY(o->online());
+    QVERIFY(click(window, "teamConnectionsButton"));
+    QTRY_COMPARE(o->rows().size(), 2);
+    const auto pruneName = "observerPrune_" + fixture.runtime;
+    QTRY_VERIFY(item(window, pruneName));
+    QVERIFY(!item(window, pruneName)->isEnabled());
+    QVERIFY(!o->prepare("prune", fixture.observer, fixture.runtime));
+    QVERIFY(o->confirmation().isEmpty());
+    QVERIFY(fixture.mutations.isEmpty());
+  }
   void observerPruneConfirmsUnfilteredSetAndRejectsRaces() {
     ObserverFixture fixture;
     const auto initial = fixture.record();

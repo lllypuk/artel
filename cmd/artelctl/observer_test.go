@@ -108,6 +108,59 @@ func TestObserverCLIProcessProvisionResume(t *testing.T) {
 	assertCanonicalProvision(t, keys, payloads, pending, initialAttempts+2)
 }
 
+func TestObserverCLIPruneDoesNotDowngrade(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "owner", "token")
+	if _, err := local.InitToken(tokenPath); err != nil {
+		t.Fatal(err)
+	}
+	id, runtime := uuid.NewString(), uuid.NewString()
+	var requests, exact, legacyAccepted atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/observers/"+id+"/prune" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var legacy struct {
+			ExpectedVersion int `json:"expected_version"`
+		}
+		var payload struct {
+			ExpectedVersion int      `json:"expected_version"`
+			RuntimeIDs      []string `json:"expected_runtime_ids"`
+		}
+		var raw json.RawMessage
+		if json.NewDecoder(r.Body).Decode(&raw) != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if json.Unmarshal(raw, &payload) == nil && payload.ExpectedVersion == 3 && len(payload.RuntimeIDs) == 1 && payload.RuntimeIDs[0] == runtime {
+			exact.Add(1)
+		}
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&legacy) != nil || legacy.ExpectedVersion != 3 {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		// An older daemon would accept this unsafe downgrade.
+		legacyAccepted.Add(1)
+		_, _ = w.Write([]byte(`{"version":4,"pruned_count":1}`))
+	}))
+	defer server.Close()
+	args := []string{"observer", "prune", "--endpoint", server.URL, "--token-file", tokenPath, "--id", id, "--expected-version", "3"}
+	var out, diagnostic bytes.Buffer
+	if code := run(args, &out, &diagnostic); code != 2 || requests.Load() != 0 {
+		t.Fatalf("version-only invocation: exit=%d requests=%d", code, requests.Load())
+	}
+	diagnostic.Reset()
+	if code := run(append(args, "--runtime-id", runtime), &out, &diagnostic); code != 1 || !strings.Contains(diagnostic.String(), "API operation rejected") || out.Len() != 0 {
+		t.Fatalf("legacy rejection: exit=%d diagnostic=%s stdout=%s", code, diagnostic.String(), out.String())
+	}
+	if requests.Load() != 1 || exact.Load() != 1 || legacyAccepted.Load() != 0 {
+		t.Fatalf("requests=%d exact=%d legacy accepted=%d", requests.Load(), exact.Load(), legacyAccepted.Load())
+	}
+}
+
 func TestObserverCLIControls(t *testing.T) {
 	base := t.TempDir()
 	tokenPath := filepath.Join(base, "owner", "token")
