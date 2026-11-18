@@ -125,6 +125,23 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue(required <= package.PAYLOAD)
         self.assertIn('$(MAKE) observer-check', (ROOT / 'Makefile').read_text())
 
+    def test_local_pilot_pauses_only_remote_native_job(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        go, native = workflow.split('  native-full-stack:\n', 1)
+        self.assertIn('  go:\n', go)
+        self.assertNotIn('if: ${{ false }}', go)
+        self.assertIn('go test ./...', go)
+        self.assertIn('go test -race ./...', go)
+        self.assertIn('go build ./cmd/...', go)
+        self.assertIn('    if: ${{ false }}\n', native)
+        self.assertIn('make check', native)
+        self.assertIn('make package-check', native)
+        makefile = (ROOT / 'Makefile').read_text()
+        self.assertIn('$(MAKE) test-e2e', makefile)
+        self.assertIn('$(MAKE) observer-check', makefile)
+        self.assertIn('systemd-analyze', (ROOT / 'scripts/package-check').read_text())
+        self.assertIn('Re-enable the job', (ROOT / 'docs/development.md').read_text())
+
     def test_delivery_has_no_activation_hooks(self):
         recipe = (ROOT / "packaging/arch/PKGBUILD").read_text()
         self.assertNotIn("install=", recipe)

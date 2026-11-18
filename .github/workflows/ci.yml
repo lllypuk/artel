@@ -31,6 +31,10 @@ jobs:
           go build ./cmd/...
 
   native-full-stack:
+    # Owner decision 2026-11-18: pause remote native/package builds for the local
+    # pilot. Keep local make check/package-check mandatory. Re-enable once the
+    # container supports isolated systemd --user unit verification; see docs/development.md.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:

@@ -210,9 +210,21 @@ through the pinned public SDK with a deterministic local provider. Package-check
 source rather than stale HEAD and independently inspects payload/modes/ownership.
 The user service is foreground and independent of UI; no install/start hooks exist.
 
-CI defines Go and unprivileged Arch full-stack/package jobs. Local success or
-workflow YAML is not evidence of remote CI; any later publication needs exact-HEAD
-CI. This plan does not install packages, enable a service, merge, push main or deploy.
+CI keeps the Go lint/test/race/build job enabled. By explicit owner decision on
+2026-11-18, the remote `native-full-stack` job is temporarily disabled for the
+first local-use pilot; its steps are retained, not treated as passing. PR #8's
+initial CI passed all tests/full-stack recovery but package-check failed because
+`systemd-analyze --user verify` could not resolve RuntimeDirectory inside the Arch
+container. Re-enable the job after providing an isolated user runtime for unit
+verification and proving its complete check/package-check path in CI. Do not
+remove or skip unit verification merely to obtain green CI.
+
+Local `make check` and `make package-check` remain mandatory and unchanged.
+Publication/merge still requires exact-HEAD results from the enabled Go CI;
+skipped remote native checks are an explicitly accepted pilot limitation, not
+proof of remote package validation. Local success/workflow YAML never substitute
+for actual CI. Installation, service activation and deployment require separate
+owner decisions.
 Normal-session Omarchy desktop smoke and installation are owner decisions, not
 claims made by offscreen tests. No macOS support, remote access, agent control, scheduler,
 Product workflow, MR checks or operational start/stop actions are implemented.
