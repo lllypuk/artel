@@ -93,7 +93,7 @@
   "Observation unavailable. Retry after refreshing the connection.": "Наблюдение недоступно. Обновите подключение и повторите.",
   "Observation database changed. Reload the owner connection.": "База наблюдения сменилась. Перечитайте подключение владельца.",
   "Bind this runtime to the selected project? This replaces the observer's previous binding.": "Привязать запуск к выбранному проекту? Предыдущая привязка наблюдателя будет заменена.",
-  "Unbind this observer? Observation of the project will stop.": "Отвязать наблюдателя? Наблюдение за проектом прекратится.",
+  "Remove this binding? Observation of the bound project will stop.\n\nObserver: %1\nBound runtime: %2\nBound project ID: %3": "Удалить эту привязку? Наблюдение за привязанным проектом прекратится.\n\nНаблюдатель: %1\nПривязанный запуск: %2\nID привязанного проекта: %3",
   "Revoke this observer credential permanently?": "Отозвать ключ наблюдателя навсегда?",
   "Prune inactive runtimes? Their metadata will be removed permanently; retired IDs cannot reconnect.": "Удалить неактивные запуски? Их метаданные будут удалены навсегда; удалённые ID не смогут подключиться снова.",
   "Observation changed or project unavailable. Refresh and confirm again.": "Наблюдение изменилось или проект недоступен. Обновите и подтвердите снова.",

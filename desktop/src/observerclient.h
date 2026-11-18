@@ -78,6 +78,7 @@ signals:
 
 private:
   QVariantList records(bool onlyProject) const;
+  bool canManage() const;
   void resetRead();
   void fail(const QString &message);
   QNetworkReply *request(const QByteArray &method, const QString &path,

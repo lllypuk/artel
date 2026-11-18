@@ -232,7 +232,9 @@ void ObserverClient::setProject(const QVariantMap &project) {
     return;
   m_project = project;
   m_online = false;
-  m_confirmation.clear();
+  // Unbind targets the observer's captured binding, not the manual project.
+  if (m_confirmation.value("action") != "unbind")
+    m_confirmation.clear();
   resetRead();
   emit changed();
   if (m_active)
@@ -421,8 +423,11 @@ QString ObserverClient::confirmation() const {
     question = tr("Bind this runtime to the selected project? This replaces "
                   "the observer's previous binding.");
   else if (action == "unbind")
-    question =
-        tr("Unbind this observer? Observation of the project will stop.");
+    return tr("Remove this binding? Observation of the bound project will "
+              "stop.\n\nObserver: %1\nBound runtime: %2\nBound project ID: %3")
+        .arg(m_confirmation.value("observer_id").toString(),
+             m_confirmation.value("binding_runtime_id").toString(),
+             m_confirmation.value("binding_project_id").toString());
   else if (action == "revoke")
     question = tr("Revoke this observer credential permanently?");
   else
@@ -437,10 +442,13 @@ void ObserverClient::cancelConfirmation() {
   m_confirmation.clear();
   emit changed();
 }
+bool ObserverClient::canManage() const {
+  return m_active && m_online && !busy() && m_age.isValid() &&
+         m_age.elapsed() < 4000;
+}
 bool ObserverClient::prepare(const QString &action, const QString &observer,
                              const QString &runtime) {
-  if (!m_active || !m_online || busy() || !m_age.isValid() ||
-      m_age.elapsed() >= 4000 ||
+  if (!canManage() ||
       !QStringList{"bind", "unbind", "revoke", "prune"}.contains(action))
     return false;
   for (const auto &value : records(false)) {
@@ -455,13 +463,15 @@ bool ObserverClient::prepare(const QString &action, const QString &observer,
     m_actionMessage.clear();
     m_confirmation = {{"action", action},
                       {"observer_id", observer},
-                      {"runtime_id", runtime},
                       {"version", row.value("version")},
                       {"generation", row.value("generation")},
                       {"binding_runtime_id", row.value("binding_runtime_id")},
                       {"binding_project_id", row.value("binding_project_id")},
-                      {"project_id", m_project.value("id")},
                       {"instance", m_instance}};
+    if (action != "unbind")
+      m_confirmation.insert("runtime_id", runtime);
+    if (action == "bind")
+      m_confirmation.insert("project_id", m_project.value("id"));
     emit changed();
     return true;
   }
@@ -471,26 +481,46 @@ bool ObserverClient::confirm() {
   const auto c = m_confirmation;
   m_confirmation.clear();
   emit changed();
-  if (c.isEmpty() || c.value("instance") != m_instance ||
-      c.value("project_id") != m_project.value("id"))
+  const auto action = c.value("action").toString();
+  if (c.isEmpty() || c.value("instance") != m_instance || !canManage() ||
+      (action == "bind" && c.value("project_id") != m_project.value("id")))
     return false;
-  // Recheck the current row and CAS version, not a stale QML delegate pointer.
-  if (!prepare(c.value("action").toString(), c.value("observer_id").toString(),
-               c.value("runtime_id").toString()))
-    return false;
-  const bool same =
-      m_confirmation.value("version") == c.value("version") &&
-      m_confirmation.value("generation") == c.value("generation") &&
-      m_confirmation.value("binding_runtime_id") ==
-          c.value("binding_runtime_id") &&
-      m_confirmation.value("binding_project_id") ==
-          c.value("binding_project_id");
-  m_confirmation.clear();
+  bool same = false;
+  if (action == "unbind") {
+    // Revalidate against the observer itself. The clicked row is not the
+    // target, and it need not still exist.
+    for (const auto &value : m_observers) {
+      const auto observer = value.toObject();
+      if (observer.value("observer_id").toString() != c.value("observer_id"))
+        continue;
+      const auto binding = observer.value("binding").toObject();
+      same =
+          !binding.isEmpty() &&
+          observer.value("version").toVariant() == c.value("version") &&
+          observer.value("generation").toVariant() == c.value("generation") &&
+          binding.value("runtime_id").toString() ==
+              c.value("binding_runtime_id") &&
+          binding.value("project_id").toString() ==
+              c.value("binding_project_id");
+      break;
+    }
+  } else {
+    // Recheck the current row and CAS version, not a stale QML delegate.
+    if (!prepare(action, c.value("observer_id").toString(),
+                 c.value("runtime_id").toString()))
+      return false;
+    same = m_confirmation.value("version") == c.value("version") &&
+           m_confirmation.value("generation") == c.value("generation") &&
+           m_confirmation.value("binding_runtime_id") ==
+               c.value("binding_runtime_id") &&
+           m_confirmation.value("binding_project_id") ==
+               c.value("binding_project_id");
+    m_confirmation.clear();
+  }
   if (!same) {
     fail(tr("Observation changed. Refresh and confirm again."));
     return false;
   }
-  const auto action = c.value("action").toString();
   QJsonObject payload{
       {"expected_version", QJsonValue::fromVariant(c.value("version"))}};
   QString path = "/v1/observers/" + c.value("observer_id").toString();

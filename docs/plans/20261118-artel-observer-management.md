@@ -31,9 +31,9 @@ Independent read-only Pi review completed. Launch blockers were addressed in the
 ## Implementation Steps
 
 ### Task 1: Make the Unbind confirmation describe the actual binding
-- [ ] Add production-QML and ObserverClient tests with manual project A, observer bound to B, and Unbind invoked from a different candidate row. Check text identifies B and the bound runtime, and binding version/generation changes invalidate the old confirmation without mutation.
-- [ ] Correct the Qt confirmation fields and RU/EN strings without changing bind, revoke or prune semantics in this task; keep sanitized metadata and manual draft independence.
-- [ ] Run `make lint test build` and record evidence.
+- [x] Add production-QML and ObserverClient tests with manual project A, observer bound to B, and Unbind invoked from a different candidate row. Check text identifies B and the bound runtime, and binding version/generation changes invalidate the old confirmation without mutation.
+- [x] Correct the Qt confirmation fields and RU/EN strings without changing bind, revoke or prune semantics in this task; keep sanitized metadata and manual draft independence.
+- [x] Run `make lint test build` and record evidence. Passed: zero Go lint issues, 17 Python tests, Go tests, 92 Qt desktop and 32 Qt API-client passes with no failures or skips, and Go/Qt/Pi builds. The new targeted regressions failed against the old implementation and passed in the full suite.
 
 ### Task 2: Fence pending agterm navigation to the captured observation
 - [ ] Add fake-agterm tests holding final discovery across revocation, binding/runtime replacement, changed hint, read failure, DB replacement, and stale/expired data. For expiry use an injected clock or start near four-second cache expiry; release the final tree callback before the adapter's two-second deadline so the final predicate, not timeout, prevents real `session select --target` dispatch (exclude the help probe). Prove benign heartbeat and a management filter change do not break valid cross-project navigation. Distinguish pending lookup cancellation and its message from an already dispatched select.

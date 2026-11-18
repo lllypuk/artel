@@ -1712,6 +1712,128 @@ private slots:
     QVERIFY(editor && editor->isVisible());
     QCOMPARE(editor->property("selectedText").toString(), selection);
   }
+  void observerUnbindConfirmationInProductionQml_data() {
+    QTest::addColumn<QByteArray>("language");
+    QTest::addColumn<QString>("projectLabel");
+    QTest::newRow("en") << QByteArray("en") << QString("Bound project ID:");
+    QTest::newRow("ru") << QByteArray("ru")
+                        << QString("ID привязанного проекта:");
+  }
+  void observerUnbindConfirmationInProductionQml() {
+    QFETCH(QByteArray, language);
+    QFETCH(QString, projectLabel);
+    ObserverFixture fixture;
+    const auto projectB = fixture.bindToOtherProject();
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    const auto languageFile = fixture.directory.filePath("language");
+    writeFile(languageFile, language);
+    Appearance appearance(fixture.directory.path(), languageFile);
+    QCoreApplication::installTranslator(&appearance);
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance, false);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    QVERIFY(panel.editTask());
+    panel.field("title", "Keep the unrelated manual draft");
+    const auto draft = client.draft();
+    auto *o = panel.observers();
+    QTRY_VERIFY(o->online());
+    QVERIFY(click(window, "teamConnectionsButton"));
+    auto *drawer = window->findChild<QObject *>("observerDrawer");
+    QVERIFY(drawer);
+    QTRY_VERIFY(drawer->property("opened").toBool());
+    o->setViewFilter("candidate");
+    const auto button = "observerUnbind_" + fixture.otherRuntime;
+    QTRY_VERIFY(item(window, button) && item(window, button)->isVisible());
+    QVERIFY(click(window, button));
+    auto *dialog = window->findChild<QObject *>("observerConfirmation");
+    QVERIFY(dialog && dialog->property("visible").toBool());
+    auto *label = dialog->findChild<QObject *>("observerConfirmationText");
+    QVERIFY(label);
+    QCOMPARE(label->property("textFormat").toInt(), int(Qt::PlainText));
+    const auto text = label->property("text").toString();
+    QVERIFY(text.contains(projectLabel + " " + projectB));
+    QVERIFY(text.contains(fixture.runtime));
+    QVERIFY(!text.contains(fixture.otherRuntime));
+    QVERIFY(!text.contains(fixture.project));
+    QVERIFY(!text.contains("Example project"));
+    auto record = fixture.record();
+    record.insert("version", 2);
+    fixture.record(record);
+    o->reload();
+    QTRY_COMPARE(o->projection().first().toMap().value("version").toInt(), 2);
+    QVERIFY(QMetaObject::invokeMethod(dialog, "accept"));
+    QVERIFY(!o->busy());
+    QVERIFY(fixture.mutations.isEmpty());
+    QCOMPARE(fixture.record().value("binding"), record.value("binding"));
+    QCOMPARE(client.draft(), draft);
+    QCOMPARE(panel.project().value("id").toString(), fixture.project);
+  }
+  void observerUnbindRevalidatesBindingInsteadOfClickedRow() {
+    ObserverFixture fixture;
+    const auto projectB = fixture.bindToOtherProject();
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(panel.selectProject(fixture.project));
+    auto *o = panel.observers();
+    o->setActive(true);
+    QTRY_VERIFY(o->online());
+    auto record = fixture.record();
+    for (const auto &field :
+         {QString("version"), QString("generation"), QString("binding")}) {
+      QVERIFY(o->prepare("unbind", fixture.observer, fixture.otherRuntime));
+      const auto text = o->confirmation();
+      QVERIFY(text.contains(projectB));
+      QVERIFY(text.contains(fixture.runtime));
+      QVERIFY(!text.contains(fixture.otherRuntime));
+      if (field == "binding")
+        record.insert(field, QJsonObject{{"runtime_id", fixture.runtime},
+                                         {"project_id", fixture.project}});
+      else
+        record.insert(field, record.value(field).toInt() + 1);
+      fixture.record(record);
+      o->reload();
+      QTRY_VERIFY(!o->loading());
+      QVERIFY(!o->confirm());
+      QVERIFY(!o->busy());
+      QVERIFY(fixture.mutations.isEmpty());
+      QCOMPARE(fixture.record().value("binding"), record.value("binding"));
+      o->reload();
+      QTRY_VERIFY(o->online());
+    }
+    QVERIFY(o->prepare("unbind", fixture.observer, fixture.otherRuntime));
+    const auto text = o->confirmation();
+    auto runtimes = record.value("runtimes").toArray();
+    runtimes.removeLast();
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    QVERIFY(panel.selectProject(projectB));
+    o->setOnlyProject(true);
+    o->setViewFilter("candidate");
+    QTRY_VERIFY(o->online() && !o->loading());
+    QVERIFY(o->rows().isEmpty());
+    QCOMPARE(o->confirmation(), text);
+    QVERIFY(o->confirm());
+    QTRY_COMPARE(fixture.mutations.size(), 1);
+    const auto request = fixture.mutations.first();
+    QVERIFY(request.startsWith("PATCH /v1/observers/" +
+                               fixture.observer.toUtf8() + "/binding "));
+    QCOMPARE(
+        QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n") + 4))
+            .object(),
+        (QJsonObject{{"expected_version", 2},
+                     {"runtime_id", QJsonValue::Null},
+                     {"project_id", QJsonValue::Null}}));
+    QVERIFY(!fixture.record().contains("binding"));
+  }
   void observerConfirmationCapturesBindingAndIdentity() {
     ObserverFixture fixture;
     ApiClient client;
@@ -1979,9 +2101,13 @@ private slots:
     observer->setOnlyProject(true);
     QVERIFY(observer->rows().isEmpty());
     observer->setOnlyProject(false);
+    auto *drawer = window->findChild<QObject *>("observerDrawer");
+    QVERIFY(drawer);
+    QTRY_VERIFY(drawer->property("opened").toBool());
     QTRY_VERIFY(item(window, "observerBind_" + fixture.runtime));
     auto *bindButton = item(window, "observerBind_" + fixture.runtime);
     bindButton->forceActiveFocus();
+    QTRY_VERIFY(bindButton->hasActiveFocus());
     QTest::keyClick(window, Qt::Key_Space);
     QVERIFY(!observer->confirmation().isEmpty());
     auto *dialog = window->findChild<QObject *>("observerConfirmation");

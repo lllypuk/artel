@@ -40,6 +40,27 @@ public:
       observation(socket, request);
     };
   }
+  QString bindToOtherProject() {
+    const QString projectB = "77777777-7777-4777-8777-777777777777";
+    auto snapshot = QJsonDocument::fromJson(state).object();
+    auto projects = snapshot.value("projects").toArray();
+    auto second = projects.first().toObject();
+    second.insert("id", projectB);
+    second.insert("name", "Project B");
+    projects.append(second);
+    snapshot.insert("projects", projects);
+    state = QJsonDocument(snapshot).toJson();
+    auto o = record();
+    o.insert("binding",
+             QJsonObject{{"runtime_id", runtime}, {"project_id", projectB}});
+    auto runtimes = o.value("runtimes").toArray();
+    auto bound = runtimes.first().toObject();
+    bound.insert("disposition", "bound");
+    runtimes[0] = bound;
+    o.insert("runtimes", runtimes);
+    record(o);
+    return projectB;
+  }
   QJsonObject record() const {
     return registry.value("observers").toArray().first().toObject();
   }
