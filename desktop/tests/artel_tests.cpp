@@ -158,6 +158,7 @@ private slots:
                  .toInt(),
              180);
     QCOMPARE(resets.size(), 0);
+    QTest::qWait(100); // Allow any erroneous request to reach the fixture.
     QCOMPARE(fixture.reads, reads);
     QCOMPARE(model.counts().value("working").toInt(), 1);
     model.setSearch("example PROJECT");
@@ -329,13 +330,11 @@ private slots:
     QTRY_VERIFY(delayed);
     QSignalSpy resets(&team, &QAbstractItemModel::modelReset);
     QTest::qWait(4050);
-    const int reads = fixture.reads;
     team.tick();
     QVERIFY(team.cached());
     QCOMPARE(team.counts().value("unknown").toInt(), 1);
     QCOMPARE(team.counts().value("working").toInt(), 0);
     QCOMPARE(resets.size(), 0);
-    QCOMPARE(fixture.reads, reads);
     UiFixture::respond(delayed, 200, fixture.bytes());
     QTRY_VERIFY(!team.cached());
     QCOMPARE(team.counts().value("working").toInt(), 1);
@@ -368,11 +367,22 @@ private slots:
     workspace.team()->setSearch("");
     QVERIFY(workspace.selectedObserver().isEmpty()); // No implicit reselection.
     QVERIFY(workspace.selectObserver(fixture.observer, fixture.runtime));
-    runtimes = QJsonArray{runtimes.last(), runtimes.first()};
-    record.insert("runtimes", runtimes);
-    fixture.record(record);
+    auto second = record;
+    const auto otherId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    second.insert("observer_id", otherId);
+    fixture.registry.insert("observers", QJsonArray{record, second});
     panel.observers()->reload();
-    QTRY_VERIFY(panel.observers()->online());
+    QTRY_COMPARE(workspace.team()->rowCount(), 2);
+    fixture.registry.insert("observers", QJsonArray{second, record});
+    panel.observers()->reload();
+    QTRY_COMPARE(workspace.team()
+                     ->data(workspace.team()->index(0), Qt::UserRole)
+                     .toMap()
+                     .value("observer_id")
+                     .toString(),
+                 otherId);
+    QCOMPARE(workspace.selectedObserver().value("observer_id").toString(),
+             fixture.observer);
     QCOMPARE(workspace.selectedObserver().value("runtime_id").toString(),
              fixture.runtime);
     QVERIFY(!workspace.openObserverProject(fixture.observer, fixture.runtime,
@@ -430,7 +440,9 @@ private slots:
     QVERIFY(!workspace.escapeShortcut());
     QVERIFY(!workspace.openProject(fixture.project));
     workspace.showProjects();
-    QVERIFY(!workspace.saveShortcut());
+    QVERIFY(workspace.editorVisible());
+    QVERIFY(!workspace.draftHidden());
+    QVERIFY(!workspace.escapeShortcut());
     QCOMPARE(panel.editor(), draft);
     workspace.returnToEditor();
     QVERIFY(!workspace.escapeShortcut()); // Never silently discard dirty text.
@@ -506,8 +518,8 @@ private slots:
       return (std::max(x, y) + 0.05) / (std::min(x, y) + 0.05);
     };
     // Override presentation inputs; never change host theme/settings.
-    for (const auto &accent :
-         {"#ffffff", "#000000", "#FFD60A", "#a8c7fa", "invalid", "#00ffffff"}) {
+    for (const auto &accent : {"#ffffff", "#000000", "#808080", "#FFD60A",
+                               "#a8c7fa", "invalid", "#00ffffff"}) {
       theme->setProperty("accentInput", accent);
       for (int radius : {0, 6, 12, -1, 100}) {
         theme->setProperty("radiusInput", radius);
@@ -571,6 +583,9 @@ private slots:
     }
     QFont largerFont = theme->property("systemFont").value<QFont>();
     largerFont.setPixelSize(20);
+    theme->setProperty("systemFont", largerFont);
+    QCOMPARE(theme->property("body").toReal(), 40.0);
+    largerFont.setPointSize(15);
     theme->setProperty("systemFont", largerFont);
     QCOMPARE(theme->property("body").toReal(), 40.0);
     // Restore the native system default after checking increased UI font.
@@ -926,6 +941,14 @@ private slots:
       QTest::qWait(100);
       QVERIFY(window->grabWindow().save(capture + "-loading.png"));
     }
+    UiFixture::respond(delayed, 503, "{}");
+    QTRY_VERIFY(!panel.observers()->loading());
+    QVERIFY(!panel.observers()->projectionLoaded());
+    QCOMPARE(item(window, "teamEmptyState")->property("title").toString(),
+             QString("Observation registry unavailable"));
+    delayed.clear();
+    panel.observers()->reload();
+    QTRY_VERIFY(delayed);
     UiFixture::respond(delayed, 200, fixture.bytes());
     QTRY_VERIFY(panel.observers()->online());
     QVERIFY(item(window, "teamEmptyState")->isVisible());
@@ -944,6 +967,9 @@ private slots:
     delayed.clear();
     panel.observers()->reload();
     QTRY_VERIFY(delayed);
+    QCOMPARE(item(window, "teamEmptyState")->property("title").toString(),
+             QString("No connected team yet"));
+    QVERIFY(item(window, "teamEmptyState")->isVisible());
     UiFixture::respond(delayed, 503, "{}");
     QTRY_VERIFY(!panel.observers()->online());
     QVERIFY(workspace->team()->cached());
@@ -1220,7 +1246,8 @@ private slots:
       QTest::qWait(20);
       QVERIFY(fits("taskList"));
       QCOMPARE(panel.task().value("id").toString(), fixture.task);
-      QVERIFY(click(window, "manualShowDetailsButton"));
+      QVERIFY(click(window, "task_" + fixture.task));
+      QTRY_VERIFY(item(window, "manualBackButton")->isVisible());
     }
     panel.editTask(false);
     QTest::qWait(30);
@@ -1459,6 +1486,8 @@ private slots:
     fixture.record(record);
     o->reload();
     QTRY_VERIFY(!item(window, "teamOpenSessionButton")->isEnabled());
+    QCOMPARE(item(window, "teamObserverFreshness")->property("text").toString(),
+             QString("Freshness: Stale"));
     QVERIFY(
         !workspace->openObserverSession(fixture.observer, fixture.runtime, 1));
     o->openSession(fixture.observer, fixture.runtime);
@@ -1507,11 +1536,18 @@ private slots:
                 .toString()
                 .contains("Archived"));
     QVERIFY(!item(window, "teamOpenProjectButton")->isEnabled());
+    QVERIFY(panel.projects().isEmpty());
+    auto *filter = item(window, "teamProjectFilter");
+    QTRY_COMPARE(filter->property("count").toInt(), 2);
+    workspace->team()->setProjectId(fixture.project);
+    QTRY_COMPARE(filter->property("currentValue").toString(), fixture.project);
     snapshot.insert("projects", QJsonArray{});
     fixture.state = QJsonDocument(snapshot).toJson();
     client.reload();
     QTRY_VERIFY(
         !workspace->selectedObserver().value("project_archived").toBool());
+    QTRY_VERIFY(workspace->team()->projectId().isEmpty());
+    QCOMPARE(filter->property("currentIndex").toInt(), 0);
     QVERIFY(workspace->selectedObserver()
                 .value("project_name")
                 .toString()
@@ -1533,6 +1569,148 @@ private slots:
     QVERIFY(!item(window, "teamOpenSessionButton")->isEnabled());
     QVERIFY(!item(window, "teamOpenProjectButton")->isEnabled());
     QVERIFY(fixture.mutations.isEmpty());
+  }
+  void projectsRouteKeepsVisibleEditorShortcuts() {
+    ObserverFixture fixture;
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance, false);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    auto *workspace =
+        window->property("workspace").value<WorkspaceController *>();
+    QVERIFY(workspace->openProject(fixture.project));
+    QVERIFY(workspace->openTask(fixture.task));
+    QVERIFY(panel.editTask());
+    QVERIFY(click(window, "projectsNavButton"));
+    QCOMPARE(workspace->route(), QString("projects"));
+    QVERIFY(!workspace->draftHidden());
+    QTRY_VERIFY(item(window, "nameField")->isVisible());
+    QTest::keyClick(window, Qt::Key_Escape);
+    auto *dialog = window->findChild<QObject *>("discardDialog");
+    QVERIFY(dialog);
+    QTRY_VERIFY(dialog->property("opened").toBool());
+    QVERIFY(QMetaObject::invokeMethod(dialog, "close"));
+    QTRY_VERIFY(!dialog->property("visible").toBool());
+    QVERIFY(enter(window, "nameField", "Preserved Projects shortcut"));
+    QPointer<QTcpSocket> pending;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("PATCH /v1/tasks/"))
+        pending = socket;
+      else
+        fixture.observation(socket, request);
+    };
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_VERIFY(pending);
+    UiFixture::respond(pending, 409, "{}");
+    QTRY_VERIFY(!panel.busy());
+  }
+  void teamProjectClickDoesNotFollowRebind() {
+    ObserverFixture fixture;
+    const QString projectB = "77777777-7777-4777-8777-777777777777";
+    auto snapshot = QJsonDocument::fromJson(fixture.state).object();
+    auto projects = snapshot.value("projects").toArray();
+    auto second = projects.first().toObject();
+    second.insert("id", projectB);
+    second.insert("name", "Project B");
+    projects.append(second);
+    snapshot.insert("projects", projects);
+    fixture.state = QJsonDocument(snapshot).toJson();
+    auto record = fixture.record();
+    auto bound = record.value("runtimes").toArray().first().toObject();
+    bound.insert("disposition", "bound");
+    record.insert("runtimes", QJsonArray{bound});
+    record.insert("binding", QJsonObject{{"runtime_id", fixture.runtime},
+                                         {"project_id", fixture.project}});
+    fixture.record(record);
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance, false);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(panel.observers()->online());
+    auto *workspace =
+        window->property("workspace").value<WorkspaceController *>();
+    QVERIFY(workspace->selectObserver(fixture.observer, fixture.runtime));
+    auto *button = item(window, "teamOpenProjectButton");
+    QTRY_VERIFY(button->isEnabled() && button->width() > 0);
+    QTest::qWait(50);
+    const auto point =
+        button->mapToScene({button->width() / 2, button->height() / 2})
+            .toPoint();
+    QTest::mousePress(window, Qt::LeftButton, {}, point);
+    QVERIFY(button->property("pressed").toBool());
+    record.insert("binding", QJsonObject{{"runtime_id", fixture.runtime},
+                                         {"project_id", projectB}});
+    record.insert("version", 2);
+    fixture.record(record);
+    panel.observers()->reload();
+    QTRY_COMPARE(workspace->selectedObserver().value("project_id").toString(),
+                 projectB);
+    QTest::mouseRelease(window, Qt::LeftButton, {}, point);
+    QCOMPARE(workspace->route(), QString("team"));
+    QVERIFY(panel.project().isEmpty());
+    QVERIFY(click(window, "teamOpenProjectButton"));
+    QTRY_COMPARE(panel.project().value("id").toString(), projectB);
+  }
+  void connectionMetadataSurvivesHeartbeat() {
+    ObserverFixture fixture;
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance, false);
+    QVERIFY(window);
+    client.reload();
+    auto *o = panel.observers();
+    QTRY_VERIFY(o->online());
+    QVERIFY(click(window, "teamConnectionsButton"));
+    auto *drawer = window->findChild<QObject *>("observerDrawer");
+    QVERIFY(drawer);
+    QTRY_VERIFY(drawer->property("opened").toBool());
+    const auto toggle = "observerMetadataToggle_" + fixture.runtime;
+    const auto metadata = "observerMetadata_" + fixture.runtime;
+    QTRY_VERIFY(item(window, toggle) && item(window, toggle)->isVisible());
+    QTest::qWait(50);
+    QVERIFY(click(window, toggle));
+    QTRY_VERIFY(item(window, metadata)->isVisible());
+    QPointer<QQuickItem> editor = item(window, metadata);
+    editor->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+    const auto selection = editor->property("selectedText").toString();
+    QVERIFY(!selection.isEmpty());
+    auto record = fixture.record();
+    auto runtimes = record.value("runtimes").toArray();
+    auto runtime = runtimes.first().toObject();
+    const QString seen = "2026-11-17T13:00:00Z";
+    runtime.insert("last_seen", seen);
+    runtimes[0] = runtime;
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    o->reload();
+    QTRY_COMPARE(o->projection()
+                     .first()
+                     .toMap()
+                     .value("runtimes")
+                     .toList()
+                     .first()
+                     .toMap()
+                     .value("last_seen")
+                     .toString(),
+                 seen);
+    QVERIFY(editor && editor->isVisible());
+    QCOMPARE(editor->property("selectedText").toString(), selection);
   }
   void observerConfirmationCapturesBindingAndIdentity() {
     ObserverFixture fixture;

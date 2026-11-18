@@ -49,7 +49,7 @@ Pane {
         anchors.fill: parent
         clip: true
         spacing: 16
-        model: root.client.rows
+        model: root.client.connectionRows
         ScrollBar.vertical: ScrollBar {}
         header: ColumnLayout {
             width: list.width
@@ -155,7 +155,8 @@ Pane {
         }
         delegate: ColumnLayout {
             id: row
-            required property var modelData
+            required property var record
+            readonly property var modelData: record
             property bool expanded: false
             width: list.width - 16
             spacing: 8
@@ -198,10 +199,18 @@ Pane {
                 visible: row.expanded
                 theme: root.theme
                 readOnly: true
-                text: qsTr("Observer: %1\nRuntime: %2\nPi session: %3\nPi / bridge: %4 / %5\nProvider / model: %6 / %7\nLast seen: %8").arg(row.modelData.observer_id).arg(row.modelData.runtime_id || "—").arg(row.modelData.pi_session_id || "—").arg(row.modelData.pi_version || "—").arg(row.modelData.bridge_version || "—").arg(row.modelData.provider || "—").arg(row.modelData.model || "—").arg(row.modelData.last_seen || "—")
+                text: qsTr("Observer: %1\nRuntime: %2\nPi session: %3\nPi / bridge: %4 / %5\nProvider / model: %6 / %7").arg(row.modelData.observer_id).arg(row.modelData.runtime_id || "—").arg(row.modelData.pi_session_id || "—").arg(row.modelData.pi_version || "—").arg(row.modelData.bridge_version || "—").arg(row.modelData.provider || "—").arg(row.modelData.model || "—")
                 Accessible.name: qsTr("Connection metadata")
                 Layout.fillWidth: true
                 wrapMode: Text.WrapAnywhere
+            }
+            Label {
+                visible: row.expanded
+                text: qsTr("Last seen: %1").arg(row.record.last_seen || "—")
+                textFormat: Text.PlainText
+                color: root.theme.muted
+                wrapMode: Text.WrapAnywhere
+                Layout.fillWidth: true
             }
             Flow {
                 Layout.fillWidth: true

@@ -16,6 +16,7 @@ class WorkspaceController : public QObject {
                  changed)
   Q_PROPERTY(bool minimized READ minimized WRITE setMinimized NOTIFY changed)
   Q_PROPERTY(bool draftHidden READ draftHidden NOTIFY changed)
+  Q_PROPERTY(bool editorVisible READ editorVisible NOTIFY changed)
   Q_PROPERTY(bool closeAllowed READ closeAllowed NOTIFY changed)
   Q_PROPERTY(bool manualDetails READ manualDetails NOTIFY changed)
 public:
@@ -27,6 +28,8 @@ public:
   bool windowVisible() const { return m_visible; }
   bool minimized() const { return m_minimized; }
   bool draftHidden() const;
+  bool editorVisible() const;
+  Q_INVOKABLE bool openTask(const QString &id);
   bool closeAllowed() const;
   bool manualDetails() const {
     return m_manualDetails || !m_panel->editorKind().isEmpty();

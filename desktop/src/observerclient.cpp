@@ -125,15 +125,70 @@ QString stateLabel(const QString &s) {
 }
 } // namespace
 
+int ConnectionRows::rowCount(const QModelIndex &parent) const {
+  return parent.isValid() ? 0 : m_rows.size();
+}
+QVariant ConnectionRows::data(const QModelIndex &index, int role) const {
+  if (!index.isValid() || index.row() >= m_rows.size() || role != Qt::UserRole)
+    return {};
+  return m_rows.at(index.row());
+}
+QHash<int, QByteArray> ConnectionRows::roleNames() const {
+  return {{Qt::UserRole, "record"}};
+}
+void ConnectionRows::update(const QVariantList &rows) {
+  if (rows == m_rows)
+    return;
+  const auto key = [](const QVariant &record) {
+    const auto row = record.toMap();
+    return row.value("observer_id").toString() + '/' +
+           row.value("runtime_id").toString();
+  };
+  QSet<QString> wanted;
+  for (const auto &record : rows)
+    wanted.insert(key(record));
+  for (int i = m_rows.size() - 1; i >= 0; --i) {
+    if (wanted.contains(key(m_rows.at(i))))
+      continue;
+    beginRemoveRows({}, i, i);
+    m_rows.removeAt(i);
+    endRemoveRows();
+  }
+  for (int i = 0; i < rows.size(); ++i) {
+    const auto target = key(rows.at(i));
+    int found = i;
+    while (found < m_rows.size() && key(m_rows.at(found)) != target)
+      ++found;
+    if (found == m_rows.size()) {
+      beginInsertRows({}, i, i);
+      m_rows.insert(i, rows.at(i));
+      endInsertRows();
+    } else {
+      if (found != i) {
+        beginMoveRows({}, found, found, {}, i);
+        m_rows.move(found, i);
+        endMoveRows();
+      }
+      if (m_rows.at(i) != rows.at(i)) {
+        m_rows[i] = rows.at(i);
+        emit dataChanged(index(i), index(i), {Qt::UserRole});
+      }
+    }
+  }
+}
+
 ObserverClient::ObserverClient(ApiClient *owner, QObject *parent)
     : QObject(parent), m_owner(owner) {
   m_network.setProxy(QNetworkProxy::NoProxy);
+  connect(this, &ObserverClient::changed, this,
+          [this] { m_connectionRows.update(rows()); });
   m_poll.setSingleShot(true);
   connect(&m_poll, &QTimer::timeout, this, &ObserverClient::reload);
   connect(owner, &ApiClient::changed, this, [this] {
     if (m_instance != m_owner->instance()) {
       resetRead();
       m_instance = m_owner->instance();
+      m_age.invalidate();
       m_observers = {};
       m_online = false;
       m_confirmation.clear();
@@ -341,6 +396,7 @@ void ObserverClient::reload() {
       return;
     }
     if (doc.object().value("database_instance_id").toString() != m_instance) {
+      m_age.invalidate();
       m_observers = {};
       m_confirmation.clear();
       fail(tr("Observation database changed. Reload the owner connection."));

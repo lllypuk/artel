@@ -38,7 +38,8 @@ public:
   void setProjectId(const QString &value);
   void setActivity(const QString &value);
   void setVisible(bool value);
-  // Tick updates age only. It never advances observer/server freshness.
+  // Update ages and apply cache expiry (which can change filters and counts).
+  // Never poll or extend server freshness.
   void tick();
   Q_INVOKABLE QVariantMap find(const QString &observer,
                                const QString &runtime) const;

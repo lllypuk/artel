@@ -14,6 +14,11 @@ Item {
     required property var projects
     readonly property TeamOverviewModel team: workspace.team
     readonly property var selected: workspace.selectedObserver
+    readonly property bool initialLoad: client.loading && !client.projectionLoaded
+    onProjectsChanged: {
+        if (team.projectId && !projects.some(project => project.id === team.projectId))
+            team.projectId = "";
+    }
     readonly property bool compact: width < 1050 || theme.body > 18
     readonly property bool inspecting: compact && !!selected.observer_id
     signal openConnections
@@ -52,7 +57,7 @@ Item {
             objectName: "teamConnectionStatus"
             theme: overview.theme
             Layout.fillWidth: true
-            text: overview.client.loading && overview.team.total === 0 ? qsTr("Loading observations…") : overview.team.cached ? qsTr("Observation unavailable — cached activity is unknown") : qsTr("Connected observations · manual tasks stay separate")
+            text: overview.initialLoad ? qsTr("Loading observations…") : !overview.client.projectionLoaded ? qsTr("Observation registry unavailable") : overview.team.cached ? qsTr("Observation unavailable — cached activity is unknown") : qsTr("Connected observations · manual tasks stay separate")
             severity: overview.team.cached ? "warning" : "neutral"
         }
         UI.FilterBar {
@@ -84,7 +89,8 @@ Item {
                 textRole: "name"
                 valueRole: "id"
                 Accessible.name: qsTr("Project")
-                onActivated: overview.team.projectId = currentValue
+                currentValue: overview.team.projectId
+                onActivated: overview.team.projectId = valueAt(currentIndex)
             }
             Label {
                 visible: !overview.compact
@@ -111,6 +117,7 @@ Item {
                 spacing: 0
                 Label {
                     objectName: "teamCounts"
+                    visible: overview.client.projectionLoaded
                     text: qsTr("Whole team: %1 · Shown: %2").arg(overview.team.total).arg(overview.team.shown)
                     color: overview.theme.muted
                     Layout.bottomMargin: 12
@@ -181,10 +188,10 @@ Item {
                         objectName: "teamEmptyState"
                         anchors.centerIn: parent
                         width: parent.width
-                        visible: overview.team.shown === 0 && !overview.client.loading
+                        visible: overview.team.shown === 0 && !overview.initialLoad
                         theme: overview.theme
-                        title: overview.team.total > 0 ? qsTr("No matching observations") : qsTr("No connected team yet")
-                        explanation: overview.team.total > 0 ? qsTr("Change the search or filters to see the team.") : qsTr("Provision an observer with artelctl, then bind its runtime in Connections. No agents are launched here.")
+                        title: !overview.client.projectionLoaded || (overview.team.total === 0 && overview.team.cached) ? qsTr("Observation registry unavailable") : overview.team.total > 0 ? qsTr("No matching observations") : qsTr("No connected team yet")
+                        explanation: !overview.client.projectionLoaded || (overview.team.total === 0 && overview.team.cached) ? qsTr("Refresh the owner connection to check for connected observers.") : overview.team.total > 0 ? qsTr("Change the search or filters to see the team.") : qsTr("Provision an observer with artelctl, then bind its runtime in Connections. No agents are launched here.")
                     }
                 }
             }
@@ -244,6 +251,13 @@ Item {
                         text: overview.selected.status_text || ""
                         Layout.fillWidth: true
                     }
+                    UI.StatusLabel {
+                        objectName: "teamObserverFreshness"
+                        visible: !!overview.selected.observer_id
+                        theme: overview.theme
+                        text: qsTr("Freshness: %1").arg(overview.selected.freshness_text || "—")
+                        Layout.fillWidth: true
+                    }
                     Label {
                         visible: !!overview.selected.observer_id
                         text: overview.selected.project_name || ""
@@ -255,13 +269,22 @@ Item {
                         Layout.fillWidth: true
                     }
                     UI.ActionButton {
+                        id: openProject
+                        property var pressedTarget: null
                         objectName: "teamOpenProjectButton"
+                        onPressed: pressedTarget = overview.selected
+                        onCanceled: pressedTarget = null
                         onActiveFocusChanged: overview.revealControl(this)
                         visible: !!overview.selected.observer_id
                         theme: overview.theme
                         text: qsTr("Open project")
                         enabled: !!overview.selected.project_available && !overview.team.cached
-                        onClicked: overview.workspace.openObserverProject(overview.selected.observer_id, overview.selected.runtime_id, overview.selected.project_id, overview.selected.version)
+                        onClicked: {
+                            const target = openProject.pressedTarget ?? overview.selected;
+                            openProject.pressedTarget = null;
+                            if (target.observer_id)
+                                overview.workspace.openObserverProject(target.observer_id, target.runtime_id, target.project_id, target.version);
+                        }
                     }
                     UI.StatusLabel {
                         objectName: "teamProjectAvailability"
@@ -315,6 +338,7 @@ Item {
         }
         Label {
             objectName: "teamFooter"
+            visible: overview.client.projectionLoaded
             text: qsTr("Unbound observers: %1 · Candidates and history are in Connections").arg(overview.team.unbound)
             color: overview.theme.muted
             wrapMode: Text.Wrap

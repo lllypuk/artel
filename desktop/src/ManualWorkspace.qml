@@ -333,7 +333,7 @@ Item {
                         objectName: "task_" + taskRow.modelData.id
                         highlighted: manual.panel.task.id === taskRow.modelData.id
                         enabled: !manual.panel.dirty && !manual.panel.uncertain && !manual.panel.busy
-                        onClicked: manual.panel.selectTask(taskRow.modelData.id)
+                        onClicked: manual.workspace.openTask(taskRow.modelData.id)
                         Accessible.name: taskRow.modelData.title
                         background: Rectangle {
                             color: taskRow.highlighted ? theme.selected : taskRow.hovered ? theme.raised : theme.panel
@@ -415,7 +415,7 @@ Item {
                         font.pixelSize: theme.panelTitle
                     }
                     ColumnLayout {
-                        visible: manual.panel.editorKind !== ""
+                        visible: manual.workspace.editorVisible
                         Layout.fillWidth: true
                         Caption {
                             text: manual.panel.editorKind === "project" ? qsTr("Project name") : qsTr("Task title")

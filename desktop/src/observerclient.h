@@ -1,9 +1,21 @@
 #pragma once
 #include "agtermadapter.h"
 #include "apiclient.h"
+#include <QAbstractListModel>
 #include <QElapsedTimer>
 #include <QPointer>
 #include <QtQml/qqmlregistration.h>
+
+class ConnectionRows : public QAbstractListModel {
+public:
+  int rowCount(const QModelIndex &parent = {}) const override;
+  QVariant data(const QModelIndex &index, int role) const override;
+  QHash<int, QByteArray> roleNames() const override;
+  void update(const QVariantList &rows);
+
+private:
+  QVariantList m_rows;
+};
 
 // Independent latest-state projection. No manual draft/mutation slots are used.
 class ObserverClient : public QObject {
@@ -11,6 +23,8 @@ class ObserverClient : public QObject {
   QML_ELEMENT
   QML_UNCREATABLE("Provided by the application")
   Q_PROPERTY(QVariantList rows READ rows NOTIFY changed)
+  Q_PROPERTY(QAbstractItemModel *connectionRows READ connectionRows CONSTANT)
+  Q_PROPERTY(bool projectionLoaded READ projectionLoaded NOTIFY changed)
   Q_PROPERTY(
       QString viewFilter READ viewFilter WRITE setViewFilter NOTIFY changed)
   Q_PROPERTY(AgtermAdapter *navigation READ navigation CONSTANT)
@@ -28,6 +42,8 @@ public:
   explicit ObserverClient(ApiClient *owner, QObject *parent = nullptr);
   ~ObserverClient() override;
   QVariantList rows() const;
+  QAbstractItemModel *connectionRows() { return &m_connectionRows; }
+  bool projectionLoaded() const { return m_age.isValid(); }
   QString viewFilter() const { return m_viewFilter; }
   void setViewFilter(const QString &value);
   // Value copies of typed public metadata, never credentials or raw JSON.
@@ -74,6 +90,7 @@ private:
   QTimer m_poll;
   QElapsedTimer m_age;
   QJsonArray m_observers;
+  ConnectionRows m_connectionRows;
   QVariantMap m_project, m_confirmation;
   QString m_instance, m_message, m_actionMessage, m_viewFilter;
   quint64 m_generation = 0;

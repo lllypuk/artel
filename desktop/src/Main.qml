@@ -56,11 +56,12 @@ ApplicationWindow {
     }
     Shortcut {
         sequences: [StandardKey.Save]
+        enabled: window.workspace.editorVisible
         onActivated: window.workspace.saveShortcut()
     }
     Shortcut {
         sequences: [StandardKey.Cancel]
-        enabled: window.workspace.route === "workspace"
+        enabled: window.workspace.editorVisible && !window.panel.busy && !window.panel.uncertain
         onActivated: {
             if (window.panel.dirty)
                 discardDialog.open();
@@ -247,7 +248,7 @@ ApplicationWindow {
                 visible: window.workspace.route === "team"
                 workspace: window.workspace
                 client: window.panel.observers
-                projects: window.panel.projects
+                projects: window.panel.allProjects
                 theme: appTheme
                 onOpenConnections: observerDrawer.open()
             }

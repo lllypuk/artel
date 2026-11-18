@@ -23,8 +23,17 @@ QVariantMap WorkspaceController::selectedObserver() const {
   return m_team.find(m_observer, m_runtime);
 }
 bool WorkspaceController::draftHidden() const {
-  return m_route != "workspace" &&
-         (!m_panel->editorKind().isEmpty() || m_panel->uncertain());
+  return (!m_panel->editorKind().isEmpty() && !editorVisible()) ||
+         (m_route == "team" && m_panel->uncertain());
+}
+bool WorkspaceController::editorVisible() const {
+  return m_route != "team" && !m_panel->editorKind().isEmpty();
+}
+bool WorkspaceController::openTask(const QString &id) {
+  if (!m_panel->selectTask(id))
+    return false;
+  showManualDetails();
+  return true;
 }
 bool WorkspaceController::closeAllowed() const {
   return !m_panel->dirty() && !m_panel->busy() && !m_panel->uncertain();
@@ -131,10 +140,10 @@ bool WorkspaceController::openObserverSession(const QString &observer,
   return true;
 }
 bool WorkspaceController::saveShortcut() {
-  return m_route == "workspace" && m_panel->saveable() && m_panel->save();
+  return editorVisible() && m_panel->saveable() && m_panel->save();
 }
 bool WorkspaceController::escapeShortcut() {
-  if (m_route != "workspace" || m_panel->busy() || m_panel->uncertain() ||
+  if (!editorVisible() || m_panel->busy() || m_panel->uncertain() ||
       m_panel->dirty())
     return false;
   m_panel->discard();

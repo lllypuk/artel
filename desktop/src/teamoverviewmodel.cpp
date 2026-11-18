@@ -62,6 +62,12 @@ QVariantMap TeamOverviewModel::presented(QVariantMap row) const {
   row.insert("last_freshness", row.value("freshness"));
   if (!m_current)
     row.insert("freshness", "unknown");
+  const auto freshness = row.value("freshness");
+  row.insert("freshness_text", freshness == "fresh"   ? tr("Fresh")
+                               : freshness == "stale" ? tr("Stale")
+                               : freshness == "stopped"
+                                   ? tr("Observation stopped")
+                                   : tr("Unknown"));
   // Saved last activity remains explicit; it is never advertised as current.
   row.insert("last_activity", row.value("activity"));
   row.insert("last_activity_text", label(row.value("activity").toString()));
@@ -205,7 +211,7 @@ void TeamOverviewModel::setVisible(bool value) {
 }
 void TeamOverviewModel::tick() {
   if (m_current != m_observers->cacheCurrent())
-    rebuild();
+    return rebuild();
   if (!m_rows.isEmpty())
     emit dataChanged(index(0), index(m_rows.size() - 1), {Qt::UserRole});
   emit changed(); // Inspector age/translation bindings, not a model rebuild.

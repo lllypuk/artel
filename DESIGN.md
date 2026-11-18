@@ -34,7 +34,7 @@ out-of-range input falling back to 1.
 | critical | #ffb4b4, always accompanied by action/status text |
 | warning | #f0cc83, always accompanied by status text |
 | selected / primary | opaque six-digit Appearance accent; fallback #a8c7fa |
-| selected text | #1d2026 or white, whichever has higher WCAG contrast |
+| selected text | canvas or white when the better choice meets 4.5:1; otherwise black |
 | focus | accent if contrast against raised is ≥3, otherwise #a8c7fa |
 | primary focus border | selected foreground, so focus does not disappear into the accent fill |
 | radius | Appearance 0–12; malformed/out-of-range values use 6 |

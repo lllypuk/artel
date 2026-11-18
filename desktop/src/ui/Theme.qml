@@ -25,7 +25,7 @@ QtObject {
     readonly property color accent: validAccent(accentInput)
     readonly property color focus: contrast(accent, raised) >= 3 ? accent : fallbackAccent
     readonly property color selected: accent
-    readonly property color selectedText: contrast("#1d2026", selected) >= contrast("#ffffff", selected) ? "#1d2026" : "#ffffff"
+    readonly property color selectedText: contrast(canvas, selected) >= 4.5 && contrast(canvas, selected) >= contrast("#ffffff", selected) ? canvas : contrast("#ffffff", selected) >= 4.5 ? "#ffffff" : "#000000"
     readonly property int radius: isFinite(radiusInput) && radiusInput >= 0 && radiusInput <= 12 ? Math.round(radiusInput) : 6
     readonly property int space1: 4
     readonly property int space2: 8
@@ -33,7 +33,7 @@ QtObject {
     readonly property int space4: 16
     readonly property int space6: 24
     readonly property int space8: 32
-    readonly property real body: Math.max(14, systemFont.pixelSize > 0 ? systemFont.pixelSize : 14) * scale
+    readonly property real body: Math.max(14, systemFont.pixelSize > 0 ? systemFont.pixelSize : systemFont.pointSize > 0 ? systemFont.pointSize * 96 / 72 : 14) * scale
     readonly property real secondary: Math.max(12, body * 12 / 14)
     readonly property real panelTitle: body * 18 / 14
     readonly property real screenTitle: body * 24 / 14
