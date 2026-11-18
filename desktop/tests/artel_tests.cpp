@@ -17,6 +17,7 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <cmath>
 
 namespace {
 QQuickItem *item(QQuickItem *root, const QString &name) {
@@ -95,6 +96,136 @@ class ArtelTests : public QObject {
 private slots:
   void initTestCase() { QQuickStyle::setStyle("Material"); }
   void init() { QTest::failOnWarning(); }
+  void nativePrimitives() {
+    QTemporaryDir dir;
+    writeFile(dir.filePath("language"), "en\n");
+    Appearance appearance(dir.path(), dir.filePath("language"));
+    QCoreApplication::installTranslator(&appearance);
+    QQmlApplicationEngine engine;
+    connect(&appearance, &Appearance::changed, &engine,
+            &QQmlEngine::retranslate);
+    engine.setInitialProperties(
+        {{"appearance", QVariant::fromValue(&appearance)}});
+    engine.load(QUrl("qrc:/tests/Primitives.qml"));
+    QCOMPARE(engine.rootObjects().size(), 1);
+    auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+    QVERIFY(window);
+    auto *theme = window->findChild<QObject *>("theme");
+    QVERIFY(theme);
+    QCOMPARE(theme->property("accent").value<QColor>(),
+             QColor(appearance.accent()));
+    QCOMPARE(theme->property("radius").toInt(), appearance.radius());
+    auto contrast = [](QColor a, QColor b) {
+      auto luminance = [](QColor c) {
+        auto linear = [](double v) {
+          return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+        };
+        return 0.2126 * linear(c.redF()) + 0.7152 * linear(c.greenF()) +
+               0.0722 * linear(c.blueF());
+      };
+      double x = luminance(a), y = luminance(b);
+      return (std::max(x, y) + 0.05) / (std::min(x, y) + 0.05);
+    };
+    // Override presentation inputs; never change host theme/settings.
+    for (const auto &accent :
+         {"#ffffff", "#000000", "#FFD60A", "#a8c7fa", "invalid", "#00ffffff"}) {
+      theme->setProperty("accentInput", accent);
+      for (int radius : {0, 6, 12, -1, 100}) {
+        theme->setProperty("radiusInput", radius);
+        QCOMPARE(theme->property("radius").toInt(),
+                 radius >= 0 && radius <= 12 ? radius : 6);
+        for (const auto &surface : {"canvas", "panel", "raised"}) {
+          const auto background = theme->property(surface).value<QColor>();
+          for (const auto &foreground :
+               {"text", "muted", "disabled", "critical", "warning"})
+            QVERIFY2(contrast(theme->property(foreground).value<QColor>(),
+                              background) >= 4.5,
+                     qPrintable(QString("%1 on %2").arg(foreground, surface)));
+        }
+        QVERIFY(contrast(theme->property("selectedText").value<QColor>(),
+                         theme->property("selected").value<QColor>()) >= 4.5);
+        QVERIFY(contrast(theme->property("focus").value<QColor>(),
+                         theme->property("raised").value<QColor>()) >= 3);
+      }
+    }
+    theme->setProperty("accentInput", "invalid");
+    QCOMPARE(theme->property("accent").value<QColor>(), QColor("#a8c7fa"));
+    theme->setProperty("accentInput", "#a8c7fa");
+    theme->setProperty("radiusInput", 6);
+    auto *primary = item(window, "primary");
+    QVERIFY(primary);
+    primary->forceActiveFocus(Qt::TabFocusReason);
+    QTRY_VERIFY(primary->property("visualFocus").toBool());
+    QSignalSpy clicked(primary, SIGNAL(clicked()));
+    QTest::keyClick(window, Qt::Key_Space);
+    QCOMPARE(clicked.size(), 1);
+    auto *disabled = item(window, "disabled");
+    QVERIFY(disabled);
+    QSignalSpy disabledClicked(disabled, SIGNAL(clicked()));
+    QVERIFY(!click(window, "disabled"));
+    QCOMPARE(disabledClicked.size(), 0);
+    for (const auto &name :
+         {"primary", "secondary", "quiet", "destructive", "disabled"}) {
+      auto *button = item(window, name);
+      QVERIFY(button);
+      for (bool pressed : {false, true}) {
+        button->setProperty("down", pressed);
+        QVERIFY(contrast(button->property("foreground").value<QColor>(),
+                         button->property("surface").value<QColor>()) >= 4.5);
+        QVERIFY(contrast(button->property("focusColor").value<QColor>(),
+                         button->property("surface").value<QColor>()) >= 3);
+      }
+      button->setProperty("down", false);
+    }
+    QCOMPARE(item(window, "longText")->property("textFormat").toInt(), 0);
+    QTRY_COMPARE(item(window, "searchIcon")->property("status").toInt(), 1);
+    primary->forceActiveFocus(Qt::TabFocusReason);
+    QTest::keyClick(window, Qt::Key_Tab);
+    QTRY_VERIFY(item(window, "secondary")->hasActiveFocus());
+    const auto base = primary->property("font").value<QFont>().pixelSize();
+    for (double scale : {1.0, 1.5, 2.0}) {
+      window->setProperty("fontScale", scale);
+      QTRY_VERIFY(primary->height() >=
+                  theme->property("controlHeight").toReal());
+      QCOMPARE(primary->property("font").value<QFont>().pixelSize(),
+               qRound(base * scale));
+    }
+    QFont largerFont = theme->property("systemFont").value<QFont>();
+    largerFont.setPixelSize(20);
+    theme->setProperty("systemFont", largerFont);
+    QCOMPARE(theme->property("body").toReal(), 40.0);
+    // Restore the native system default after checking increased UI font.
+    theme->setProperty("systemFont", QGuiApplication::font());
+    window->setProperty("fontScale", -1);
+    QCOMPARE(theme->property("scale").toReal(), 1.0);
+    const auto capture = qEnvironmentVariable("ARTEL_PRIMITIVE_SCREENSHOT");
+    for (const auto &language : {"en", "ru"}) {
+      writeFile(dir.filePath("language"), QByteArray(language) + '\n');
+      appearance.refresh();
+      QTRY_COMPARE(appearance.language(), QString(language));
+      engine.retranslate();
+      QCOMPARE(primary->property("text").toString(),
+               QString(language) == "ru" ? QString::fromUtf8("Сохранить")
+                                         : QString("Save"));
+      QTest::qWait(50);
+      if (!capture.isEmpty())
+        QVERIFY(window->grabWindow().save(capture + "-" + language + ".png"));
+      if (QString(language) == "ru") {
+        window->resize(1000, 900);
+        window->setProperty("fontScale", 2.0);
+        QTest::qWait(50);
+        auto *cancel = item(window, "secondary");
+        auto *quiet = item(window, "quiet");
+        QVERIFY(cancel->mapToScene(QPointF()).x() >=
+                primary->mapToScene(QPointF(primary->width(), 0)).x());
+        QVERIFY(quiet->mapToScene(QPointF(quiet->width(), 0)).x() <
+                window->width());
+        if (!capture.isEmpty())
+          QVERIFY(window->grabWindow().save(capture + "-ru-large.png"));
+      }
+    }
+    QCoreApplication::removeTranslator(&appearance);
+  }
   void agtermNavigationContract() {
     for (const auto &mode :
          {"", "move", "swap", "version", "capability", "oversize", "malformed",

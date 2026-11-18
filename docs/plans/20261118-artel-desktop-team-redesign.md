@@ -82,9 +82,11 @@ Checkboxes только внутри Task. Отмечать после тест�
 ## Implementation Steps
 
 ### Task 1: Introduce shared native theme and UI primitives
-- [ ] Добавить Theme и минимальные Quick Controls компоненты в `desktop/src/ui/`, qrc/qmllint wiring; связать с Appearance без global settings и без смены существующего поведения/стартовой страницы. Не добавлять QML raw network/shell.
-- [ ] Написать theme/component Qt tests: RU/EN, font scaling, bright/dark accent, radius0/6/12, focus/disabled/primary/destructive, contrast≥4.5 для обычного текста и≥3 для крупного; ресурсы/icons работают из qrc без checkout filesystem. Ошибочный theme input использует defaults.
-- [ ] Снять/посмотреть native primitive fixture, исправить замечания и выполнить `make lint test build`. Подготовить запись в DESIGN.md как фактическую provisional систему компонентов, не утверждать завершение всего редизайна.
+- [x] Добавить Theme и минимальные Quick Controls компоненты в `desktop/src/ui/`, qrc/qmllint wiring; связать с Appearance без global settings и без смены существующего поведения/стартовой страницы. Не добавлять QML raw network/shell.
+- [x] Написать theme/component Qt tests: RU/EN, font scaling, bright/dark accent, radius0/6/12, focus/disabled/primary/destructive, contrast≥4.5 для обычного текста и≥3 для крупного; ресурсы/icons работают из qrc без checkout filesystem. Ошибочный theme input использует defaults.
+- [x] Снять/посмотреть native primitive fixture, исправить замечания и выполнить `make lint test build`. Подготовить запись в DESIGN.md как фактическую provisional систему компонентов, не утверждать завершение всего редизайна.
+
+Task 1 evidence (2026-11-18): `make lint test build` PASS (Go1.26.3, golangci-lint2.10.1, Qt6.12.0, clang-format23.1.3); qmllint zero warnings, existing tests preserved. `ArtelTests::nativePrimitives` checks RU/EN, UI-font100/150/200%, increased native font, white/black/yellow/blue and invalid accents, radius0/6/12/invalid, independent WCAG contrast, focus/Tab/Space/disabled/pressed, plain text and SVG resource loading. Standalone fixture rerun from private temporary cwd/HOME PASS. Opened and visually reviewed `docs/screenshots/primitives-{en,ru,ru-large}.png` (800×700 EN/RU100%, 1000×900 RU200% UI-font); corrected untranslated labels and primary focus contrast. `DESIGN.md` records provisional tokens/components and limitations; full application/device-DPI matrix remains later work. Main.qml startup and owner daemon/data/settings untouched.
 
 ### Task 2: Add whole-team presentation model and safe navigation state
 - [ ] Реализовать TeamOverviewModel, read-only sanitized ObserverClient projection access и WorkspaceController по контракту. Сохранить единственные network owners и raw model semantics, отдельные фильтры, stable IDs, injectable UI clock и observation activation policy.

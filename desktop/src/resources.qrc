@@ -1,6 +1,15 @@
 <RCC>
     <qresource prefix="/">
         <file alias="Main.qml">Main.qml</file>
+        <file>ui/Theme.qml</file>
+        <file>ui/ActionButton.qml</file>
+        <file>ui/Field.qml</file>
+        <file>ui/LongText.qml</file>
+        <file>ui/StatusLabel.qml</file>
+        <file>ui/Section.qml</file>
+        <file>ui/EmptyState.qml</file>
+        <file>ui/FilterBar.qml</file>
+        <file>ui/icons/search.svg</file>
         <file alias="ObserverPanel.qml">ObserverPanel.qml</file>
         <file alias="i18n/en.json">i18n/en.json</file>
         <file alias="i18n/ru.json">i18n/ru.json</file>

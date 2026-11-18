@@ -9,4 +9,4 @@ QML_IMPORT_NAME = Artel
 QML_IMPORT_MAJOR_VERSION = 1
 SOURCES += artel_tests.cpp ../src/apiclient.cpp ../src/panel.cpp ../src/appearance.cpp ../src/observerclient.cpp ../src/agtermadapter.cpp
 HEADERS += ../src/apiclient.h ../src/panel.h ../src/appearance.h ../src/observerclient.h ../src/agtermadapter.h
-RESOURCES += ../src/resources.qrc
+RESOURCES += ../src/resources.qrc primitives.qrc
