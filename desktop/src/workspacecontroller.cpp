@@ -93,6 +93,18 @@ bool WorkspaceController::openObserverProject(const QString &observer,
     return false;
   return openProject(project);
 }
+bool WorkspaceController::openObserverSession(const QString &observer,
+                                              const QString &runtime,
+                                              qint64 version) {
+  const auto row = selectedObserver();
+  if (row.value("observer_id") != observer ||
+      row.value("runtime_id") != runtime ||
+      row.value("version").toLongLong() != version ||
+      !row.value("navigable").toBool())
+    return false;
+  m_panel->observers()->openSession(observer, runtime);
+  return true;
+}
 bool WorkspaceController::saveShortcut() {
   return m_route == "workspace" && m_panel->saveable() && m_panel->save();
 }

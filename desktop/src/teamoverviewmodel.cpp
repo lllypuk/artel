@@ -55,11 +55,16 @@ QVariantMap TeamOverviewModel::presented(QVariantMap row) const {
   row.insert("status", state);
   row.insert("status_text", label(state));
   row.insert("cached", !m_current);
+  row.insert("navigable",
+             m_current && !row.value("inconsistent").toBool() &&
+                 row.value("freshness") == "fresh" &&
+                 AgtermAdapter::validHint(row.value("terminal_hint").toMap()));
   row.insert("last_freshness", row.value("freshness"));
   if (!m_current)
     row.insert("freshness", "unknown");
   // Saved last activity remains explicit; it is never advertised as current.
   row.insert("last_activity", row.value("activity"));
+  row.insert("last_activity_text", label(row.value("activity").toString()));
   if (state == "unknown" || state == "inconsistent" || state == "stopped")
     row.insert("activity", "unknown");
   const auto seen =
@@ -108,11 +113,13 @@ void TeamOverviewModel::rebuild() {
     row.insert("project_id", project);
     row.insert("project_name", tr("Unavailable project (%1)").arg(project));
     row.insert("project_available", false);
+    row.insert("project_archived", false);
     for (const auto &p : m_panel->projectSnapshot()) {
       const auto owner = p.toMap();
       if (owner.value("id") == project) {
         row.insert("project_name", owner.value("name"));
         row.insert("project_available", !owner.value("archived").toBool());
+        row.insert("project_archived", owner.value("archived").toBool());
         break;
       }
     }

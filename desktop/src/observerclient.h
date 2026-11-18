@@ -11,6 +11,8 @@ class ObserverClient : public QObject {
   QML_ELEMENT
   QML_UNCREATABLE("Provided by the application")
   Q_PROPERTY(QVariantList rows READ rows NOTIFY changed)
+  Q_PROPERTY(
+      QString viewFilter READ viewFilter WRITE setViewFilter NOTIFY changed)
   Q_PROPERTY(AgtermAdapter *navigation READ navigation CONSTANT)
   Q_PROPERTY(bool active READ active WRITE setActive NOTIFY changed)
   Q_PROPERTY(bool online READ online NOTIFY changed)
@@ -26,6 +28,8 @@ public:
   explicit ObserverClient(ApiClient *owner, QObject *parent = nullptr);
   ~ObserverClient() override;
   QVariantList rows() const;
+  QString viewFilter() const { return m_viewFilter; }
+  void setViewFilter(const QString &value);
   // Value copies of typed public metadata, never credentials or raw JSON.
   QVariantList projection() const { return m_observers.toVariantList(); }
   bool cacheCurrent() const {
@@ -71,7 +75,7 @@ private:
   QElapsedTimer m_age;
   QJsonArray m_observers;
   QVariantMap m_project, m_confirmation;
-  QString m_instance, m_message, m_actionMessage;
+  QString m_instance, m_message, m_actionMessage, m_viewFilter;
   quint64 m_generation = 0;
   bool m_active = false, m_online = false, m_onlyProject = false;
   int m_timeout = 2000, m_backoff = 2000;

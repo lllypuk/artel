@@ -1,9 +1,9 @@
 # Artel desktop design system — provisional native primitives
 
-Tasks 1–3 of the desktop redesign, 2026-11-18. This describes implemented reusable
-primitives and the team-first shell, not a completed redesign. Manual content is
-preserved in ManualWorkspace.qml; its visual redesign, the detailed observer
-inspector and connection-management redesign follow in later tasks. Mode: Operate,
+Tasks 1–4 of the desktop redesign, 2026-11-18. This describes implemented reusable
+primitives, the team-first shell, observer inspector and connection management,
+not a completed redesign. Manual content is preserved in ManualWorkspace.qml;
+its visual redesign and the narrow/scaled application matrix follow in later tasks. Mode: Operate,
 native Qt Quick, canon direction with Zed-quality hierarchy/density rather than
 editor imitation.
 
@@ -165,3 +165,65 @@ retained. New production-QML tests exercise startup, empty/loading/offline/recov
 keyboard navigation/search, draft return and hidden shortcuts, route/hide/minimize
 polling lifecycle, management activation and no server mutations from reading.
 No global settings, owner process/data, real Pi session or agterm navigation used.
+
+## Observer inspector and connection management (Task 4)
+
+Team details now contain the selected binding's project, current status, relative
+age, full original timestamp, explicitly historical last activity, provider/model,
+Pi/bridge versions and stable observer/runtime/version metadata. Technical text is
+read-only selectable plain text; a scrollable inspector keeps actions above the
+long metadata. Archived versus unavailable projects have distinct text notices.
+A claimed agterm session opens only through WorkspaceController's stable-ID/version
+check and the existing ObserverClient freshness/revocation checks and fixed adapter.
+Management's project/category filters never scope that lookup or manual selection.
+There are no new commands, network owners or credentials in QML.
+
+Connections uses the shared semantic surfaces, status labels, action roles,
+metadata disclosure and confirmation buttons. Scope and record-category filters
+separate current bindings, runtime candidates and history. Registrations without
+runtime remain explicitly unbound, not fabricated active members. Revoked,
+superseded, stale and offline records never advertise current working activity.
+Bind/unbind/revoke/prune retain explicit confirmations; the captured observer,
+runtime, database, manual project, CAS version, generation and binding identity are
+rechecked before dispatch. Presentation filters are not authorization boundaries.
+
+Reviewed fictional production-QML captures (private HOME/XDG, offscreen/software):
+
+- Inspector: [EN1280](docs/screenshots/team-inspector-en-1280.png),
+  [EN1440](docs/screenshots/team-inspector-en-1440.png),
+  [RU1280](docs/screenshots/team-inspector-ru-1280.png),
+  [RU1440](docs/screenshots/team-inspector-ru-1440.png), at 1280×820 / 1440×900.
+- Connections, 1280×820: [EN binding](docs/screenshots/connections-en-binding.png),
+  [candidate](docs/screenshots/connections-en-candidate.png),
+  [empty history](docs/screenshots/connections-en-empty.png),
+  [selectable metadata](docs/screenshots/connections-en-metadata.png),
+  [confirmation](docs/screenshots/connections-en-confirmation.png).
+- Russian connections, 1280×820:
+  [binding](docs/screenshots/connections-ru-binding.png),
+  [candidate](docs/screenshots/connections-ru-candidate.png),
+  [empty history](docs/screenshots/connections-ru-empty.png),
+  [empty candidates](docs/screenshots/connections-ru-empty-candidates.png),
+  [revoked](docs/screenshots/connections-ru-revoked.png),
+  [offline](docs/screenshots/connections-ru-offline.png).
+
+All 15 frames were visually inspected individually or in native capture contact
+sheets. Review corrected stock light popup scrims, accidental opaque overlay and
+unlocalized historical activity. Final surfaces retain visible action text and
+separate candidates/history from the team roster. UUIDs intentionally wrap in the
+narrow technical inspector and remain copyable; full narrow/device-scale acceptance
+belongs to Task 6. No HTML/browser render is counted as native evidence.
+
+Reproduce using the private-HOME invocation above with selectors
+`teamOverviewScreenshots observerInspectorAndManagementScreenshots` and variables
+`ARTEL_TEAM_SCREENSHOT="$ROOT/docs/screenshots/team-inspector"` and
+`ARTEL_CONNECTION_SCREENSHOT="$ROOT/docs/screenshots/connections"`.
+
+Task 4 gates: `make lint test build` and `make observer-check` PASS with the same
+Go/Qt/lint/Pi/Node versions recorded above; Qt suites 61+32, zero qmllint warnings.
+Production-QML regressions cover project-A-filter/project-B navigation with draft
+A unchanged, filtered selection, stale/revoked navigation rejection, archived and
+missing projects, malformed cached projection, metadata/confirm/cancel and observer
+mutation while an independent manual save remains pending. Existing CAS rebind,
+unbind, revoke, prune and old-database delayed-reply assertions remain intact.
+Same-version binding replacement and disappeared-runtime confirmations send no
+mutation. No owner daemon/data/token/settings or real sessions were used.

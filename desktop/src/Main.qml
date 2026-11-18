@@ -120,11 +120,19 @@ ApplicationWindow {
         edge: Qt.RightEdge
         width: Math.min(680, window.width - 40)
         height: window.height
+        padding: 0
+        background: Rectangle {
+            color: appTheme.panel
+        }
+        Overlay.modal: Rectangle {
+            color: Qt.rgba(appTheme.canvas.r, appTheme.canvas.g, appTheme.canvas.b, 0.7)
+        }
         onOpened: window.workspace.connectionsOpen = true
         onClosed: window.workspace.connectionsOpen = false
         ObserverPanel {
             anchors.fill: parent
             client: window.panel.observers
+            theme: appTheme
         }
     }
     RowLayout {

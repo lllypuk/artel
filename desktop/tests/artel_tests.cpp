@@ -310,6 +310,7 @@ private slots:
     const auto row = team.find(fixture.observer, fixture.runtime);
     QCOMPARE(row.value("project_name").toString(), QString("Example project"));
     QVERIFY(!row.value("project_available").toBool());
+    QVERIFY(row.value("project_archived").toBool());
     // Hold the next poll: cache expires even if the UI clock is running and
     // no failure response has arrived yet. Never use a real observer service.
     QPointer<QTcpSocket> delayed;
@@ -810,6 +811,7 @@ private slots:
     QCOMPARE(workspace->selectedObserver().value("observer_id").toString(),
              fixture.observer);
     QVERIFY(panel.project().isEmpty());
+    QTest::qWait(50); // Polish the newly populated scrollable inspector.
     QVERIFY(click(window, "teamOpenProjectButton"));
     QCOMPARE(workspace->route(), QString("workspace"));
     QCOMPARE(panel.project().value("id").toString(), fixture.project);
@@ -1018,6 +1020,13 @@ private slots:
           QVERIFY(rect.left() >= 0 && rect.right() <= window->width());
           QVERIFY(rect.top() >= 0 && rect.bottom() <= window->height());
         }
+        auto *metadata = item(window, "teamObserverMetadata");
+        QVERIFY(metadata && metadata->isVisible());
+        QVERIFY(metadata->property("readOnly").toBool());
+        QCOMPARE(metadata->property("textFormat").toInt(), int(Qt::PlainText));
+        QVERIFY(
+            metadata->property("text").toString().contains("fictional-model"));
+        QVERIFY(!item(window, "teamOpenSessionButton")->isEnabled());
         if (!prefix.isEmpty())
           QVERIFY(window->grabWindow().save(prefix + "-" + language + "-" +
                                             QString::number(size.width()) +
@@ -1048,6 +1057,311 @@ private slots:
         QVERIFY2(strings.contains(key), qPrintable(key));
       }
     }
+  }
+  void teamCrossProjectNavigationIgnoresManagementFilters() {
+    ObserverFixture fixture;
+    AgtermFixture terminal;
+    const QString projectB = "77777777-7777-4777-8777-777777777777";
+    auto snapshot = QJsonDocument::fromJson(fixture.state).object();
+    auto projects = snapshot.value("projects").toArray();
+    auto second = projects.first().toObject();
+    second.insert("id", projectB);
+    second.insert("name", "Project B");
+    projects.append(second);
+    snapshot.insert("projects", projects);
+    fixture.state = QJsonDocument(snapshot).toJson();
+    auto record = fixture.record();
+    record.insert("binding", QJsonObject{{"runtime_id", fixture.runtime},
+                                         {"project_id", projectB}});
+    auto runtimes = record.value("runtimes").toArray();
+    auto runtime = runtimes.first().toObject();
+    runtime.insert("disposition", "bound");
+    auto registration = runtime.value("registration").toObject();
+    registration.insert("terminal_hint",
+                        QJsonObject::fromVariantMap(terminal.hint()));
+    runtime.insert("registration", registration);
+    runtimes[0] = runtime;
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    terminal.install(panel.observers()->navigation());
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance, false);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    QVERIFY(panel.editTask());
+    panel.field("title", "Cross-project navigation keeps draft A");
+    const auto draft = client.draft();
+    auto *o = panel.observers();
+    o->setOnlyProject(true);
+    o->setViewFilter("history");
+    QTRY_VERIFY(o->online());
+    QVERIFY(o->rows().isEmpty());
+    auto *workspace =
+        window->property("workspace").value<WorkspaceController *>();
+    QTRY_COMPARE(workspace->team()->total(), 1);
+    QVERIFY(click(window, "teamMember_" + fixture.observer));
+    QVERIFY(item(window, "teamOpenSessionButton")->isEnabled());
+    QTest::qWait(50);
+    QVERIFY(click(window, "teamOpenSessionButton"));
+    QTRY_VERIFY(!terminal.calls.isEmpty());
+    QCOMPARE(terminal.calls.last().at(1), QString("select"));
+    QCOMPARE(panel.project().value("id").toString(), fixture.project);
+    QCOMPARE(client.draft(), draft);
+    // A filtered-out selection must never act on the next visible row.
+    const auto calls = terminal.calls.size();
+    workspace->team()->setSearch("no match");
+    QVERIFY(workspace->selectedObserver().isEmpty());
+    QVERIFY(
+        !workspace->openObserverSession(fixture.observer, fixture.runtime, 1));
+    workspace->team()->setSearch("");
+    QVERIFY(workspace->selectObserver(fixture.observer, fixture.runtime));
+    runtime.insert("freshness", "stale");
+    runtimes[0] = runtime;
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    o->reload();
+    QTRY_VERIFY(!item(window, "teamOpenSessionButton")->isEnabled());
+    QVERIFY(
+        !workspace->openObserverSession(fixture.observer, fixture.runtime, 1));
+    o->openSession(fixture.observer, fixture.runtime);
+    QCOMPARE(terminal.calls.size(), calls);
+    record.insert("revoked", true);
+    fixture.record(record);
+    o->reload();
+    QTRY_COMPARE(workspace->team()->total(), 0);
+    QVERIFY(workspace->selectedObserver().isEmpty());
+    o->openSession(fixture.observer, fixture.runtime);
+    QCOMPARE(terminal.calls.size(), calls);
+    QCOMPARE(client.draft(), draft);
+    QVERIFY(fixture.mutations.isEmpty());
+  }
+  void teamInspectorUnavailableProjectsAndMalformedProjection() {
+    ObserverFixture fixture;
+    auto record = fixture.record();
+    record.insert("binding", QJsonObject{{"runtime_id", fixture.runtime},
+                                         {"project_id", fixture.project}});
+    auto runtime = record.value("runtimes").toArray().first().toObject();
+    runtime.insert("disposition", "bound");
+    record.insert("runtimes", QJsonArray{runtime});
+    fixture.record(record);
+    auto snapshot = QJsonDocument::fromJson(fixture.state).object();
+    auto project = snapshot.value("projects").toArray().first().toObject();
+    project.insert("archived", true);
+    snapshot.insert("projects", QJsonArray{project});
+    fixture.state = QJsonDocument(snapshot).toJson();
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance, false);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(panel.observers()->online());
+    auto *workspace =
+        window->property("workspace").value<WorkspaceController *>();
+    QVERIFY(workspace->selectObserver(fixture.observer, fixture.runtime));
+    QTest::qWait(50);
+    QVERIFY(item(window, "teamProjectAvailability")->isVisible());
+    QVERIFY(item(window, "teamProjectAvailability")
+                ->property("text")
+                .toString()
+                .contains("Archived"));
+    QVERIFY(!item(window, "teamOpenProjectButton")->isEnabled());
+    snapshot.insert("projects", QJsonArray{});
+    fixture.state = QJsonDocument(snapshot).toJson();
+    client.reload();
+    QTRY_VERIFY(
+        !workspace->selectedObserver().value("project_archived").toBool());
+    QVERIFY(workspace->selectedObserver()
+                .value("project_name")
+                .toString()
+                .contains(fixture.project));
+    QVERIFY(item(window, "teamProjectAvailability")
+                ->property("text")
+                .toString()
+                .contains("unavailable"));
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/observers "))
+        UiFixture::respond(socket, 200, "{malformed");
+      else
+        fixture.observation(socket, request);
+    };
+    panel.observers()->reload();
+    QTRY_VERIFY(workspace->team()->cached());
+    QCOMPARE(workspace->selectedObserver().value("status").toString(),
+             QString("unknown"));
+    QVERIFY(!item(window, "teamOpenSessionButton")->isEnabled());
+    QVERIFY(!item(window, "teamOpenProjectButton")->isEnabled());
+    QVERIFY(fixture.mutations.isEmpty());
+  }
+  void observerConfirmationCapturesBindingAndIdentity() {
+    ObserverFixture fixture;
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(panel.selectProject(fixture.project));
+    auto *o = panel.observers();
+    o->setActive(true);
+    QTRY_VERIFY(o->online());
+    QVERIFY(o->prepare("revoke", fixture.observer, fixture.runtime));
+    auto record = fixture.record();
+    // Even a malformed same-version replacement must invalidate captured
+    // intent.
+    record.insert("binding", QJsonObject{{"runtime_id", fixture.otherRuntime},
+                                         {"project_id", fixture.project}});
+    fixture.record(record);
+    o->reload();
+    QTRY_VERIFY(!o->loading());
+    QVERIFY(!o->confirm());
+    QVERIFY(fixture.mutations.isEmpty());
+    o->reload();
+    QTRY_VERIFY(o->online());
+    QVERIFY(o->prepare("prune", fixture.observer, fixture.runtime));
+    auto runtimes = record.value("runtimes").toArray();
+    runtimes.removeFirst();
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    o->reload();
+    QTRY_VERIFY(!o->loading());
+    QVERIFY(!o->confirm());
+    QVERIFY(fixture.mutations.isEmpty());
+    o->setViewFilter("candidate");
+    QCOMPARE(o->rows().size(), 0);
+    o->setViewFilter("bound");
+    QCOMPARE(o->rows().size(), 1);
+    // Category follows current binding; a malformed disposition is still not a
+    // second member.
+    o->setViewFilter("history");
+    QCOMPARE(o->rows().size(), 0);
+    o->setViewFilter("invalid");
+    QCOMPARE(o->viewFilter(), QString("history"));
+    record.remove("binding");
+    record.insert("runtimes", QJsonArray{});
+    fixture.record(record);
+    o->setViewFilter("candidate");
+    o->reload();
+    QTRY_COMPARE(o->rows().size(), 1);
+    const auto registration = o->rows().first().toMap();
+    QVERIFY(
+        registration.value("category_text").toString().contains("no runtime"));
+    QVERIFY(!registration.value("bindable").toBool());
+    QVERIFY(!registration.value("navigable").toBool());
+    QVERIFY(fixture.mutations.isEmpty());
+  }
+  void observerInspectorAndManagementScreenshots() {
+    ObserverFixture fixture;
+    auto record = fixture.record();
+    record.insert("binding", QJsonObject{{"runtime_id", fixture.runtime},
+                                         {"project_id", fixture.project}});
+    auto runtimes = record.value("runtimes").toArray();
+    auto runtime = runtimes.first().toObject();
+    runtime.insert("disposition", "bound");
+    runtimes[0] = runtime;
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QCoreApplication::installTranslator(&appearance);
+    QQmlApplicationEngine engine;
+    QObject::connect(&appearance, &Appearance::changed, &engine,
+                     &QQmlEngine::retranslate);
+    auto *window = load(engine, panel, appearance, false);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(panel.selectProject(fixture.project));
+    auto *o = panel.observers();
+    QTRY_VERIFY(o->online());
+    QVERIFY(click(window, "teamConnectionsButton"));
+    QTRY_VERIFY(window->findChild<QObject *>("observerDrawer")
+                    ->property("opened")
+                    .toBool());
+    const auto prefix = qEnvironmentVariable("ARTEL_CONNECTION_SCREENSHOT");
+    const auto capture = [&](const QString &name) {
+      QTest::qWait(80);
+      auto *refresh = item(window, "observerRefresh");
+      QVERIFY(refresh && refresh->isVisible());
+      const auto bounds = refresh->mapRectToScene(refresh->boundingRect());
+      QVERIFY(bounds.right() <= window->width());
+      QVERIFY(bounds.bottom() <= window->height());
+      if (!prefix.isEmpty())
+        QVERIFY(window->grabWindow().save(prefix + "-" + name + ".png"));
+    };
+    for (const auto &language : {QString("en"), QString("ru")}) {
+      writeFile(fixture.directory.filePath("language"), language.toUtf8());
+      appearance.refresh();
+      o->setViewFilter("bound");
+      QCOMPARE(o->rows().size(), 1);
+      capture(language + "-binding");
+      if (language == "en") {
+        QVERIFY(click(window, "observerMetadataToggle_" + fixture.runtime));
+        auto *metadata = item(window, "observerMetadata_" + fixture.runtime);
+        QVERIFY(metadata && metadata->isVisible());
+        QVERIFY(metadata->property("readOnly").toBool());
+        QCOMPARE(metadata->property("textFormat").toInt(), int(Qt::PlainText));
+        capture("en-metadata");
+        QVERIFY(click(window, "observerMetadataToggle_" + fixture.runtime));
+        QTest::qWait(50);
+        QVERIFY(click(window, "observerBind_" + fixture.runtime));
+        auto *confirmation =
+            window->findChild<QObject *>("observerConfirmation");
+        QVERIFY(confirmation && confirmation->property("visible").toBool());
+        capture("en-confirmation");
+        QVERIFY(QMetaObject::invokeMethod(confirmation, "reject"));
+        QTRY_VERIFY(!confirmation->property("visible").toBool());
+        QTest::qWait(200);
+        QVERIFY(o->confirmation().isEmpty());
+      }
+      o->setViewFilter("candidate");
+      QCOMPARE(o->rows().size(), 1);
+      capture(language + "-candidate");
+      o->setViewFilter("history");
+      QVERIFY(o->rows().isEmpty());
+      capture(language + "-empty");
+    }
+    auto noCandidates = record;
+    noCandidates.insert("runtimes", QJsonArray{runtime});
+    fixture.record(noCandidates);
+    o->setViewFilter("candidate");
+    o->reload();
+    QTRY_VERIFY(!o->loading());
+    QVERIFY(o->rows().isEmpty());
+    capture("ru-empty-candidates");
+    record.insert("revoked", true);
+    fixture.record(record);
+    o->setViewFilter("history");
+    o->reload();
+    QTRY_COMPARE(o->rows().size(), 2);
+    QTRY_VERIFY(
+        !item(window, "observerRevoke_" + fixture.runtime)->isEnabled());
+    capture("ru-revoked");
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/observers "))
+        UiFixture::respond(socket, 503, "{}");
+      else
+        fixture.observation(socket, request);
+    };
+    o->reload();
+    QTRY_VERIFY(!o->online());
+    QVERIFY(!item(window, "observerPrune_" + fixture.runtime)->isEnabled());
+    capture("ru-offline");
+    QVERIFY(fixture.mutations.isEmpty());
+    QCoreApplication::removeTranslator(&appearance);
   }
   void observerCatalogCoversQmlAndClient() {
     QFile catalog(":/i18n/ru.json"), qml(":/ObserverPanel.qml");
@@ -1217,8 +1531,13 @@ private slots:
     client.reload();
     QTRY_VERIFY(client.online());
     QVERIFY(panel.selectProject(fixture.project));
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance);
+    QVERIFY(window);
+    QVERIFY(click(window, "observersButton"));
     auto *o = panel.observers();
-    o->setActive(true);
     QTRY_VERIFY(o->online());
     QVERIFY(o->prepare("bind", fixture.observer, fixture.runtime));
     // Another owner's version wins. No hidden CAS adoption.
@@ -1269,8 +1588,10 @@ private slots:
     QVERIFY(panel.save());
     QTRY_VERIFY(pending);
     QVERIFY(client.pending());
-    QVERIFY(o->prepare("revoke", fixture.observer, fixture.otherRuntime));
-    QVERIFY(o->confirm());
+    QTRY_VERIFY(item(window, "observerRevoke_" + fixture.otherRuntime));
+    QVERIFY(click(window, "observerRevoke_" + fixture.otherRuntime));
+    QVERIFY(QMetaObject::invokeMethod(
+        window->findChild<QObject *>("observerConfirmation"), "accept"));
     QTRY_VERIFY(fixture.record().value("revoked").toBool());
     QTRY_VERIFY(o->online());
     QVERIFY(client.pending());

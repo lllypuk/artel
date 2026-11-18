@@ -39,6 +39,8 @@ public:
   Q_INVOKABLE bool openObserverProject(const QString &observer,
                                        const QString &runtime,
                                        const QString &project, qint64 version);
+  Q_INVOKABLE bool openObserverSession(const QString &observer,
+                                       const QString &runtime, qint64 version);
   Q_INVOKABLE bool saveShortcut();
   Q_INVOKABLE bool escapeShortcut();
 signals:

@@ -193,7 +193,22 @@ bool ObserverClient::canBind() const {
   return !m_project.value("id").toString().isEmpty() &&
          !m_project.value("archived").toBool();
 }
-QVariantList ObserverClient::rows() const { return records(m_onlyProject); }
+void ObserverClient::setViewFilter(const QString &value) {
+  if (m_viewFilter == value ||
+      !QStringList{"", "bound", "candidate", "history"}.contains(value))
+    return;
+  m_viewFilter = value;
+  emit changed();
+}
+QVariantList ObserverClient::rows() const {
+  QVariantList result;
+  for (const auto &value : records(m_onlyProject)) {
+    const auto row = value.toMap();
+    if (m_viewFilter.isEmpty() || row.value("category") == m_viewFilter)
+      result.append(row);
+  }
+  return result;
+}
 QVariantList ObserverClient::records(bool onlyProject) const {
   QVariantList result;
   for (const auto &value : m_observers) {
@@ -213,6 +228,25 @@ QVariantList ObserverClient::records(bool onlyProject) const {
                                           row.value("runtime_id").toString() &&
                                       !b.isEmpty());
       row.insert("has_binding", !b.isEmpty());
+      row.insert("binding_runtime_id", b.value("runtime_id").toString());
+      row.insert("binding_project_id", b.value("project_id").toString());
+      row.insert("generation", o.value("generation").toVariant());
+      const bool registrationOnly =
+          row.value("runtime_id").toString().isEmpty();
+      const QString category =
+          o.value("revoked").toBool()           ? "history"
+          : row.value("bound_runtime").toBool() ? "bound"
+          : registrationOnly || row.value("disposition") == "candidate"
+              ? "candidate"
+              : "history";
+      row.insert("category", category);
+      row.insert("category_text",
+                 category == "bound" ? tr("Current binding")
+                 : category == "candidate"
+                     ? (registrationOnly
+                            ? tr("Unbound observer — no runtime yet")
+                            : tr("Candidate runtime"))
+                     : tr("Connection history"));
       const bool offline =
           !m_online || !m_age.isValid() || m_age.elapsed() >= 4000;
       const auto freshness =
@@ -222,15 +256,19 @@ QVariantList ObserverClient::records(bool onlyProject) const {
           "navigable",
           !offline && freshness == "fresh" && !o.value("revoked").toBool() &&
               AgtermAdapter::validHint(row.value("terminal_hint").toMap()));
-      row.insert(
-          "status_text",
-          tr("%1 · %2 · %3")
-              .arg(stateLabel(o.value("revoked").toBool()
-                                  ? "revoked"
-                                  : row.value("disposition").toString()),
-                   stateLabel(offline ? "unknown"
-                                      : row.value("activity").toString()),
-                   stateLabel(freshness)));
+      const bool historical = offline || o.value("revoked").toBool() ||
+                              row.value("disposition") == "superseded";
+      const QString activity = historical                            ? "unknown"
+                               : row.value("lifecycle") == "stopped" ? "stopped"
+                               : freshness != "fresh"
+                                   ? "unknown"
+                                   : row.value("activity").toString();
+      row.insert("status_text",
+                 tr("%1 · %2 · %3")
+                     .arg(stateLabel(o.value("revoked").toBool()
+                                         ? "revoked"
+                                         : row.value("disposition").toString()),
+                          stateLabel(activity), stateLabel(freshness)));
       row.insert("bindable", canBind() && !o.value("revoked").toBool() &&
                                  (row.value("disposition") == "candidate" ||
                                   row.value("disposition") == "bound"));
@@ -363,6 +401,9 @@ bool ObserverClient::prepare(const QString &action, const QString &observer,
                       {"observer_id", observer},
                       {"runtime_id", runtime},
                       {"version", row.value("version")},
+                      {"generation", row.value("generation")},
+                      {"binding_runtime_id", row.value("binding_runtime_id")},
+                      {"binding_project_id", row.value("binding_project_id")},
                       {"project_id", m_project.value("id")},
                       {"instance", m_instance}};
     emit changed();
@@ -381,7 +422,13 @@ bool ObserverClient::confirm() {
   if (!prepare(c.value("action").toString(), c.value("observer_id").toString(),
                c.value("runtime_id").toString()))
     return false;
-  const bool same = m_confirmation.value("version") == c.value("version");
+  const bool same =
+      m_confirmation.value("version") == c.value("version") &&
+      m_confirmation.value("generation") == c.value("generation") &&
+      m_confirmation.value("binding_runtime_id") ==
+          c.value("binding_runtime_id") &&
+      m_confirmation.value("binding_project_id") ==
+          c.value("binding_project_id");
   m_confirmation.clear();
   if (!same) {
     fail(tr("Observation changed. Refresh and confirm again."));
