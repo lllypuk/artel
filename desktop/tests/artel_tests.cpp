@@ -12,6 +12,7 @@
 #include <QJsonDocument>
 #include <QProcess>
 #include <QQmlApplicationEngine>
+#include <QQmlIncubationController>
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
@@ -1256,6 +1257,14 @@ private slots:
     QCOMPARE(panel.editor(), draft);
     QVERIFY(fixture.mutations.isEmpty());
     client.stop();
+    // Focus/scroll can schedule virtualized delegates just before teardown.
+    // Stop polling and finish incubation before destroying the QML engine;
+    // failOnWarning must still catch genuine lifetime/resource regressions.
+    workspace->setWindowVisible(false);
+    auto *incubator = engine.incubationController();
+    QVERIFY(incubator);
+    incubator->incubateFor(1000);
+    QTRY_COMPARE_WITH_TIMEOUT(incubator->incubatingObjectCount(), 0, 3000);
   }
   void teamOverviewScreenshots() {
     ObserverFixture fixture;

@@ -120,6 +120,7 @@ def main():
         for name in PAYLOAD:
             if str(ROOT).encode() in (extracted / name).read_bytes():
                 raise ValueError(f"Checkout path leaked into {name}")
+        run(["python3", "-B", str(ROOT / "tests/staged_acceptance.py"), str(extracted), "--negative-probe"])
         run(["python3", "-B", str(ROOT / "tests/staged_acceptance.py"), str(extracted)])
         print("Package manifest, standalone observer, no-Pi baseline, desktop, unit and privacy checks: PASS")
     print("Disposable package removed; nothing installed or activated.")

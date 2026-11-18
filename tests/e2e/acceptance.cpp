@@ -34,12 +34,18 @@ QQuickItem *item(QQuickWindow *window, const QString &name) {
   return item(window->contentItem(), name);
 }
 bool click(QQuickWindow *window, const QString &name) {
+  // Network replies can expose controls before the next layout/render pass.
+  // Let Qt polish their hit regions before issuing an actual mouse click.
+  QTest::qWait(30);
   auto *control = item(window, name);
   if (!control || !control->isVisible() || !control->isEnabled())
     return false;
   QTest::mouseClick(
       window, Qt::LeftButton, {},
-      control->mapToScene(QPointF(control->width() / 2, control->height() / 2))
+      control
+          ->mapToScene(
+              QPointF(control->width() / 2,
+                      name.startsWith("task_") ? 20.0 : control->height() / 2))
           .toPoint());
   return true;
 }
@@ -169,9 +175,6 @@ struct Window {
     engine.load(QUrl("qrc:/Main.qml"));
     if (engine.rootObjects().size() == 1)
       window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
-    if (window)
-      click(window, "projectsNavButton");
-    workspace.returnToEditor();
     client.reload();
   }
 };
@@ -271,10 +274,14 @@ private slots:
     Oracle oracle(daemon.endpoint, daemon.tokenPath());
     const auto expected =
         QJsonDocument::fromJson(qgetenv("ARTEL_OBSERVER_EXPECTED")).object();
+    const auto baseline = oracle.get("/v1/snapshot");
+    QVERIFY(!baseline.isEmpty());
+    const auto before = oracle.get("/v1/observers");
     Window ui(daemon);
     QVERIFY(ui.window);
+    QCOMPARE(ui.workspace.route(), QString("team"));
+    QVERIFY(item(ui.window, "teamOverview")->isVisible());
     QTRY_VERIFY_WITH_TIMEOUT(ui.panel.writable(), 5000);
-    QVERIFY(click(ui.window, "observersButton"));
     auto *observers = ui.panel.observers();
     QTRY_VERIFY_WITH_TIMEOUT(observers->online(), 5000);
     auto matches = [&] {
@@ -291,6 +298,35 @@ private slots:
       return false;
     };
     QTRY_VERIFY_WITH_TIMEOUT(matches(), 5000);
+    int total = 0, unbound = 0;
+    for (const auto &value : before.value("observers").toArray()) {
+      const auto record = value.toObject();
+      if (record.value("revoked").toBool())
+        continue;
+      if (record.value("binding").toObject().isEmpty())
+        ++unbound;
+      else
+        ++total;
+    }
+    QTRY_COMPARE(ui.workspace.team()->total(), total);
+    QCOMPARE(ui.workspace.team()->unbound(), unbound);
+    QCOMPARE(ui.workspace.team()->shown(), total);
+    // One observer can have many candidates/history runtimes, but only its
+    // current non-revoked binding belongs to the whole-team roster.
+    const auto selectedProject = ui.panel.project();
+    const auto selectedTask = ui.panel.task();
+    ui.workspace.team()->setSearch("definitely-no-fictional-observer-match");
+    QCOMPARE(ui.workspace.team()->shown(), 0);
+    QCOMPARE(ui.workspace.team()->total(), total);
+    ui.workspace.team()->setSearch({});
+    QCOMPARE(ui.workspace.team()->shown(), total);
+    QVERIFY(click(ui.window, "projectsNavButton"));
+    QCOMPARE(ui.workspace.route(), QString("projects"));
+    QVERIFY(click(ui.window, "teamNavButton"));
+    QCOMPARE(ui.panel.project(), selectedProject);
+    QCOMPARE(ui.panel.task(), selectedTask);
+    QVERIFY(click(ui.window, "connectionsNavButton"));
+    QTRY_VERIFY(ui.workspace.connectionsOpen());
     QVERIFY(item(ui.window, "observerList"));
     QVERIFY(item(ui.window, "observerList")->isVisible());
     const auto projection = oracle.get("/v1/observers");
@@ -308,6 +344,22 @@ private slots:
             QCOMPARE(runtime.value(it.key()), it.value());
       }
     QVERIFY(oracleMatch);
+    // Polling/filters/routes must not write either the manual domain or owner
+    // observer controls. Heartbeats may legitimately update runtime metadata.
+    QCOMPARE(oracle.get("/v1/snapshot"), baseline);
+    for (const auto &value : before.value("observers").toArray()) {
+      const auto previous = value.toObject();
+      bool found = false;
+      for (const auto &current : projection.value("observers").toArray()) {
+        const auto record = current.toObject();
+        if (record.value("observer_id") != previous.value("observer_id"))
+          continue;
+        found = true;
+        for (const auto &key : {"version", "generation", "binding", "revoked"})
+          QCOMPARE(record.value(key), previous.value(key));
+      }
+      QVERIFY(found);
+    }
     QVERIFY(!ui.panel.dirty());
     QVERIFY(!ui.panel.uncertain());
   }
@@ -328,6 +380,14 @@ private slots:
     auto ui = std::make_unique<Window>(daemon);
     QVERIFY(ui->window);
     QTRY_VERIFY(ui->panel.writable());
+    QCOMPARE(ui->workspace.route(), QString("team"));
+    QTRY_VERIFY(ui->panel.observers()->online());
+    QCOMPARE(ui->workspace.team()->total(), 0);
+    QCOMPARE(ui->workspace.team()->unbound(), 0);
+    QVERIFY(item(ui->window, "teamEmptyState")->isVisible());
+    QCOMPARE(oracle.get("/v1/snapshot")["event_seq"].toInteger(), 0);
+    QVERIFY(click(ui->window, "projectsNavButton"));
+    QCOMPARE(ui->workspace.route(), QString("projects"));
     QTest::qWait(100);
     QVERIFY(QDir(daemon.dir.path()).mkdir("workspace"));
     QVERIFY(click(ui->window, "createProjectButton"));
@@ -339,10 +399,13 @@ private slots:
     const auto project = ui->panel.projects().first().toMap()["id"].toString();
     QTRY_VERIFY(item(ui->window, "project_" + project));
     QVERIFY(click(ui->window, "project_" + project));
+    QTRY_COMPARE(ui->panel.project().value("id").toString(), project);
     QStringList ids;
     for (int i = 0; i < 3; ++i) {
       QVERIFY(click(ui->window, "createTaskButton"));
+      QTRY_COMPARE(ui->panel.editorKind(), QString("task"));
       QVERIFY(enter(ui->window, "nameField", QString("Task %1").arg(i + 1)));
+      QTRY_VERIFY(ui->panel.saveable());
       QVERIFY(click(ui->window, "saveButton"));
       QTRY_COMPARE(ui->panel.tasks().size(), i + 1);
       QTRY_VERIFY(!ui->panel.dirty());
@@ -404,6 +467,9 @@ private slots:
     QVERIFY(ui->window);
     QTRY_VERIFY(ui->panel.writable());
     QCOMPARE(ui->client.instance(), instance);
+    QCOMPARE(ui->workspace.route(), QString("team"));
+    QVERIFY(click(ui->window, "projectsNavButton"));
+    QCOMPARE(oracle.get("/v1/snapshot"), before);
     QVERIFY(ui->panel.selectProject(project));
     QVERIFY(ui->panel.selectTask(ids[0]));
     QCOMPARE(ui->panel.task()["state"].toString(), QString("done"));

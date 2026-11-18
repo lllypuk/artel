@@ -346,6 +346,7 @@ class Acceptance:
             new = rows[0]['registration']['runtime_id']
             assert rows[0]['disposition'] == 'candidate'
             assert self.record()['binding']['runtime_id'] == runtime
+            self.qml(new, disposition='candidate')  # old binding still counts once
             self.bind(new)
             runtime = new
             self.wait(lambda: self.runtime(runtime).get('freshness') == 'fresh', 'explicit rebind')
@@ -398,6 +399,7 @@ class Acceptance:
         new_id, new_secret = self.observer_id, self.secret
         self.observer_id, self.secret = old_id, old_secret
         self.action('revoke')
+        self.qml(runtime, disposition='revoked', navigable=False)
         self.observer_request('GET', 'context?runtime_id=' + runtime, status=401)
         self.observer_id, self.secret = new_id, new_secret
         assert self.owner_request('GET', '/v1/snapshot') == baseline, 'manual domain changed'
@@ -421,6 +423,7 @@ class Acceptance:
         live = self.start_pi()
         assert self.runtime(live)['disposition'] == 'candidate'
         self.action('revoke')
+        self.qml(live, disposition='revoked', navigable=False)
         self.observer_request('GET', 'context?runtime_id=' + live, status=401)
         count = len(self.record()['runtimes'])
         until = time.monotonic() + 6
