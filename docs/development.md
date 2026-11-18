@@ -123,11 +123,13 @@ Run `artelctl observer prune --id OBSERVER_UUID --expected-version N --runtime-i
 RUNTIME_UUID`, repeating `--runtime-id` once for every additional confirmed ID.
 The CLI never fetches or approves IDs on your behalf. The owner `POST
 /v1/observers/{observer_id}/prune` JSON body must contain `expected_version` and
-`expected_runtime_ids` (1–8 unique canonical non-nil UUIDs, in any order). If the
-version or the exact eligible set differs, the server returns `409 version_conflict`
-without retiring anything, including when a new candidate registers without a
-version bump. Refresh the registry and reconfirm. With the original key, version
-and equivalent set, replay returns the original result even after retirement.
+`expected_runtime_ids` (1–8 unique canonical non-nil UUIDs, in any order). With the original key, version and equivalent set, replay returns the original
+result even after retirement. A changed version or set under a recorded key
+returns `409 idempotency_conflict`. With a new key, a stale version or exact set
+returns `409 version_conflict` without retiring anything, including when a new
+candidate registers without a version bump. Refresh the registry and reconfirm.
+When listing against an older daemon, absent `prune_eligible` means unknown, not
+ineligible.
 
 Upgrade the daemon, desktop and CLI together; the old version-only request now
 returns 400 and the updated clients do not fall back. There is no data migration.

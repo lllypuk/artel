@@ -24,7 +24,7 @@ public:
   bool busy() const { return m_busy; }
   QString message() const { return m_message; }
   static bool validHint(const QVariantMap &hint);
-  void open(const QVariantMap &hint, std::function<bool()> stillCurrent = {});
+  bool open(const QVariantMap &hint, std::function<bool()> stillCurrent = {});
   void revalidateLookup();
   void cancel();
 signals:

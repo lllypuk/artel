@@ -78,7 +78,7 @@ type ObserverOwnerResult struct {
 }
 type ObserverRuntimeProjection struct {
 	Registration  ObserverRegistration `json:"registration"`
-	PruneEligible bool                 `json:"prune_eligible"`
+	PruneEligible *bool                `json:"prune_eligible,omitempty"` // Always set by current servers; absent in legacy projections.
 	Disposition   string               `json:"disposition"`
 	Generation    int64                `json:"generation"`
 	Activity      string               `json:"activity"`

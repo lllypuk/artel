@@ -11,12 +11,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/lllypuk/artel/internal/local"
 	"github.com/lllypuk/artel/internal/store"
 )
+
+var errPruneApprovalStale = errors.New("prune approval is stale; refresh the observer list and confirm the runtime IDs again")
 
 type ownerClient struct {
 	endpoint, token string
@@ -50,6 +53,14 @@ func (c ownerClient) request(method, path, key string, body, result any) error {
 		return errors.New("invalid API response")
 	}
 	if response.StatusCode != 200 {
+		if response.StatusCode == http.StatusConflict && method == http.MethodPost && strings.HasSuffix(path, "/prune") {
+			var reply struct {
+				Code string `json:"error"`
+			}
+			if json.Unmarshal(b, &reply) == nil && reply.Code == "version_conflict" {
+				return errPruneApprovalStale
+			}
+		}
 		return errors.New("API operation rejected")
 	}
 	if json.Unmarshal(b, result) != nil {

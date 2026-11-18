@@ -1466,6 +1466,23 @@ private slots:
     QTRY_COMPARE(workspace->team()->total(), 1);
     QVERIFY(click(window, "teamMember_" + fixture.observer));
     QVERIFY(item(window, "teamOpenSessionButton")->isEnabled());
+    QPointer<QTcpSocket> pendingRevoke;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("POST /v1/observers/") &&
+          request.contains("/revoke "))
+        pendingRevoke = socket;
+      else
+        fixture.observation(socket, request);
+    };
+    QVERIFY(o->prepare("revoke", fixture.observer, fixture.runtime));
+    QVERIFY(o->confirm());
+    QTRY_VERIFY(pendingRevoke);
+    QVERIFY(!item(window, "teamOpenSessionButton")->isEnabled());
+    QVERIFY(
+        !workspace->openObserverSession(fixture.observer, fixture.runtime, 1));
+    QVERIFY(terminal.calls.isEmpty());
+    UiFixture::respond(pendingRevoke, 409, "{}");
+    QTRY_VERIFY(item(window, "teamOpenSessionButton")->isEnabled());
     QTest::qWait(50);
     QVERIFY(click(window, "teamOpenSessionButton"));
     QTRY_VERIFY(!terminal.calls.isEmpty());
@@ -1500,7 +1517,8 @@ private slots:
     o->openSession(fixture.observer, fixture.runtime);
     QCOMPARE(terminal.calls.size(), calls);
     QCOMPARE(client.draft(), draft);
-    QVERIFY(fixture.mutations.isEmpty());
+    QCOMPARE(fixture.mutations.size(), 1);
+    QVERIFY(fixture.mutations.first().contains("/revoke "));
   }
   void observerPendingNavigation_data() {
     QTest::addColumn<QString>("change");
@@ -1558,14 +1576,9 @@ private slots:
         done(true, reply);
       }
     });
-    if (change == "expiry") {
-      // Keep the next poll in flight so cache expiry has no projection signal.
-      fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
-        if (!request.startsWith("GET /v1/observers "))
-          fixture.normal(socket, request);
-      };
-      QTest::qWait(3000);
-    }
+    qint64 cacheAge = 0;
+    if (change == "expiry")
+      observer.setCacheAgeSource([&cacheAge] { return cacheAge; });
     QVERIFY(observer.cacheCurrent());
     const auto row = observer.rows().first().toMap();
     QCOMPARE(row.value("binding_project_id").toString(), projectB);
@@ -1629,7 +1642,8 @@ private slots:
       }
     }
     if (change == "expiry") {
-      QTRY_VERIFY(!observer.cacheCurrent());
+      cacheAge = 4000;
+      QVERIFY(!observer.cacheCurrent());
       QVERIFY(observer.online());
       QVERIFY(nav->busy()); // The two-second adapter deadline hasn't fired.
     } else if (change != "owner-database") {
@@ -2260,12 +2274,10 @@ private slots:
     auto *drawer = window->findChild<QObject *>("observerDrawer");
     QVERIFY(drawer);
     QTRY_VERIFY(drawer->property("opened").toBool());
-    QTRY_VERIFY(item(window, "observerBind_" + fixture.runtime));
-    auto *bindButton = item(window, "observerBind_" + fixture.runtime);
-    bindButton->forceActiveFocus();
-    QTRY_VERIFY(bindButton->hasActiveFocus());
-    QTest::keyClick(window, Qt::Key_Space);
-    QVERIFY(!observer->confirmation().isEmpty());
+    const auto bindName = "observerBind_" + fixture.runtime;
+    QTRY_VERIFY(item(window, bindName) && item(window, bindName)->isEnabled());
+    QVERIFY(click(window, bindName));
+    QTRY_VERIFY(!observer->confirmation().isEmpty());
     auto *dialog = window->findChild<QObject *>("observerConfirmation");
     QVERIFY(dialog);
     QVERIFY(QMetaObject::invokeMethod(dialog, "accept"));
@@ -2389,6 +2401,12 @@ private slots:
     o->setOnlyProject(true);
     QTRY_VERIFY(o->online() && !o->loading());
     QCOMPARE(o->confirmation(), text);
+    const auto reads = fixture.reads;
+    o->setProject(QVariantMap{{"id", fixture.project}, {"name", "Renamed"}});
+    QVERIFY(o->cacheCurrent());
+    QVERIFY(!o->loading());
+    QCOMPARE(fixture.reads, reads);
+    QCOMPARE(o->confirmation(), text);
     // A newly registered candidate is unknown to the UI until the next read.
     auto added = hidden;
     auto reg = added.value("registration").toObject();
@@ -2410,9 +2428,20 @@ private slots:
     QVERIFY(o->message().contains("confirm the runtime IDs again"));
     QCOMPARE(fixture.record(), record);
     QVERIFY(o->prepare("prune", fixture.observer, fixture.runtime));
+    runtimes.removeLast();
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    o->reload();
+    QTRY_VERIFY(o->online() && !o->loading());
+    QVERIFY(!o->confirm());
+    QVERIFY(o->message().contains("Refresh and confirm again"));
+    QCOMPARE(fixture.mutations.size(), 1);
+    o->reload();
+    QTRY_VERIFY(o->online() && !o->loading());
+    QVERIFY(o->prepare("prune", fixture.observer, fixture.runtime));
     // A wrong-typed or missing flag on even a hidden row disables all prune.
     added.insert("prune_eligible", "true");
-    runtimes[2] = added;
+    runtimes.append(added);
     record.insert("runtimes", runtimes);
     fixture.record(record);
     o->setOnlyProject(false);

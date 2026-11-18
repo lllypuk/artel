@@ -553,7 +553,8 @@ func (s *Store) Observers(ctx context.Context) (ObserverRegistry, error) {
 			return registry, err
 		}
 		for _, r := range runtimes {
-			r.PruneEligible = observerPruneEligible(o, r)
+			eligible := observerPruneEligible(o, r)
+			r.PruneEligible = &eligible
 			r.Freshness = "unknown"
 			if r.LastSeen != "" {
 				r.Freshness = "stale"

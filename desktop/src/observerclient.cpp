@@ -257,15 +257,12 @@ void ObserverClient::setProject(const QVariantMap &project) {
   if (m_project == project)
     return;
   m_project = project;
-  m_online = false;
-  // Unbind and prune target the observer registry, not the manual project.
-  const auto action = m_confirmation.value("action").toString();
-  if (action != "unbind" && action != "prune")
+  // Only Bind targets the manual project; do not disturb observer reads.
+  if (m_confirmation.value("action") == "bind" &&
+      (m_confirmation.value("project_id") != m_project.value("id") ||
+       !canBind()))
     m_confirmation.clear();
-  resetRead();
   emit changed();
-  if (m_active)
-    reload();
 }
 void ObserverClient::setOnlyProject(bool value) {
   if (m_onlyProject == value)
@@ -473,8 +470,7 @@ void ObserverClient::cancelConfirmation() {
   emit changed();
 }
 bool ObserverClient::canManage() const {
-  return m_active && m_online && !busy() && m_age.isValid() &&
-         m_age.elapsed() < 4000;
+  return m_active && !busy() && cacheCurrent();
 }
 bool ObserverClient::prepare(const QString &action, const QString &observer,
                              const QString &runtime) {
@@ -672,12 +668,18 @@ QJsonObject ObserverClient::navigationTarget(const QString &observer,
   return {};
 }
 
-void ObserverClient::openSession(const QString &observer,
+bool ObserverClient::canOpenSession(const QString &observer,
+                                    const QString &runtime) const {
+  return !navigationTarget(observer, runtime).isEmpty();
+}
+bool ObserverClient::openSession(const QString &observer,
                                  const QString &runtime) {
   const auto target = navigationTarget(observer, runtime);
-  if (!target.isEmpty())
-    m_navigation.open(target.value("terminal_hint").toObject().toVariantMap(),
-                      [this, observer, runtime, target] {
-                        return navigationTarget(observer, runtime) == target;
-                      });
+  if (target.isEmpty())
+    return false;
+  return m_navigation.open(
+      target.value("terminal_hint").toObject().toVariantMap(),
+      [this, observer, runtime, target] {
+        return navigationTarget(observer, runtime) == target;
+      });
 }

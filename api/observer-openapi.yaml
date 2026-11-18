@@ -272,7 +272,7 @@ components:
       properties:
         expected_version: {$ref: '#/components/schemas/Counter'}
         expected_runtime_ids:
-          description: Exact eligible set from the owner registry, in any order. A different set returns 409 version_conflict without pruning.
+          description: Exact eligible set from the owner registry, in any order. An identical recorded request replays its result; a changed version or set under a recorded key returns 409 idempotency_conflict. For a new key, a stale version or set returns 409 version_conflict without pruning.
           type: array
           minItems: 1
           maxItems: 8

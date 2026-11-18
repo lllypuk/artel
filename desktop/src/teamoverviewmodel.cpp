@@ -55,10 +55,10 @@ QVariantMap TeamOverviewModel::presented(QVariantMap row) const {
   row.insert("status", state);
   row.insert("status_text", label(state));
   row.insert("cached", !m_current);
-  row.insert("navigable",
-             m_current && !row.value("inconsistent").toBool() &&
-                 row.value("freshness") == "fresh" &&
-                 AgtermAdapter::validHint(row.value("terminal_hint").toMap()));
+  row.insert("navigable", m_current && !row.value("inconsistent").toBool() &&
+                              m_observers->canOpenSession(
+                                  row.value("observer_id").toString(),
+                                  row.value("runtime_id").toString()));
   row.insert("last_freshness", row.value("freshness"));
   if (!m_current)
     row.insert("freshness", "unknown");

@@ -161,6 +161,40 @@ func TestObserverCLIPruneDoesNotDowngrade(t *testing.T) {
 	}
 }
 
+func TestObserverCLIPruneDiagnosticsAndLegacyList(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "owner", "token")
+	if _, err := local.InitToken(tokenPath); err != nil {
+		t.Fatal(err)
+	}
+	id, runtime := uuid.NewString(), uuid.NewString()
+	for _, reply := range []struct{ code, diagnostic string }{
+		{"version_conflict", "refresh the observer list and confirm the runtime IDs again"},
+		{"idempotency_conflict", "API operation rejected"},
+	} {
+		t.Run(reply.code, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					_, _ = w.Write([]byte(`{"observers":[{"runtimes":[{}, {"prune_eligible":false}]}]}`))
+					return
+				}
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": reply.code, "message": "not for the terminal"})
+			}))
+			defer server.Close()
+			args := []string{"--endpoint", server.URL, "--token-file", tokenPath}
+			var out, diagnostic bytes.Buffer
+			if code := run(append([]string{"observer", "list"}, args...), &out, &diagnostic); code != 0 || strings.Count(out.String(), `"prune_eligible":false`) != 1 || strings.Count(out.String(), `"prune_eligible"`) != 1 {
+				t.Fatalf("legacy list: exit=%d stdout=%s diagnostic=%s", code, out.String(), diagnostic.String())
+			}
+			out.Reset()
+			prune := append([]string{"observer", "prune", "--id", id, "--runtime-id", runtime, "--expected-version", "3"}, args...)
+			if code := run(prune, &out, &diagnostic); code != 1 || !strings.Contains(diagnostic.String(), reply.diagnostic) || strings.Contains(diagnostic.String(), "not for the terminal") {
+				t.Fatalf("prune: exit=%d diagnostic=%s", code, diagnostic.String())
+			}
+		})
+	}
+}
+
 func TestObserverCLIControls(t *testing.T) {
 	base := t.TempDir()
 	tokenPath := filepath.Join(base, "owner", "token")

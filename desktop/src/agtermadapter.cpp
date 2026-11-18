@@ -121,14 +121,14 @@ void AgtermAdapter::process(const QStringList &args, Done done) {
   p->setArguments(args);
   p->start();
 }
-void AgtermAdapter::open(const QVariantMap &hint,
+bool AgtermAdapter::open(const QVariantMap &hint,
                          std::function<bool()> stillCurrent) {
   if (m_busy)
-    return;
+    return false;
   if (!validHint(hint) || !m_socket.startsWith('/') || m_socket.size() > 4096 ||
       m_socket.contains(QChar::Null)) {
     finish(false);
-    return;
+    return false;
   }
   m_session = hint.value("session_id").toString().toLower();
   m_pane = hint.value("pane_id").toString().toLower();
@@ -141,7 +141,7 @@ void AgtermAdapter::open(const QVariantMap &hint,
   m_deadline.start(2000);
   emit changed();
   if (generation != m_generation || !lookupCurrent())
-    return;
+    return false;
   run({"version", "--json"}, [this](bool, QByteArray bytes) {
     // Tested public CLI dialect only; future formats fail closed.
     if (result(bytes).value("app").toObject().value("version") != "0.40.0") {
@@ -157,6 +157,7 @@ void AgtermAdapter::open(const QVariantMap &hint,
       discover();
     });
   });
+  return true;
 }
 void AgtermAdapter::discover() {
   m_windows.clear();

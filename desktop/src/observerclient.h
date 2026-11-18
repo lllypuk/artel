@@ -49,10 +49,14 @@ public:
   // Value copies of typed public metadata, never credentials or raw JSON.
   QVariantList projection() const { return m_observers.toVariantList(); }
   bool cacheCurrent() const {
-    return m_online && m_age.isValid() && m_age.elapsed() < 4000;
+    return m_online && m_age.isValid() && m_cacheAge() < 4000;
   }
   AgtermAdapter *navigation() { return &m_navigation; }
-  Q_INVOKABLE void openSession(const QString &observer, const QString &runtime);
+  bool canOpenSession(const QString &observer, const QString &runtime) const;
+  Q_INVOKABLE bool openSession(const QString &observer, const QString &runtime);
+  void setCacheAgeSource(std::function<qint64()> source) {
+    m_cacheAge = std::move(source);
+  }
   bool active() const { return m_active; }
   void setActive(bool value);
   void setProject(const QVariantMap &project);
@@ -92,6 +96,7 @@ private:
   QPointer<QNetworkReply> m_read, m_mutation;
   QTimer m_poll;
   QElapsedTimer m_age;
+  std::function<qint64()> m_cacheAge = [this] { return m_age.elapsed(); };
   QJsonArray m_observers;
   ConnectionRows m_connectionRows;
   QVariantMap m_project, m_confirmation;
