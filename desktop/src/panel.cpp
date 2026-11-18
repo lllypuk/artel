@@ -82,6 +82,12 @@ QVariantList Panel::history() const {
   }
   return result;
 }
+QVariantList Panel::projectSnapshot() const {
+  QVariantList rows;
+  for (int i = 0; i < m_client->projects()->rowCount(); ++i)
+    rows.append(m_client->projects()->get(i));
+  return rows;
+}
 QVariantList Panel::projects() const {
   QVariantList rows;
   for (int i = 0; i < m_client->projects()->rowCount(); ++i) {

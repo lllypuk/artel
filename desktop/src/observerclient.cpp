@@ -30,7 +30,7 @@ bool text(const QJsonValue &v, int max) {
   return true;
 }
 // Copy only public, typed metadata into the model; never expose raw responses.
-bool projection(const QJsonObject &root, QJsonArray &clean) {
+bool sanitizeProjection(const QJsonObject &root, QJsonArray &clean) {
   if (!uuid(root.value("database_instance_id")) ||
       !root.value("observers").isArray() ||
       root.value("observers").toArray().size() > 256)
@@ -297,7 +297,7 @@ void ObserverClient::reload() {
             200 ||
         bytes.size() > responseLimit ||
         error.error != QJsonParseError::NoError || !doc.isObject() ||
-        !projection(doc.object(), clean)) {
+        !sanitizeProjection(doc.object(), clean)) {
       fail(tr(
           "Observation unavailable. Retry after refreshing the connection."));
       return;
@@ -441,7 +441,7 @@ bool ObserverClient::confirm() {
 
 void ObserverClient::openSession(const QString &observer,
                                  const QString &runtime) {
-  for (const auto &v : rows()) {
+  for (const auto &v : records(false)) {
     const auto row = v.toMap();
     if (row.value("observer_id") == observer &&
         row.value("runtime_id") == runtime && row.value("navigable").toBool()) {

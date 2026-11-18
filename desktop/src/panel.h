@@ -39,6 +39,8 @@ public:
   explicit Panel(ApiClient *client, QObject *parent = nullptr);
   ObserverClient *observers() { return &m_observers; }
   QVariantList projects() const;
+  // Owner snapshot names including archived projects, independent of UI filter.
+  QVariantList projectSnapshot() const;
   QVariantList tasks() const;
   QVariantList history() const;
   QVariantMap project() const;

@@ -25,6 +25,11 @@ public:
   explicit ObserverClient(ApiClient *owner, QObject *parent = nullptr);
   ~ObserverClient() override;
   QVariantList rows() const;
+  // Value copies of typed public metadata, never credentials or raw JSON.
+  QVariantList projection() const { return m_observers.toVariantList(); }
+  bool cacheCurrent() const {
+    return m_online && m_age.isValid() && m_age.elapsed() < 4000;
+  }
   AgtermAdapter *navigation() { return &m_navigation; }
   Q_INVOKABLE void openSession(const QString &observer, const QString &runtime);
   bool active() const { return m_active; }
