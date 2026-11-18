@@ -1944,6 +1944,40 @@ private slots:
     QCOMPARE(client.draft(), draft);
     QCOMPARE(panel.project().value("id").toString(), fixture.project);
   }
+  void observerRevokedCannotUnbind() {
+    ObserverFixture fixture;
+    fixture.bindToOtherProject();
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance, false);
+    QVERIFY(window);
+    client.reload();
+    auto *o = panel.observers();
+    QTRY_VERIFY(o->online());
+    QVERIFY(click(window, "teamConnectionsButton"));
+    const auto unbind = "observerUnbind_" + fixture.otherRuntime;
+    const auto prune = "observerPrune_" + fixture.otherRuntime;
+    QTRY_VERIFY(item(window, unbind) && item(window, unbind)->isEnabled());
+    QTRY_VERIFY(item(window, prune));
+    QCOMPARE(item(window, prune)->property("text").toString(),
+             QString("Prune runtime records"));
+    QVERIFY(o->prepare("unbind", fixture.observer, fixture.otherRuntime));
+    auto record = fixture.record();
+    record.insert("revoked", true);
+    fixture.record(record);
+    o->reload();
+    QTRY_VERIFY(!o->loading() && o->online());
+    QVERIFY(item(window, unbind));
+    QVERIFY(!item(window, unbind)->isEnabled());
+    QVERIFY(!o->confirm());
+    QVERIFY(!o->prepare("unbind", fixture.observer, fixture.otherRuntime));
+    QVERIFY(!o->busy());
+    QVERIFY(fixture.mutations.isEmpty());
+  }
   void observerUnbindRevalidatesBindingInsteadOfClickedRow() {
     ObserverFixture fixture;
     const auto projectB = fixture.bindToOtherProject();

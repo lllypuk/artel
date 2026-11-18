@@ -503,7 +503,8 @@ bool ObserverClient::prepare(const QString &action, const QString &observer,
         row.value("runtime_id").toString() != runtime)
       continue;
     if ((action == "bind" && !row.value("bindable").toBool()) ||
-        (action == "unbind" && !row.value("has_binding").toBool()) ||
+        (action == "unbind" && (!row.value("has_binding").toBool() ||
+                                row.value("revoked").toBool())) ||
         (action == "revoke" && row.value("revoked").toBool()))
       return false;
     m_actionMessage.clear();
@@ -541,7 +542,7 @@ bool ObserverClient::confirm() {
         continue;
       const auto binding = observer.value("binding").toObject();
       same =
-          !binding.isEmpty() &&
+          !observer.value("revoked").toBool() && !binding.isEmpty() &&
           observer.value("version").toVariant() == c.value("version") &&
           observer.value("generation").toVariant() == c.value("generation") &&
           binding.value("runtime_id").toString() ==

@@ -234,7 +234,7 @@ Pane {
                     kind: "quiet"
                     objectName: "observerUnbind_" + row.modelData.runtime_id
                     text: qsTr("Unbind")
-                    enabled: root.client.online && !root.client.busy && row.modelData.has_binding
+                    enabled: root.client.online && !root.client.busy && row.modelData.has_binding && !row.modelData.revoked
                     onClicked: root.ask("unbind", row.modelData)
                 }
                 UI.ActionButton {
@@ -249,7 +249,7 @@ Pane {
                     theme: root.theme
                     kind: "quiet"
                     objectName: "observerPrune_" + row.modelData.runtime_id
-                    text: qsTr("Prune inactive runtimes")
+                    text: qsTr("Prune runtime records")
                     enabled: root.client.online && !root.client.busy && row.modelData.prunable
                     onClicked: root.ask("prune", row.modelData)
                 }

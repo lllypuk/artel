@@ -76,7 +76,7 @@
   "Bind to selected project": "Привязать к проекту",
   "Unbind": "Отвязать",
   "Revoke": "Отозвать",
-  "Prune inactive runtimes": "Удалить неактивные запуски",
+  "Prune runtime records": "Очистить записи запусков",
   "Confirm observation change": "Подтвердите изменение наблюдения",
   "Candidate": "Кандидат",
   "Bound": "Привязан",
