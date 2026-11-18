@@ -41,7 +41,18 @@ void AgtermAdapter::cancel() {
   m_message.clear();
   emit changed();
 }
-void AgtermAdapter::finish(bool success) {
+void AgtermAdapter::revalidateLookup() {
+  if (m_busy && !m_dispatched)
+    lookupCurrent();
+}
+bool AgtermAdapter::lookupCurrent() {
+  if (!m_stillCurrent || m_stillCurrent())
+    return true;
+  finish(false, tr("Observation changed or expired during agterm lookup. "
+                   "Refresh and try again."));
+  return false;
+}
+void AgtermAdapter::finish(bool success, const QString &reason) {
   ++m_generation;
   m_deadline.stop();
   if (m_process) {
@@ -52,10 +63,14 @@ void AgtermAdapter::finish(bool success) {
     m_process = nullptr;
   }
   m_busy = false;
+  m_dispatched = false;
+  m_stillCurrent = {};
   m_message =
-      success ? tr("Declared agterm session opened; exact pane focus is not "
-                   "guaranteed.")
-              : tr("agterm navigation unavailable. Observation is unaffected.");
+      !reason.isEmpty() ? reason
+      : success
+          ? tr("Declared agterm session opened; exact pane focus is not "
+               "guaranteed.")
+          : tr("agterm navigation unavailable. Observation is unaffected.");
   emit changed();
 }
 void AgtermAdapter::run(QStringList args, Done done) {
@@ -106,7 +121,8 @@ void AgtermAdapter::process(const QStringList &args, Done done) {
   p->setArguments(args);
   p->start();
 }
-void AgtermAdapter::open(const QVariantMap &hint) {
+void AgtermAdapter::open(const QVariantMap &hint,
+                         std::function<bool()> stillCurrent) {
   if (m_busy)
     return;
   if (!validHint(hint) || !m_socket.startsWith('/') || m_socket.size() > 4096 ||
@@ -120,9 +136,12 @@ void AgtermAdapter::open(const QVariantMap &hint) {
   m_message.clear();
   m_bytes = 0;
   m_pass = 0;
-  ++m_generation;
+  m_stillCurrent = std::move(stillCurrent);
+  const auto generation = ++m_generation;
   m_deadline.start(2000);
   emit changed();
+  if (generation != m_generation || !lookupCurrent())
+    return;
   run({"version", "--json"}, [this](bool, QByteArray bytes) {
     // Tested public CLI dialect only; future formats fail closed.
     if (result(bytes).value("app").toObject().value("version") != "0.40.0") {
@@ -176,6 +195,12 @@ void AgtermAdapter::trees() {
       discover();
       return;
     }
+    // The final discovery reply can arrive after cache expiry without a
+    // projection signal. Once issued, select cannot be invalidated or undone.
+    if (!lookupCurrent())
+      return;
+    m_dispatched = true;
+    m_stillCurrent = {};
     run({"session", "select", "--target", m_session, "--window", m_found,
          "--json"},
         [this](bool, QByteArray bytes) {

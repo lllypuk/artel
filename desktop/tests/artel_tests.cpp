@@ -1502,6 +1502,162 @@ private slots:
     QCOMPARE(client.draft(), draft);
     QVERIFY(fixture.mutations.isEmpty());
   }
+  void observerPendingNavigation_data() {
+    QTest::addColumn<QString>("change");
+    for (const auto *name :
+         {"revoked", "binding", "version", "generation", "runtime", "hint",
+          "read-failure", "database", "owner-database", "stale", "expiry",
+          "heartbeat", "after-dispatch"})
+      QTest::newRow(name) << QString(name);
+  }
+  void observerPendingNavigation() {
+    QFETCH(QString, change);
+    ObserverFixture fixture;
+    AgtermFixture terminal;
+    const auto projectB = fixture.bindToOtherProject();
+    auto record = fixture.record();
+    auto runtimes = record.value("runtimes").toArray();
+    auto runtime = runtimes.first().toObject();
+    auto registration = runtime.value("registration").toObject();
+    auto hint = QJsonObject::fromVariantMap(terminal.hint());
+    registration.insert("terminal_hint", hint);
+    runtime.insert("registration", registration);
+    runtimes[0] = runtime;
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    ObserverClient observer(&client);
+    observer.setProject({{"id", fixture.project}, {"name", "Project A"}});
+    observer.setTimeout(10000);
+    observer.setActive(true);
+    client.reload();
+    QTRY_VERIFY(observer.cacheCurrent());
+    auto *nav = observer.navigation();
+    nav->setSocket("/fictional/owner.sock");
+    AgtermAdapter::Done releaseTree, replyToSelect;
+    QByteArray finalTree;
+    int selections = 0;
+    nav->setRunner([&](const QStringList &args, AgtermAdapter::Done done) {
+      const auto reply = terminal.reply(args);
+      if (args.first() == "tree" && terminal.lists == 2 &&
+          args.contains(terminal.otherWindow)) {
+        finalTree = reply;
+        releaseTree = std::move(done);
+      } else if (args.first() == "session" && args.value(1) == "select" &&
+                 args.contains("--target")) {
+        ++selections; // Do not count the select --help capability probe.
+        QCOMPARE(args.at(args.indexOf("--target") + 1), terminal.session);
+        QCOMPARE(args.at(args.indexOf("--window") + 1), terminal.otherWindow);
+        if (change == "after-dispatch")
+          replyToSelect = std::move(done);
+        else
+          done(true, reply);
+      } else {
+        done(true, reply);
+      }
+    });
+    if (change == "expiry") {
+      // Keep the next poll in flight so cache expiry has no projection signal.
+      fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        if (!request.startsWith("GET /v1/observers "))
+          fixture.normal(socket, request);
+      };
+      QTest::qWait(3000);
+    }
+    QVERIFY(observer.cacheCurrent());
+    const auto row = observer.rows().first().toMap();
+    QCOMPARE(row.value("binding_project_id").toString(), projectB);
+    QVERIFY(!row.value("selected_project").toBool());
+    observer.openSession(fixture.observer, fixture.runtime);
+    QVERIFY(nav->busy());
+    QVERIFY(releaseTree);
+    QVERIFY(!finalTree.isEmpty());
+    QCOMPARE(selections, 0);
+    if (change == "after-dispatch") {
+      releaseTree(true, finalTree);
+      QCOMPARE(selections, 1);
+      QVERIFY(replyToSelect);
+      QVERIFY(nav->busy());
+    }
+
+    const QString replacement = "88888888-8888-4888-8888-888888888888";
+    if (change == "revoked" || change == "after-dispatch")
+      record.insert("revoked", true);
+    else if (change == "binding")
+      record.insert("binding", QJsonObject{{"runtime_id", fixture.otherRuntime},
+                                           {"project_id", projectB}});
+    else if (change == "version" || change == "generation")
+      record.insert(change, 2);
+    else if (change == "runtime") {
+      registration.insert("runtime_id", replacement);
+      runtime.insert("registration", registration);
+    } else if (change == "hint") {
+      hint.insert("pane_id", replacement);
+      registration.insert("terminal_hint", hint);
+      runtime.insert("registration", registration);
+    } else if (change == "stale")
+      runtime.insert("freshness", "stale");
+    else if (change == "heartbeat") {
+      runtime.insert("last_seen", "2026-11-17T12:00:01Z");
+      runtime.insert("activity", "idle");
+      observer.setViewFilter("history");
+      observer.setOnlyProject(true);
+      QVERIFY(observer.rows().isEmpty());
+      QVERIFY(nav->busy());
+    }
+    runtimes[0] = runtime;
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    if (change == "read-failure") {
+      fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        if (request.startsWith("GET /v1/observers "))
+          fixture.respond(socket, 500, "{}");
+        else
+          fixture.normal(socket, request);
+      };
+    } else if (change == "database" || change == "owner-database") {
+      fixture.registry.insert("database_instance_id", replacement);
+      if (change == "owner-database") {
+        auto state = QJsonDocument::fromJson(fixture.state).object();
+        state.insert("instance_id", replacement);
+        fixture.state = QJsonDocument(state).toJson();
+        client.reload();
+        QTRY_COMPARE(client.instance(), replacement);
+        QTRY_VERIFY(observer.cacheCurrent());
+      }
+    }
+    if (change == "expiry") {
+      QTRY_VERIFY(!observer.cacheCurrent());
+      QVERIFY(observer.online());
+      QVERIFY(nav->busy()); // The two-second adapter deadline hasn't fired.
+    } else if (change != "owner-database") {
+      observer.reload();
+      QTRY_VERIFY(!observer.loading());
+      QCOMPARE(observer.online(),
+               change != "read-failure" && change != "database");
+    }
+
+    if (change == "after-dispatch") {
+      QVERIFY(nav->busy());
+      QVERIFY(nav->message().isEmpty());
+      replyToSelect(true, AgtermFixture::response({{"id", terminal.session}}));
+    } else {
+      const bool cancelledEarly = !nav->busy();
+      releaseTree(true, finalTree);
+      QCOMPARE(selections, change == "heartbeat" ? 1 : 0);
+      QCOMPARE(cancelledEarly, change != "heartbeat" && change != "expiry");
+    }
+    QVERIFY(!nav->busy());
+    if (change == "heartbeat" || change == "after-dispatch")
+      QVERIFY(nav->message().contains("exact pane focus"));
+    else
+      QCOMPARE(nav->message(),
+               QString("Observation changed or expired during "
+                       "agterm lookup. Refresh and try again."));
+    QVERIFY(fixture.mutations.isEmpty());
+  }
   void teamInspectorUnavailableProjectsAndMalformedProjection() {
     ObserverFixture fixture;
     auto record = fixture.record();

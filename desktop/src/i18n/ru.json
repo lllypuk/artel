@@ -56,6 +56,7 @@
   "Terminal hints may be inherited and are unverified. Opens a session only; exact pane focus is not guaranteed.": "Адрес терминала может быть унаследован и не проверен. Открывается только сессия; точный фокус панели не гарантирован.",
   "Declared agterm session opened; exact pane focus is not guaranteed.": "Заявленная сессия agterm открыта; точный фокус панели не гарантирован.",
   "agterm navigation unavailable. Observation is unaffected.": "Переход в agterm недоступен. Наблюдение продолжает работать.",
+  "Observation changed or expired during agterm lookup. Refresh and try again.": "Во время поиска в agterm данные наблюдения изменились или устарели. Обновите их и повторите попытку.",
   "Pi observations": "Наблюдения Pi",
   "Project: %1": "Проект: %1",
   "Observer: %1\nRuntime: %2\nProject: %3": "Наблюдатель: %1\nЗапуск: %2\nПроект: %3",

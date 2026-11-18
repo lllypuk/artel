@@ -100,6 +100,15 @@ bool sanitizeProjection(const QJsonObject &root, QJsonArray &clean) {
   }
   return true;
 }
+bool navigableRuntime(const QJsonObject &observer, const QJsonObject &runtime) {
+  const auto disposition = runtime.value("disposition");
+  return !observer.value("revoked").toBool() &&
+         (disposition == "bound" || disposition == "candidate") &&
+         runtime.value("lifecycle") == "running" &&
+         runtime.value("freshness") == "fresh" &&
+         AgtermAdapter::validHint(
+             runtime.value("terminal_hint").toObject().toVariantMap());
+}
 QString stateLabel(const QString &s) {
   if (s == "candidate")
     return ObserverClient::tr("Candidate");
@@ -180,8 +189,10 @@ void ConnectionRows::update(const QVariantList &rows) {
 ObserverClient::ObserverClient(ApiClient *owner, QObject *parent)
     : QObject(parent), m_owner(owner) {
   m_network.setProxy(QNetworkProxy::NoProxy);
-  connect(this, &ObserverClient::changed, this,
-          [this] { m_connectionRows.update(rows()); });
+  connect(this, &ObserverClient::changed, this, [this] {
+    m_navigation.revalidateLookup();
+    m_connectionRows.update(rows());
+  });
   m_poll.setSingleShot(true);
   connect(&m_poll, &QTimer::timeout, this, &ObserverClient::reload);
   connect(owner, &ApiClient::changed, this, [this] {
@@ -207,7 +218,6 @@ ObserverClient::~ObserverClient() {
   }
 }
 void ObserverClient::resetRead() {
-  m_navigation.cancel();
   ++m_generation;
   m_poll.stop();
   if (m_read) {
@@ -304,15 +314,12 @@ QVariantList ObserverClient::records(bool onlyProject) const {
                             ? tr("Unbound observer — no runtime yet")
                             : tr("Candidate runtime"))
                      : tr("Connection history"));
-      const bool offline =
-          !m_online || !m_age.isValid() || m_age.elapsed() >= 4000;
+      const bool offline = !cacheCurrent();
       const auto freshness =
           offline ? QString("unknown") : row.value("freshness").toString();
       row.insert("freshness", freshness);
-      row.insert(
-          "navigable",
-          !offline && freshness == "fresh" && !o.value("revoked").toBool() &&
-              AgtermAdapter::validHint(row.value("terminal_hint").toMap()));
+      row.insert("navigable",
+                 !offline && !m_mutation && navigableRuntime(o, r.toObject()));
       const bool historical = offline || o.value("revoked").toBool() ||
                               row.value("disposition") == "superseded";
       const QString activity = historical                            ? "unknown"
@@ -573,14 +580,40 @@ bool ObserverClient::confirm() {
   return true;
 }
 
+QJsonObject ObserverClient::navigationTarget(const QString &observer,
+                                             const QString &runtime) const {
+  if (!cacheCurrent() || m_mutation || m_instance != m_owner->instance())
+    return {};
+  // Resolve against the unfiltered projection, never the manual project or
+  // a displayed row. Do not compare heartbeat activity/last_seen timestamps.
+  for (const auto &value : m_observers) {
+    const auto o = value.toObject();
+    if (o.value("observer_id") != observer)
+      continue;
+    for (const auto &entry : o.value("runtimes").toArray()) {
+      const auto r = entry.toObject();
+      if (r.value("runtime_id") == runtime && navigableRuntime(o, r))
+        return {{"instance", m_instance},
+                {"observer_id", observer},
+                {"runtime_id", runtime},
+                {"pi_session_id", r.value("pi_session_id")},
+                {"disposition", r.value("disposition")},
+                {"binding", o.value("binding").toObject()},
+                {"version", o.value("version")},
+                {"generation", o.value("generation")},
+                {"terminal_hint", r.value("terminal_hint")}};
+    }
+    break;
+  }
+  return {};
+}
+
 void ObserverClient::openSession(const QString &observer,
                                  const QString &runtime) {
-  for (const auto &v : records(false)) {
-    const auto row = v.toMap();
-    if (row.value("observer_id") == observer &&
-        row.value("runtime_id") == runtime && row.value("navigable").toBool()) {
-      m_navigation.open(row.value("terminal_hint").toMap());
-      return;
-    }
-  }
+  const auto target = navigationTarget(observer, runtime);
+  if (!target.isEmpty())
+    m_navigation.open(target.value("terminal_hint").toObject().toVariantMap(),
+                      [this, observer, runtime, target] {
+                        return navigationTarget(observer, runtime) == target;
+                      });
 }

@@ -78,6 +78,8 @@ signals:
 
 private:
   QVariantList records(bool onlyProject) const;
+  QJsonObject navigationTarget(const QString &observer,
+                               const QString &runtime) const;
   bool canManage() const;
   void resetRead();
   void fail(const QString &message);
