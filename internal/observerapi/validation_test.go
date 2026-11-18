@@ -28,7 +28,7 @@ func TestObserverRejectsCaseFoldedAliases(t *testing.T) {
 		{"provision", "PUT", "/v1/observers/" + uuid.NewString(), false, map[string]any{"label": "Fixture", "verifier": strings.Repeat("ef", 32)}},
 		{"binding", "PATCH", "/v1/observers/" + f.id + "/binding", false, map[string]any{"expected_version": 1, "runtime_id": nil, "project_id": nil}},
 		{"revoke", "POST", "/v1/observers/" + f.id + "/revoke", false, map[string]any{"expected_version": 1}},
-		{"prune", "POST", "/v1/observers/" + f.id + "/prune", false, map[string]any{"expected_version": 1}},
+		{"prune", "POST", "/v1/observers/" + f.id + "/prune", false, map[string]any{"expected_version": 1, "expected_runtime_ids": []string{r.RuntimeID}}},
 	} {
 		for name, value := range op.fields {
 			for _, aliasOnly := range []bool{false, true} {
@@ -65,7 +65,7 @@ func TestObserverRejectsCaseFoldedAliases(t *testing.T) {
 		}
 	}
 	// A folded alias must not turn a stale CAS into an accepted mutation.
-	f.request(t, false, "POST", "/v1/observers/"+f.id+"/prune", f.ownerToken, uuid.NewString(), `{"expected_version":0,"EXPECTED_VERSION":1}`, 400)
+	f.request(t, false, "POST", "/v1/observers/"+f.id+"/prune", f.ownerToken, uuid.NewString(), `{"expected_version":0,"EXPECTED_VERSION":1,"expected_runtime_ids":["`+r.RuntimeID+`"]}`, 400)
 	view, err := f.s.Observers(t.Context())
 	if err != nil || len(view.Observers) != 1 || view.Observers[0].Version != 1 || view.Observers[0].Revoked {
 		t.Fatal("invalid aliases changed owner state")

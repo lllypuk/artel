@@ -170,7 +170,10 @@ func TestObserverStrictBoundary(t *testing.T) {
 			}
 		})
 	}
-	for _, body := range []string{`{"expected_version":null}`, `{"expected_version":1,"unexpected":true}`, `{"expected_version":1,"expected_version":1}`} {
+	runtime := reg()
+	f.request(t, true, "POST", "/observer/v1/register", f.token, "", runtime, 200)
+	for _, fields := range []string{`"expected_version":null`, `"expected_version":1,"unexpected":true`, `"expected_version":1,"expected_version":1`} {
+		body := `{"expected_runtime_ids":["` + runtime.RuntimeID + `"],` + fields + `}`
 		f.request(t, false, "POST", "/v1/observers/"+f.id+"/prune", f.ownerToken, uuid.NewString(), body, 400)
 	}
 	f.request(t, true, "GET", "/observer/v1/context?runtime_id=not-uuid", f.token, "", nil, 400)

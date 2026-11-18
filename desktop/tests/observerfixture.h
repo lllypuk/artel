@@ -21,6 +21,7 @@ public:
     for (const auto &id : {runtime, otherRuntime})
       runtimes.append(QJsonObject{{"registration", registration(id)},
                                   {"disposition", "candidate"},
+                                  {"prune_eligible", true},
                                   {"activity", "working"},
                                   {"freshness", "fresh"},
                                   {"lifecycle", "running"},
@@ -39,6 +40,28 @@ public:
     handler = [this](QTcpSocket *socket, const QByteArray &request) {
       observation(socket, request);
     };
+  }
+  QString bindToOtherProject() {
+    const QString projectB = "77777777-7777-4777-8777-777777777777";
+    auto snapshot = QJsonDocument::fromJson(state).object();
+    auto projects = snapshot.value("projects").toArray();
+    auto second = projects.first().toObject();
+    second.insert("id", projectB);
+    second.insert("name", "Project B");
+    projects.append(second);
+    snapshot.insert("projects", projects);
+    state = QJsonDocument(snapshot).toJson();
+    auto o = record();
+    o.insert("binding",
+             QJsonObject{{"runtime_id", runtime}, {"project_id", projectB}});
+    auto runtimes = o.value("runtimes").toArray();
+    auto bound = runtimes.first().toObject();
+    bound.insert("disposition", "bound");
+    bound.insert("prune_eligible", false);
+    runtimes[0] = bound;
+    o.insert("runtimes", runtimes);
+    record(o);
+    return projectB;
   }
   QJsonObject record() const {
     return registry.value("observers").toArray().first().toObject();
@@ -79,6 +102,7 @@ public:
               body.value("runtime_id");
           if (bound || r.value("disposition") == "bound")
             r.insert("disposition", bound ? "bound" : "superseded");
+          r.insert("prune_eligible", !bound);
           runtimes[i] = r;
         }
         o.insert("runtimes", runtimes);
@@ -86,9 +110,24 @@ public:
         o.insert("revoked", true);
       else if (request.contains("/prune ")) {
         QJsonArray kept;
-        for (const auto &r : o.value("runtimes").toArray())
-          if (r.toObject().value("disposition") == "bound")
+        QStringList eligible;
+        for (const auto &r : o.value("runtimes").toArray()) {
+          const auto runtime = r.toObject();
+          if (runtime.value("prune_eligible").toBool())
+            eligible.append(runtime.value("registration")
+                                .toObject()
+                                .value("runtime_id")
+                                .toString());
+          else
             kept.append(r);
+        }
+        eligible.sort();
+        if (eligible.isEmpty() ||
+            body.value("expected_runtime_ids").toArray() !=
+                QJsonArray::fromStringList(eligible)) {
+          respond(socket, 409, "{\"error\":\"version_conflict\"}");
+          return;
+        }
         o.insert("runtimes", kept);
       }
       record(o);

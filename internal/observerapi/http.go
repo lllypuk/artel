@@ -308,6 +308,16 @@ func MountOwner(mux *http.ServeMux, s *store.Store) {
 					}
 					m.RuntimeID, m.ProjectID = *b.RuntimeID, *b.ProjectID
 				}
+			case "prune":
+				var b struct {
+					ExpectedVersion int64    `json:"expected_version"`
+					RuntimeIDs      []string `json:"expected_runtime_ids"`
+				}
+				fields := []string{"expected_version", "expected_runtime_ids"}
+				if !decode(w, r, &b, fields, fields...) {
+					return
+				}
+				m.ExpectedVersion, m.ExpectedRuntimeIDs = b.ExpectedVersion, b.RuntimeIDs
 			default:
 				var b struct {
 					ExpectedVersion *int64 `json:"expected_version"`

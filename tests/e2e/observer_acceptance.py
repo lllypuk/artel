@@ -251,8 +251,13 @@ class Acceptance:
                                    'project_id': self.project})
 
     def action(self, action):
-        return self.owner_request('POST', '/v1/observers/' + self.observer_id + '/' + action,
-                                  {'expected_version': self.record()['version']})
+        record = self.record()
+        body = {'expected_version': record['version']}
+        if action == 'prune':
+            ids = [r['registration']['runtime_id'] for r in record['runtimes'] if r['prune_eligible']]
+            assert ids and record.get('binding', {}).get('runtime_id') not in ids
+            body['expected_runtime_ids'] = ids
+        return self.owner_request('POST', '/v1/observers/' + self.observer_id + '/' + action, body)
 
     def qml(self, runtime, **expected):
         env = self.env.copy()

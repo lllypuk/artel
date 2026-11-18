@@ -1466,6 +1466,23 @@ private slots:
     QTRY_COMPARE(workspace->team()->total(), 1);
     QVERIFY(click(window, "teamMember_" + fixture.observer));
     QVERIFY(item(window, "teamOpenSessionButton")->isEnabled());
+    QPointer<QTcpSocket> pendingRevoke;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("POST /v1/observers/") &&
+          request.contains("/revoke "))
+        pendingRevoke = socket;
+      else
+        fixture.observation(socket, request);
+    };
+    QVERIFY(o->prepare("revoke", fixture.observer, fixture.runtime));
+    QVERIFY(o->confirm());
+    QTRY_VERIFY(pendingRevoke);
+    QVERIFY(!item(window, "teamOpenSessionButton")->isEnabled());
+    QVERIFY(
+        !workspace->openObserverSession(fixture.observer, fixture.runtime, 1));
+    QVERIFY(terminal.calls.isEmpty());
+    UiFixture::respond(pendingRevoke, 409, "{}");
+    QTRY_VERIFY(item(window, "teamOpenSessionButton")->isEnabled());
     QTest::qWait(50);
     QVERIFY(click(window, "teamOpenSessionButton"));
     QTRY_VERIFY(!terminal.calls.isEmpty());
@@ -1500,6 +1517,159 @@ private slots:
     o->openSession(fixture.observer, fixture.runtime);
     QCOMPARE(terminal.calls.size(), calls);
     QCOMPARE(client.draft(), draft);
+    QCOMPARE(fixture.mutations.size(), 1);
+    QVERIFY(fixture.mutations.first().contains("/revoke "));
+  }
+  void observerPendingNavigation_data() {
+    QTest::addColumn<QString>("change");
+    for (const auto *name :
+         {"revoked", "binding", "version", "generation", "runtime", "hint",
+          "read-failure", "database", "owner-database", "stale", "expiry",
+          "heartbeat", "after-dispatch"})
+      QTest::newRow(name) << QString(name);
+  }
+  void observerPendingNavigation() {
+    QFETCH(QString, change);
+    ObserverFixture fixture;
+    AgtermFixture terminal;
+    const auto projectB = fixture.bindToOtherProject();
+    auto record = fixture.record();
+    auto runtimes = record.value("runtimes").toArray();
+    auto runtime = runtimes.first().toObject();
+    auto registration = runtime.value("registration").toObject();
+    auto hint = QJsonObject::fromVariantMap(terminal.hint());
+    registration.insert("terminal_hint", hint);
+    runtime.insert("registration", registration);
+    runtimes[0] = runtime;
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    ObserverClient observer(&client);
+    observer.setProject({{"id", fixture.project}, {"name", "Project A"}});
+    observer.setTimeout(10000);
+    observer.setActive(true);
+    client.reload();
+    QTRY_VERIFY(observer.cacheCurrent());
+    auto *nav = observer.navigation();
+    nav->setSocket("/fictional/owner.sock");
+    AgtermAdapter::Done releaseTree, replyToSelect;
+    QByteArray finalTree;
+    int selections = 0;
+    nav->setRunner([&](const QStringList &args, AgtermAdapter::Done done) {
+      const auto reply = terminal.reply(args);
+      if (args.first() == "tree" && terminal.lists == 2 &&
+          args.contains(terminal.otherWindow)) {
+        finalTree = reply;
+        releaseTree = std::move(done);
+      } else if (args.first() == "session" && args.value(1) == "select" &&
+                 args.contains("--target")) {
+        ++selections; // Do not count the select --help capability probe.
+        QCOMPARE(args.at(args.indexOf("--target") + 1), terminal.session);
+        QCOMPARE(args.at(args.indexOf("--window") + 1), terminal.otherWindow);
+        if (change == "after-dispatch")
+          replyToSelect = std::move(done);
+        else
+          done(true, reply);
+      } else {
+        done(true, reply);
+      }
+    });
+    qint64 cacheAge = 0;
+    if (change == "expiry")
+      observer.setCacheAgeSource([&cacheAge] { return cacheAge; });
+    QVERIFY(observer.cacheCurrent());
+    const auto row = observer.rows().first().toMap();
+    QCOMPARE(row.value("binding_project_id").toString(), projectB);
+    QVERIFY(!row.value("selected_project").toBool());
+    observer.openSession(fixture.observer, fixture.runtime);
+    QVERIFY(nav->busy());
+    QVERIFY(releaseTree);
+    QVERIFY(!finalTree.isEmpty());
+    QCOMPARE(selections, 0);
+    if (change == "after-dispatch") {
+      releaseTree(true, finalTree);
+      QCOMPARE(selections, 1);
+      QVERIFY(replyToSelect);
+      QVERIFY(nav->busy());
+    }
+
+    const QString replacement = "88888888-8888-4888-8888-888888888888";
+    if (change == "revoked" || change == "after-dispatch")
+      record.insert("revoked", true);
+    else if (change == "binding")
+      record.insert("binding", QJsonObject{{"runtime_id", fixture.otherRuntime},
+                                           {"project_id", projectB}});
+    else if (change == "version" || change == "generation")
+      record.insert(change, 2);
+    else if (change == "runtime") {
+      registration.insert("runtime_id", replacement);
+      runtime.insert("registration", registration);
+    } else if (change == "hint") {
+      hint.insert("pane_id", replacement);
+      registration.insert("terminal_hint", hint);
+      runtime.insert("registration", registration);
+    } else if (change == "stale")
+      runtime.insert("freshness", "stale");
+    else if (change == "heartbeat") {
+      runtime.insert("last_seen", "2026-11-17T12:00:01Z");
+      runtime.insert("activity", "idle");
+      observer.setViewFilter("history");
+      observer.setOnlyProject(true);
+      QVERIFY(observer.rows().isEmpty());
+      QVERIFY(nav->busy());
+    }
+    runtimes[0] = runtime;
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    if (change == "read-failure") {
+      fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        if (request.startsWith("GET /v1/observers "))
+          fixture.respond(socket, 500, "{}");
+        else
+          fixture.normal(socket, request);
+      };
+    } else if (change == "database" || change == "owner-database") {
+      fixture.registry.insert("database_instance_id", replacement);
+      if (change == "owner-database") {
+        auto state = QJsonDocument::fromJson(fixture.state).object();
+        state.insert("instance_id", replacement);
+        fixture.state = QJsonDocument(state).toJson();
+        client.reload();
+        QTRY_COMPARE(client.instance(), replacement);
+        QTRY_VERIFY(observer.cacheCurrent());
+      }
+    }
+    if (change == "expiry") {
+      cacheAge = 4000;
+      QVERIFY(!observer.cacheCurrent());
+      QVERIFY(observer.online());
+      QVERIFY(nav->busy()); // The two-second adapter deadline hasn't fired.
+    } else if (change != "owner-database") {
+      observer.reload();
+      QTRY_VERIFY(!observer.loading());
+      QCOMPARE(observer.online(),
+               change != "read-failure" && change != "database");
+    }
+
+    if (change == "after-dispatch") {
+      QVERIFY(nav->busy());
+      QVERIFY(nav->message().isEmpty());
+      replyToSelect(true, AgtermFixture::response({{"id", terminal.session}}));
+    } else {
+      const bool cancelledEarly = !nav->busy();
+      releaseTree(true, finalTree);
+      QCOMPARE(selections, change == "heartbeat" ? 1 : 0);
+      QCOMPARE(cancelledEarly, change != "heartbeat" && change != "expiry");
+    }
+    QVERIFY(!nav->busy());
+    if (change == "heartbeat" || change == "after-dispatch")
+      QVERIFY(nav->message().contains("exact pane focus"));
+    else
+      QCOMPARE(nav->message(),
+               QString("Observation changed or expired during "
+                       "agterm lookup. Refresh and try again."));
     QVERIFY(fixture.mutations.isEmpty());
   }
   void teamInspectorUnavailableProjectsAndMalformedProjection() {
@@ -1711,6 +1881,162 @@ private slots:
                  seen);
     QVERIFY(editor && editor->isVisible());
     QCOMPARE(editor->property("selectedText").toString(), selection);
+  }
+  void observerUnbindConfirmationInProductionQml_data() {
+    QTest::addColumn<QByteArray>("language");
+    QTest::addColumn<QString>("projectLabel");
+    QTest::newRow("en") << QByteArray("en") << QString("Bound project ID:");
+    QTest::newRow("ru") << QByteArray("ru")
+                        << QString("ID привязанного проекта:");
+  }
+  void observerUnbindConfirmationInProductionQml() {
+    QFETCH(QByteArray, language);
+    QFETCH(QString, projectLabel);
+    ObserverFixture fixture;
+    const auto projectB = fixture.bindToOtherProject();
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    const auto languageFile = fixture.directory.filePath("language");
+    writeFile(languageFile, language);
+    Appearance appearance(fixture.directory.path(), languageFile);
+    QCoreApplication::installTranslator(&appearance);
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance, false);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    QVERIFY(panel.editTask());
+    panel.field("title", "Keep the unrelated manual draft");
+    const auto draft = client.draft();
+    auto *o = panel.observers();
+    QTRY_VERIFY(o->online());
+    QVERIFY(click(window, "teamConnectionsButton"));
+    auto *drawer = window->findChild<QObject *>("observerDrawer");
+    QVERIFY(drawer);
+    QTRY_VERIFY(drawer->property("opened").toBool());
+    o->setViewFilter("candidate");
+    const auto button = "observerUnbind_" + fixture.otherRuntime;
+    QTRY_VERIFY(item(window, button) && item(window, button)->isVisible());
+    QVERIFY(click(window, button));
+    auto *dialog = window->findChild<QObject *>("observerConfirmation");
+    QVERIFY(dialog && dialog->property("visible").toBool());
+    auto *label = dialog->findChild<QObject *>("observerConfirmationText");
+    QVERIFY(label);
+    QCOMPARE(label->property("textFormat").toInt(), int(Qt::PlainText));
+    const auto text = label->property("text").toString();
+    QVERIFY(text.contains(projectLabel + " " + projectB));
+    QVERIFY(text.contains(fixture.runtime));
+    QVERIFY(!text.contains(fixture.otherRuntime));
+    QVERIFY(!text.contains(fixture.project));
+    QVERIFY(!text.contains("Example project"));
+    auto record = fixture.record();
+    record.insert("version", 2);
+    fixture.record(record);
+    o->reload();
+    QTRY_COMPARE(o->projection().first().toMap().value("version").toInt(), 2);
+    QVERIFY(QMetaObject::invokeMethod(dialog, "accept"));
+    QVERIFY(!o->busy());
+    QVERIFY(fixture.mutations.isEmpty());
+    QCOMPARE(fixture.record().value("binding"), record.value("binding"));
+    QCOMPARE(client.draft(), draft);
+    QCOMPARE(panel.project().value("id").toString(), fixture.project);
+  }
+  void observerRevokedCannotUnbind() {
+    ObserverFixture fixture;
+    fixture.bindToOtherProject();
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance, false);
+    QVERIFY(window);
+    client.reload();
+    auto *o = panel.observers();
+    QTRY_VERIFY(o->online());
+    QVERIFY(click(window, "teamConnectionsButton"));
+    const auto unbind = "observerUnbind_" + fixture.otherRuntime;
+    const auto prune = "observerPrune_" + fixture.otherRuntime;
+    QTRY_VERIFY(item(window, unbind) && item(window, unbind)->isEnabled());
+    QTRY_VERIFY(item(window, prune));
+    QCOMPARE(item(window, prune)->property("text").toString(),
+             QString("Prune runtime records"));
+    QVERIFY(o->prepare("unbind", fixture.observer, fixture.otherRuntime));
+    auto record = fixture.record();
+    record.insert("revoked", true);
+    fixture.record(record);
+    o->reload();
+    QTRY_VERIFY(!o->loading() && o->online());
+    QVERIFY(item(window, unbind));
+    QVERIFY(!item(window, unbind)->isEnabled());
+    QVERIFY(!o->confirm());
+    QVERIFY(!o->prepare("unbind", fixture.observer, fixture.otherRuntime));
+    QVERIFY(!o->busy());
+    QVERIFY(fixture.mutations.isEmpty());
+  }
+  void observerUnbindRevalidatesBindingInsteadOfClickedRow() {
+    ObserverFixture fixture;
+    const auto projectB = fixture.bindToOtherProject();
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(panel.selectProject(fixture.project));
+    auto *o = panel.observers();
+    o->setActive(true);
+    QTRY_VERIFY(o->online());
+    auto record = fixture.record();
+    for (const auto &field :
+         {QString("version"), QString("generation"), QString("binding")}) {
+      QVERIFY(o->prepare("unbind", fixture.observer, fixture.otherRuntime));
+      const auto text = o->confirmation();
+      QVERIFY(text.contains(projectB));
+      QVERIFY(text.contains(fixture.runtime));
+      QVERIFY(!text.contains(fixture.otherRuntime));
+      if (field == "binding")
+        record.insert(field, QJsonObject{{"runtime_id", fixture.runtime},
+                                         {"project_id", fixture.project}});
+      else
+        record.insert(field, record.value(field).toInt() + 1);
+      fixture.record(record);
+      o->reload();
+      QTRY_VERIFY(!o->loading());
+      QVERIFY(!o->confirm());
+      QVERIFY(!o->busy());
+      QVERIFY(fixture.mutations.isEmpty());
+      QCOMPARE(fixture.record().value("binding"), record.value("binding"));
+      o->reload();
+      QTRY_VERIFY(o->online());
+    }
+    QVERIFY(o->prepare("unbind", fixture.observer, fixture.otherRuntime));
+    const auto text = o->confirmation();
+    auto runtimes = record.value("runtimes").toArray();
+    runtimes.removeLast();
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    QVERIFY(panel.selectProject(projectB));
+    o->setOnlyProject(true);
+    o->setViewFilter("candidate");
+    QTRY_VERIFY(o->online() && !o->loading());
+    QVERIFY(o->rows().isEmpty());
+    QCOMPARE(o->confirmation(), text);
+    QVERIFY(o->confirm());
+    QTRY_COMPARE(fixture.mutations.size(), 1);
+    const auto request = fixture.mutations.first();
+    QVERIFY(request.startsWith("PATCH /v1/observers/" +
+                               fixture.observer.toUtf8() + "/binding "));
+    QCOMPARE(
+        QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n") + 4))
+            .object(),
+        (QJsonObject{{"expected_version", 2},
+                     {"runtime_id", QJsonValue::Null},
+                     {"project_id", QJsonValue::Null}}));
+    QVERIFY(!fixture.record().contains("binding"));
   }
   void observerConfirmationCapturesBindingAndIdentity() {
     ObserverFixture fixture;
@@ -1979,11 +2305,13 @@ private slots:
     observer->setOnlyProject(true);
     QVERIFY(observer->rows().isEmpty());
     observer->setOnlyProject(false);
-    QTRY_VERIFY(item(window, "observerBind_" + fixture.runtime));
-    auto *bindButton = item(window, "observerBind_" + fixture.runtime);
-    bindButton->forceActiveFocus();
-    QTest::keyClick(window, Qt::Key_Space);
-    QVERIFY(!observer->confirmation().isEmpty());
+    auto *drawer = window->findChild<QObject *>("observerDrawer");
+    QVERIFY(drawer);
+    QTRY_VERIFY(drawer->property("opened").toBool());
+    const auto bindName = "observerBind_" + fixture.runtime;
+    QTRY_VERIFY(item(window, bindName) && item(window, bindName)->isEnabled());
+    QVERIFY(click(window, bindName));
+    QTRY_VERIFY(!observer->confirmation().isEmpty());
     auto *dialog = window->findChild<QObject *>("observerConfirmation");
     QVERIFY(dialog);
     QVERIFY(QMetaObject::invokeMethod(dialog, "accept"));
@@ -2029,6 +2357,219 @@ private slots:
     QTest::qWait(100);
     if (!path.isEmpty())
       QVERIFY(window->grabWindow().save(path + ".ru.png"));
+    QCoreApplication::removeTranslator(&appearance);
+  }
+  void observerPruneDisabledOnLegacyDaemon() {
+    ObserverFixture fixture;
+    auto record = fixture.record();
+    auto runtimes = record.value("runtimes").toArray();
+    for (int i = 0; i < runtimes.size(); ++i) {
+      auto runtime = runtimes[i].toObject();
+      runtime.remove("prune_eligible");
+      runtimes[i] = runtime;
+    }
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("POST /v1/observers/") &&
+          request.contains("/prune ")) {
+        const auto body = QJsonDocument::fromJson(
+                              request.mid(request.indexOf("\r\n\r\n") + 4))
+                              .object();
+        // The legacy endpoint would accept a version-only prune.
+        const bool legacy = body == QJsonObject{{"expected_version", 1}};
+        UiFixture::respond(socket, legacy ? 200 : 400,
+                           legacy ? "{\"version\":2,\"pruned_count\":2}"
+                                  : "{\"code\":\"invalid_request\"}");
+      } else {
+        fixture.observation(socket, request);
+      }
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance, false);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    auto *o = panel.observers();
+    QTRY_VERIFY(o->online());
+    QVERIFY(click(window, "teamConnectionsButton"));
+    QTRY_COMPARE(o->rows().size(), 2);
+    const auto pruneName = "observerPrune_" + fixture.runtime;
+    QTRY_VERIFY(item(window, pruneName));
+    QVERIFY(!item(window, pruneName)->isEnabled());
+    QVERIFY(!o->prepare("prune", fixture.observer, fixture.runtime));
+    QVERIFY(o->confirmation().isEmpty());
+    QVERIFY(fixture.mutations.isEmpty());
+  }
+  void observerPruneConfirmsUnfilteredSetAndRejectsRaces() {
+    ObserverFixture fixture;
+    const auto initial = fixture.record();
+    auto record = initial;
+    auto runtimes = record.value("runtimes").toArray();
+    auto hidden = runtimes.last().toObject();
+    hidden.insert("disposition", "superseded");
+    runtimes[1] = hidden;
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    auto *o = panel.observers();
+    o->setActive(true);
+    o->setViewFilter("candidate");
+    QTRY_VERIFY(o->online());
+    QCOMPARE(o->rows().size(), 1);
+    QVERIFY(o->prepare("prune", fixture.observer, fixture.runtime));
+    const auto text = o->confirmation();
+    QVERIFY(text.contains(fixture.observer));
+    QVERIFY(text.contains(fixture.runtime + "\n" + fixture.otherRuntime));
+    QVERIFY(!text.contains("Project:"));
+    QVERIFY(panel.selectProject(fixture.project));
+    o->setOnlyProject(true);
+    QTRY_VERIFY(o->online() && !o->loading());
+    QCOMPARE(o->confirmation(), text);
+    const auto reads = fixture.reads;
+    o->setProject(QVariantMap{{"id", fixture.project}, {"name", "Renamed"}});
+    QVERIFY(o->cacheCurrent());
+    QVERIFY(!o->loading());
+    QCOMPARE(fixture.reads, reads);
+    QCOMPARE(o->confirmation(), text);
+    // A newly registered candidate is unknown to the UI until the next read.
+    auto added = hidden;
+    auto reg = added.value("registration").toObject();
+    reg.insert("runtime_id", "88888888-8888-4888-8888-888888888888");
+    added.insert("registration", reg);
+    runtimes.append(added);
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    QVERIFY(o->confirm());
+    QTRY_COMPARE(fixture.mutations.size(), 1);
+    const auto request = fixture.mutations.first();
+    QCOMPARE(
+        QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n") + 4))
+            .object(),
+        (QJsonObject{{"expected_version", 1},
+                     {"expected_runtime_ids",
+                      QJsonArray{fixture.runtime, fixture.otherRuntime}}}));
+    QTRY_VERIFY(o->online() && !o->loading());
+    QVERIFY(o->message().contains("confirm the runtime IDs again"));
+    QCOMPARE(fixture.record(), record);
+    QVERIFY(o->prepare("prune", fixture.observer, fixture.runtime));
+    runtimes.removeLast();
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    o->reload();
+    QTRY_VERIFY(o->online() && !o->loading());
+    QVERIFY(!o->confirm());
+    QVERIFY(o->message().contains("Refresh and confirm again"));
+    QCOMPARE(fixture.mutations.size(), 1);
+    o->reload();
+    QTRY_VERIFY(o->online() && !o->loading());
+    QVERIFY(o->prepare("prune", fixture.observer, fixture.runtime));
+    // A wrong-typed or missing flag on even a hidden row disables all prune.
+    added.insert("prune_eligible", "true");
+    runtimes.append(added);
+    record.insert("runtimes", runtimes);
+    fixture.record(record);
+    o->setOnlyProject(false);
+    o->reload();
+    QTRY_VERIFY(o->online() && !o->loading());
+    QVERIFY(!o->rows().first().toMap().value("prunable").toBool());
+    QVERIFY(!o->confirm());
+    QCOMPARE(fixture.mutations.size(), 1);
+    o->reload();
+    QTRY_VERIFY(o->online() && !o->loading());
+    QVERIFY(!o->prepare("prune", fixture.observer, fixture.runtime));
+    record.insert("runtimes", QJsonArray{});
+    fixture.record(record);
+    o->reload();
+    QTRY_VERIFY(o->online() && !o->loading());
+    QVERIFY(!o->prepare("prune", fixture.observer, ""));
+  }
+  void observerPruneLocalizedConfirmationScreenshots() {
+    ObserverFixture fixture;
+    auto record = fixture.record();
+    const auto prototype =
+        record.value("runtimes").toArray().first().toObject();
+    record.insert("runtimes", QJsonArray{prototype});
+    fixture.record(record);
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    writeFile(fixture.directory.filePath("language"), "ru");
+    appearance.refresh();
+    QCoreApplication::installTranslator(&appearance);
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance);
+    QVERIFY(window);
+    window->resize(1000, 680);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    auto *drawer = window->findChild<QObject *>("observerDrawer");
+    QVERIFY(drawer && QMetaObject::invokeMethod(drawer, "open"));
+    QTRY_VERIFY(drawer->property("opened").toBool());
+    auto *o = panel.observers();
+    QTRY_VERIFY(o->online() && !o->loading());
+    const auto prefix = qEnvironmentVariable("ARTEL_PRUNE_SCREENSHOT");
+    QStringList ids{fixture.runtime};
+    for (const int count : {1, 8}) {
+      if (count == 8) {
+        QJsonArray rows{prototype};
+        for (int i = 1; i < 8; ++i) {
+          auto runtime = prototype;
+          auto reg = runtime.value("registration").toObject();
+          ids.append(fixture.runtime.chopped(2) + "0" + QString::number(i));
+          reg.insert("runtime_id", ids.last());
+          runtime.insert("registration", reg);
+          rows.append(runtime);
+        }
+        record.insert("runtimes", rows);
+        fixture.record(record);
+        o->reload();
+        QTRY_VERIFY(o->online() && !o->loading());
+      }
+      QVERIFY(o->prepare("prune", fixture.observer, fixture.runtime));
+      auto *dialog = window->findChild<QObject *>("observerConfirmation");
+      QVERIFY(dialog && QMetaObject::invokeMethod(dialog, "open"));
+      QTRY_VERIFY(dialog->property("opened").toBool());
+      auto *label = item(window, "observerConfirmationText");
+      QVERIFY(label && label->isVisible());
+      const auto text = label->property("text").toString();
+      QVERIFY(text.contains(QString::fromUtf8("ID запусков для удаления")));
+      const auto lines = text.split('\n');
+      for (const auto &id : ids)
+        QVERIFY(lines.contains(id));
+      QCOMPARE(label->property("textFormat").toInt(), int(Qt::PlainText));
+      QTest::qWait(80); // Let the offscreen scene polish and render the dialog.
+      if (!prefix.isEmpty())
+        QVERIFY(window->grabWindow().save(prefix + QString::number(count) +
+                                          ".png"));
+      for (const auto *name :
+           {"observerConfirmAction", "observerCancelAction"}) {
+        auto *button = item(window, name);
+        QVERIFY(button && button->isVisible() && button->isEnabled());
+        const auto bounds = button->mapRectToScene(button->boundingRect());
+        QVERIFY2(
+            QRectF(0, 0, window->width(), window->height()).contains(bounds),
+            qPrintable(QString("%1 at %2,%3 (%4x%5)")
+                           .arg(name)
+                           .arg(bounds.x())
+                           .arg(bounds.y())
+                           .arg(bounds.width())
+                           .arg(bounds.height())));
+      }
+      QVERIFY(QMetaObject::invokeMethod(dialog, "reject"));
+      QTRY_VERIFY(!dialog->property("visible").toBool());
+    }
     QCoreApplication::removeTranslator(&appearance);
   }
   void observerCasRebindRevokePruneAndManualPendingAreIndependent() {

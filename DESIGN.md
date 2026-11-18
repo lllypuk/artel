@@ -183,9 +183,7 @@ metadata disclosure and confirmation buttons. Scope and record-category filters
 separate current bindings, runtime candidates and history. Registrations without
 runtime remain explicitly unbound, not fabricated active members. Revoked,
 superseded, stale and offline records never advertise current working activity.
-Bind/unbind/revoke/prune retain explicit confirmations; the captured observer,
-runtime, database, manual project, CAS version, generation and binding identity are
-rechecked before dispatch. Presentation filters are not authorization boundaries.
+Observer actions retain explicit confirmations and recheck their captured database and observer state before dispatch. Bind also verifies the proposed runtime and selected manual project; Unbind compares the actual binding instead of the clicked row. Revoke checks the captured observer record, and Prune checks the full approved eligible runtime set. Presentation filters are not authorization boundaries.
 
 Reviewed fictional production-QML captures (private HOME/XDG, offscreen/software):
 

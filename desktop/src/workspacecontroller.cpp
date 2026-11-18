@@ -136,8 +136,7 @@ bool WorkspaceController::openObserverSession(const QString &observer,
       row.value("version").toLongLong() != version ||
       !row.value("navigable").toBool())
     return false;
-  m_panel->observers()->openSession(observer, runtime);
-  return true;
+  return m_panel->observers()->openSession(observer, runtime);
 }
 bool WorkspaceController::saveShortcut() {
   return editorVisible() && m_panel->saveable() && m_panel->save();

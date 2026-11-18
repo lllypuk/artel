@@ -11,12 +11,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/lllypuk/artel/internal/local"
 	"github.com/lllypuk/artel/internal/store"
 )
+
+var errPruneApprovalStale = errors.New("prune approval is stale; refresh the observer list and confirm the runtime IDs again")
 
 type ownerClient struct {
 	endpoint, token string
@@ -50,6 +53,14 @@ func (c ownerClient) request(method, path, key string, body, result any) error {
 		return errors.New("invalid API response")
 	}
 	if response.StatusCode != 200 {
+		if response.StatusCode == http.StatusConflict && method == http.MethodPost && strings.HasSuffix(path, "/prune") {
+			var reply struct {
+				Code string `json:"error"`
+			}
+			if json.Unmarshal(b, &reply) == nil && reply.Code == "version_conflict" {
+				return errPruneApprovalStale
+			}
+		}
 		return errors.New("API operation rejected")
 	}
 	if json.Unmarshal(b, result) != nil {
@@ -82,12 +93,22 @@ func observer(args []string, out, errOut io.Writer) int {
 	output := flags.String("output", "", "private config path")
 	resume := flags.String("resume", "", "resume provisioning config")
 	id := flags.String("id", "", "observer UUID")
-	runtime := flags.String("runtime-id", "", "runtime UUID")
+	var runtimes []string
+	flags.Func("runtime-id", "runtime UUID (repeat for prune)", func(id string) error {
+		runtimes = append(runtimes, id)
+		return nil
+	})
 	project := flags.String("project-id", "", "project UUID")
 	version := flags.Int64("expected-version", -1, "observer version CAS")
 	key := flags.String("idempotency-key", "", "UUID retry key")
 	if flags.Parse(args[1:]) != nil || flags.NArg() != 0 || local.Endpoint(*endpoint) != nil {
 		return fail(2, "invalid arguments")
+	}
+	if command == "prune" && !store.ValidObserverPruneIDs(runtimes) {
+		return fail(2, "prune requires 1–8 unique canonical non-nil --runtime-id UUIDs")
+	}
+	if command != "prune" && len(runtimes) > 1 {
+		return fail(2, "--runtime-id may only be repeated for prune")
 	}
 	paths, err := local.Resolve("", *tokenPath)
 	if err != nil {
@@ -116,10 +137,10 @@ func observer(args []string, out, errOut io.Writer) int {
 		b, _ := json.Marshal(registry)
 		return printOutput(out, string(b))
 	}
-	return observerMutation(client, command, id, runtime, project, version, key, out, fail)
+	return observerMutation(client, command, id, project, runtimes, version, key, out, fail)
 }
 
-func observerMutation(client ownerClient, command string, id, runtime, project *string, version *int64, key *string, out io.Writer, fail func(int, string) int) int {
+func observerMutation(client ownerClient, command string, id, project *string, runtimes []string, version *int64, key *string, out io.Writer, fail func(int, string) int) int {
 	if u, e := uuid.Parse(*id); e != nil || u.String() != *id || *version < 0 {
 		return fail(2, "id and expected-version required")
 	}
@@ -131,16 +152,22 @@ func observerMutation(client ownerClient, command string, id, runtime, project *
 	}
 	method, suffix := "POST", "/"+command
 	body := map[string]any{"expected_version": *version}
+	if command == "prune" {
+		body["expected_runtime_ids"] = runtimes
+	}
 	if command == "bind" || command == "unbind" {
 		method, suffix = "PATCH", "/binding"
 		body["runtime_id"], body["project_id"] = nil, nil
 		if command == "bind" {
-			for _, s := range []string{*runtime, *project} {
+			if len(runtimes) != 1 {
+				return fail(2, "runtime-id and project-id required")
+			}
+			for _, s := range []string{runtimes[0], *project} {
 				if u, e := uuid.Parse(s); e != nil || u.String() != s {
 					return fail(2, "runtime-id and project-id required")
 				}
 			}
-			body["runtime_id"], body["project_id"] = *runtime, *project
+			body["runtime_id"], body["project_id"] = runtimes[0], *project
 		}
 	}
 	var result store.ObserverOwnerResult

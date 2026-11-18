@@ -123,7 +123,7 @@ func TestObserverBindingGenerationAndRetirement(t *testing.T) {
 	stopped := reportFor(b, 2, 1)
 	stopped.Lifecycle = "stopped"
 	mustReport(t, s, verifier, stopped)
-	owner = mustOwner(t, s, id, "prune", owner.Version, "", "")
+	owner = mustPrune(t, s, id, owner.Version, a.RuntimeID)
 	if owner.PrunedCount != 1 {
 		t.Fatal(owner)
 	}
@@ -142,7 +142,6 @@ func TestObserverBindingGenerationAndRetirement(t *testing.T) {
 		expectObserverError(t, err, "runtime_retired")
 		_, err = s.ReportObserver(t.Context(), verifier, reportFor(a, 1, 3))
 		expectObserverError(t, err, "runtime_retired")
-		owner = mustOwner(t, s, id, "prune", owner.Version, "", "")
 	}
 	verifyRetiredAndRevoke(t, s, id, verifier, owner, b, stopped)
 }
@@ -272,6 +271,7 @@ func TestObserverProjectCASReceiptsAndIsolation(t *testing.T) {
 	}
 	different := m
 	different.Action = "prune"
+	different.ExpectedRuntimeIDs = []string{r.RuntimeID}
 	_, err = s.MutateObserver(t.Context(), different)
 	expectObserverError(t, err, "idempotency_conflict")
 	different = m
@@ -325,8 +325,10 @@ func TestObserverQuotasAuditAndRetirementBounds(t *testing.T) {
 	bound := mustRegister(t, s, verifier)
 	owner = mustOwner(t, s, id, "bind", owner.Version, bound.RuntimeID, p.ID)
 	var last ObserverRegistration
+	var ids []string
 	for range 7 {
 		last = mustRegister(t, s, verifier)
+		ids = append(ids, last.RuntimeID)
 	}
 	_, err := s.RegisterObserver(t.Context(), verifier, registration())
 	requireCapacity(t, err, "runtime_payloads")
@@ -334,17 +336,19 @@ func TestObserverQuotasAuditAndRetirementBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustReport(t, s, verifier, reportFor(bound, owner.Generation, 1))
-	owner = mustOwner(t, s, id, "prune", owner.Version, "", "")
+	owner = mustPrune(t, s, id, owner.Version, ids...)
 	if owner.PrunedCount != 7 {
 		t.Fatal(owner)
 	}
 	// Fill all 1024 lifetime identities through actual registration/pruning.
 	for count := 8; count < 1024; {
+		ids = ids[:0]
 		for n := 0; n < 7 && count < 1024; n++ {
 			last = mustRegister(t, s, verifier)
+			ids = append(ids, last.RuntimeID)
 			count++
 		}
-		owner = mustOwner(t, s, id, "prune", owner.Version, "", "")
+		owner = mustPrune(t, s, id, owner.Version, ids...)
 	}
 	_, err = s.RegisterObserver(t.Context(), verifier, registration())
 	requireCapacity(t, err, "runtime_identities")
@@ -355,7 +359,8 @@ func TestObserverQuotasAuditAndRetirementBounds(t *testing.T) {
 	}
 	mustReport(t, s, verifier, reportFor(bound, owner.Generation, 2))
 	for range 270 {
-		owner = mustOwner(t, s, id, "prune", owner.Version, "", "")
+		// Valid same-binding CAS mutations preserve the generation and freshness.
+		owner = mustOwner(t, s, id, "bind", owner.Version, bound.RuntimeID, p.ID)
 	}
 	view := observerView(t, s)
 	if view.IdentityCount != 1024 || view.RetiredCount != 1023 || len(view.Runtimes) != 1 || view.Runtimes[0].Freshness != "fresh" {
@@ -432,7 +437,7 @@ func TestObserverConcurrentCASPruneRegisterReportRevoke(t *testing.T) {
 	}
 	errs = make(chan error, 3)
 	wg.Go(func() {
-		_, err := s.MutateObserver(t.Context(), ObserverOwnerMutation{ObserverID: id, Key: uuid.NewString(), Action: "prune", ExpectedVersion: view.Version})
+		_, err := s.MutateObserver(t.Context(), ObserverOwnerMutation{ObserverID: id, Key: uuid.NewString(), Action: "prune", ExpectedVersion: view.Version, ExpectedRuntimeIDs: []string{candidate.RuntimeID}})
 		errs <- err
 	})
 	wg.Go(func() { _, err := second.RegisterObserver(t.Context(), verifier, candidate); errs <- err })
