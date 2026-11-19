@@ -19,13 +19,16 @@ func run(args []string, out, errOut io.Writer) int {
 	if len(args) == 1 {
 		switch args[0] {
 		case "--help", "-h":
-			return printOutput(out, "Usage: artelctl --help | --version | status|snapshot --json [--endpoint URL] [--token-file PATH]")
+			return printOutput(out, "Usage: artelctl --help | --version | status|snapshot --json | observer ... | delivery enable|revoke ...")
 		case "--version":
 			return printOutput(out, "artelctl 0.1.0-dev")
 		}
 	}
 	if len(args) > 0 && args[0] == "observer" {
 		return observer(args[1:], out, errOut)
+	}
+	if len(args) > 0 && args[0] == "delivery" {
+		return delivery(args[1:], out, errOut)
 	}
 	if len(args) > 0 && (args[0] == "status" || args[0] == "snapshot") {
 		return diagnostic(args, out, errOut)

@@ -204,7 +204,9 @@ func (s *Store) MutateDeliveryBinding(ctx context.Context, m DeliveryOwnerMutati
 	if err != nil {
 		return result, err
 	}
-	if o.Revoked || o.Version != m.ExpectedVer {
+	// Enable CASes on the owner-confirmed observer version; revoke names only
+	// the binding ID, so a stale version must not block or delay revocation.
+	if o.Revoked || m.Action == "enable" && o.Version != m.ExpectedVer {
 		return result, observerError("version_conflict")
 	}
 	if m.Action == "enable" {
