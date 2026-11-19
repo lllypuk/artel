@@ -205,7 +205,6 @@
   "Delivery to Pi is not enabled for this installation": "Доставка в Pi не включена для этой установки",
   "The Pi assignment is not active": "Допуск Pi не активен",
   "The enabled assignment belongs to a different project": "Включённое назначение относится к другому проекту",
-  "The enabled assignment belongs to another project": "Включённое назначение относится к другому проекту",
   "The Pi writer is not ready right now": "Писатель Pi сейчас не готов",
   "The project is archived": "Проект архивирован",
   "The task is closed": "Задача закрыта",

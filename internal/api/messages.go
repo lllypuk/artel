@@ -5,8 +5,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/lllypuk/artel/internal/store"
 )
@@ -63,22 +65,8 @@ func appendTaskMessage(w http.ResponseWriter, r *http.Request, s *store.Store) {
 		DeliveryBinding string `json:"delivery_binding_id"`
 		InstanceID      string `json:"instance_id"`
 	}
-	c, err := decodeObject(readBody(w, r))
-	if err != nil {
-		deliveryError(w, err)
+	if !decodeDeliveryJSON(w, r, &body, []string{"text", "delivery_binding_id", "instance_id"}) {
 		return
-	}
-	fields := map[string]any{"text": &body.Text, "delivery_binding_id": &body.DeliveryBinding, "instance_id": &body.InstanceID}
-	for name, value := range c {
-		target, ok := fields[name]
-		if !ok {
-			deliveryError(w, storePublicErr("invalid_request"))
-			return
-		}
-		if err := json.Unmarshal(value, target); err != nil {
-			deliveryError(w, storePublicErr("invalid_request"))
-			return
-		}
 	}
 	if len(r.Header.Values("Idempotency-Key")) != 1 || !validUUID(r.Header.Get("Idempotency-Key")) {
 		Error(w, 400, "invalid_request", "one Idempotency-Key required")
@@ -235,11 +223,15 @@ func readBody(w http.ResponseWriter, r *http.Request) []byte {
 	return data
 }
 
-// decodeDeliveryJSON rejects unknown fields, nulls and trailing JSON like the
-// observer decode, but reports through the owner API error shape.
+// decodeDeliveryJSON rejects unknown fields, nulls, invalid UTF-8 and trailing
+// JSON like the observer decode, but reports through the owner API error shape.
 func decodeDeliveryJSON(w http.ResponseWriter, r *http.Request, target any, allowed []string) bool {
 	data := readBody(w, r)
 	if data == nil {
+		return false
+	}
+	if !utf8.Valid(data) {
+		deliveryError(w, storePublicErr("invalid_request"))
 		return false
 	}
 	fields, err := decodeObject(data)
@@ -248,7 +240,7 @@ func decodeDeliveryJSON(w http.ResponseWriter, r *http.Request, target any, allo
 		return false
 	}
 	for name := range fields {
-		if !slicesContains(allowed, name) {
+		if !slices.Contains(allowed, name) {
 			deliveryError(w, storePublicErr("invalid_request"))
 			return false
 		}
@@ -260,13 +252,4 @@ func decodeDeliveryJSON(w http.ResponseWriter, r *http.Request, target any, allo
 		return false
 	}
 	return true
-}
-
-func slicesContains(list []string, item string) bool {
-	for _, v := range list {
-		if v == item {
-			return true
-		}
-	}
-	return false
 }

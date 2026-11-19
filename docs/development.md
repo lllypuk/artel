@@ -151,6 +151,7 @@ Select the exact observer/runtime/project/session UUIDs from
   --observer-socket "$ARTEL_SOCKET" --output "$ARTEL_TMP/delivery.json" \
   --expected-version N --endpoint "$ARTEL_ENDPOINT" --token-file "$ARTEL_TOKEN"
 "$ARTELCTL" delivery revoke --id OBSERVER_UUID --binding-id BINDING_UUID \
+  --output "$ARTEL_TMP/delivery.json" \
   --endpoint "$ARTEL_ENDPOINT" --token-file "$ARTEL_TOKEN"
 ```
 

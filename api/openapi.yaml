@@ -436,7 +436,7 @@ components:
       additionalProperties: false
       required: [text, delivery_binding_id, instance_id]
       properties:
-        text: {type: string, minLength: 1, description: At most 8192 bytes of UTF-8 without NUL}
+        text: {type: string, minLength: 1, maxLength: 8192, description: Non-empty UTF-8 without NUL; stored byte-identically}
         delivery_binding_id: {$ref: '#/components/schemas/UUID'}
         instance_id: {$ref: '#/components/schemas/UUID'}
     DeliveryMessage:
@@ -450,6 +450,7 @@ components:
         text: {type: string}
         status: {type: string, enum: [stored, unknown, observed]}
         blocked: {type: boolean}
+        block_reason: {type: string, enum: [task_closed, project_archived]}
         created_at: {type: string, format: date-time}
     DeliveryBinding:
       type: object

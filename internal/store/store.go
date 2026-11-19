@@ -38,7 +38,7 @@ type Store struct {
 	observerSeen    map[string]time.Time
 	deliveryMu      sync.Mutex
 	deliveryReadyMu sync.Mutex
-	deliveryReady   map[string]deliveryReadyState
+	deliveryReady   map[string]time.Time
 }
 
 type Snapshot struct {
@@ -92,7 +92,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db, observerClock: time.Now, observerSeen: make(map[string]time.Time), deliveryReady: make(map[string]deliveryReadyState)}
+	s := &Store{db: db, observerClock: time.Now, observerSeen: make(map[string]time.Time), deliveryReady: make(map[string]time.Time)}
 	if err := s.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err

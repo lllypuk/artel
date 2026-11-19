@@ -33,14 +33,17 @@ type DeliveryBinding struct {
 }
 
 // DeliveryMessage is one owner commission. Status: stored, unknown, observed.
+// An unobserved commission reads as unknown once its delivery can no longer
+// be confirmed (blocked, or a spent/verified attempt without a receipt).
 type DeliveryMessage struct {
-	ID        string `json:"id"`
-	TaskID    string `json:"task_id"`
-	BindingID string `json:"delivery_binding_id"`
-	Text      string `json:"text"`
-	Status    string `json:"status"`
-	Blocked   bool   `json:"blocked"`
-	CreatedAt string `json:"created_at"`
+	ID          string `json:"id"`
+	TaskID      string `json:"task_id"`
+	BindingID   string `json:"delivery_binding_id"`
+	Text        string `json:"text"`
+	Status      string `json:"status"`
+	Blocked     bool   `json:"blocked"`
+	BlockReason string `json:"block_reason,omitempty"`
+	CreatedAt   string `json:"created_at"`
 }
 
 // DeliveryOwnerMutation is owner-only enable/revoke with idempotent receipts.
@@ -73,11 +76,6 @@ type DeliveryAttemptResult struct {
 	State     string `json:"state"` // spent, verified, observed
 	Right     bool   `json:"right"`
 	Verified  bool   `json:"verified"`
-}
-
-type deliveryReadyState struct {
-	writer string
-	until  time.Time
 }
 
 func deliveryNewID() string { return uuid.NewString() }
@@ -149,8 +147,8 @@ func (s *Store) deliveryInvalidate(bindingID string) {
 func (s *Store) deliveryReadyNow(bindingID string) bool {
 	s.deliveryReadyMu.Lock()
 	defer s.deliveryReadyMu.Unlock()
-	state, ok := s.deliveryReady[bindingID]
-	return ok && state.writer != "" && time.Now().Before(state.until)
+	until, ok := s.deliveryReady[bindingID]
+	return ok && time.Now().Before(until)
 }
 
 func validateDeliveryOwnerMutation(m DeliveryOwnerMutation) error {
@@ -205,8 +203,9 @@ func (s *Store) MutateDeliveryBinding(ctx context.Context, m DeliveryOwnerMutati
 		return result, err
 	}
 	// Enable CASes on the owner-confirmed observer version; revoke names only
-	// the binding ID, so a stale version must not block or delay revocation.
-	if o.Revoked || m.Action == "enable" && o.Version != m.ExpectedVer {
+	// the binding ID, so a stale observer version or an already revoked observer
+	// must not block or delay revoking its delivery binding.
+	if m.Action == "enable" && (o.Revoked || o.Version != m.ExpectedVer) {
 		return result, observerError("version_conflict")
 	}
 	if m.Action == "enable" {
@@ -245,16 +244,6 @@ func deliveryReplayLookup(ctx context.Context, tx *sql.Tx, principal, key, reque
 
 func (s *Store) deliveryEnableApply(ctx context.Context, tx *sql.Tx, o observerRecord, m DeliveryOwnerMutation) (DeliveryBinding, error) {
 	var result DeliveryBinding
-	if o.Binding == nil || o.Binding.RuntimeID != m.RuntimeID || o.Binding.ProjectID != m.ProjectID {
-		return result, observerError("assignment_mismatch")
-	}
-	r, err := observerRuntimeLoad(ctx, tx, o.ID, m.RuntimeID)
-	if err != nil {
-		return result, err
-	}
-	if r.Registration.PiSessionID != m.PiSessionID {
-		return result, observerError("assignment_mismatch")
-	}
 	var count int
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM delivery_bindings WHERE json_extract(record,'$.status') != 'revoked'").Scan(&count); err != nil {
 		return result, err
@@ -268,6 +257,9 @@ func (s *Store) deliveryEnableApply(ctx context.Context, tx *sql.Tx, o observerR
 	}
 	if existing != 0 {
 		return result, observerError("idempotency_conflict")
+	}
+	if err := deliveryObserverAssignment(ctx, tx, o.ID, m.RuntimeID, m.ProjectID, m.PiSessionID, o.Generation); err != nil {
+		return result, err
 	}
 	result = DeliveryBinding{ID: m.BindingID, ObserverID: o.ID, RuntimeID: m.RuntimeID, ProjectID: m.ProjectID,
 		PiSessionID: m.PiSessionID, JournalID: m.JournalID, Generation: o.Generation, Status: "pending",
@@ -438,41 +430,40 @@ func (s *Store) ListDeliveryMessages(ctx context.Context, taskID string, after i
 				return nil, 0, observerError("invalid_request")
 			}
 		}
-		rows, err := tx.QueryContext(ctx, "SELECT seq,blocked,record FROM delivery_messages WHERE task_id=? AND id IN (SELECT value FROM json_each(?)) ORDER BY seq",
+		rows, err := tx.QueryContext(ctx, `SELECT m.seq,m.blocked,m.block_reason,m.record,
+			coalesce((SELECT a.state FROM delivery_attempts a WHERE a.message_seq=m.seq),'') FROM delivery_messages m
+			WHERE m.task_id=? AND m.id IN (SELECT value FROM json_each(?)) ORDER BY m.seq`,
 			taskID, mustJSON(ids))
 		if err != nil {
 			return nil, 0, err
 		}
 		defer func() { _ = rows.Close() }()
-		messages, err := deliveryScan(rows)
+		messages, _, err := deliveryScan(rows)
 		if err != nil {
 			return nil, 0, err
 		}
 		return messages, next, tx.Commit()
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT seq,blocked,record FROM delivery_messages WHERE task_id=? AND seq>? ORDER BY seq LIMIT ?",
+	rows, err := tx.QueryContext(ctx, `SELECT m.seq,m.blocked,m.block_reason,m.record,
+		coalesce((SELECT a.state FROM delivery_attempts a WHERE a.message_seq=m.seq),'') FROM delivery_messages m
+		WHERE m.task_id=? AND m.seq>? ORDER BY m.seq LIMIT ?`,
 		taskID, after, limit+1)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer func() { _ = rows.Close() }()
-	all, err := deliveryScan(rows)
+	all, seqs, err := deliveryScan(rows)
 	if err != nil {
 		return nil, 0, err
 	}
 	if len(all) > limit {
 		all = all[:limit]
+		seqs = seqs[:limit]
 	}
 	if len(all) != 0 {
-		next = deliverySeq(ctx, tx, all[len(all)-1].ID)
+		next = seqs[len(seqs)-1]
 	}
 	return all, next, tx.Commit()
-}
-
-func deliverySeq(ctx context.Context, tx *sql.Tx, id string) int64 {
-	var seq int64
-	_ = tx.QueryRowContext(ctx, "SELECT seq FROM delivery_messages WHERE id=?", id).Scan(&seq)
-	return seq
 }
 
 func mustJSON(v any) string {
@@ -483,22 +474,35 @@ func mustJSON(v any) string {
 	return string(data)
 }
 
-func deliveryScan(rows *sql.Rows) ([]DeliveryMessage, error) {
+// deliveryScan derives the owner-visible status: observed stands; an unobserved
+// commission whose confirmation became impossible reads as unknown.
+func deliveryScan(rows *sql.Rows) ([]DeliveryMessage, []int64, error) {
 	messages := []DeliveryMessage{}
+	seqs := []int64{}
 	for rows.Next() {
+		var seq int64
 		var blocked int
-		var data string
+		var reason, attemptState, data string
 		var m DeliveryMessage
-		if err := rows.Scan(new(int64), &blocked, &data); err != nil {
-			return nil, err
+		var rawReason any
+		if err := rows.Scan(&seq, &blocked, &rawReason, &data, &attemptState); err != nil {
+			return nil, nil, err
+		}
+		if rawReason != nil {
+			reason, _ = rawReason.(string)
 		}
 		if err := json.Unmarshal([]byte(data), &m); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		m.Blocked = blocked != 0
+		m.BlockReason = reason
+		if m.Status != "observed" && (m.Blocked || attemptState != "") {
+			m.Status = "unknown"
+		}
 		messages = append(messages, m)
+		seqs = append(seqs, seq)
 	}
-	return messages, rows.Err()
+	return messages, seqs, rows.Err()
 }
 
 // DeliveryTaskProjection powers the task-screen assignment line without secrets.
@@ -617,18 +621,10 @@ func (s *Store) DeliveryAttach(ctx context.Context, bindingID, writerID, expecte
 
 // deliveryAttachChecks verifies the full immutable assignment for the writer.
 func deliveryAttachChecks(ctx context.Context, tx *sql.Tx, b DeliveryBinding, runtimeID, piSessionID string) error {
-	o, err := observerLoad(ctx, tx, b.ObserverID)
-	if err != nil {
-		return err
-	}
-	if o.Revoked || o.Binding == nil || o.Binding.RuntimeID != b.RuntimeID || o.Binding.ProjectID != b.ProjectID || o.Generation != b.Generation {
-		return observerError("assignment_mismatch")
-	}
 	if b.RuntimeID != runtimeID || b.PiSessionID != piSessionID {
 		return observerError("assignment_mismatch")
 	}
-	_, err = observerRuntimeLoad(ctx, tx, b.ObserverID, runtimeID)
-	return err
+	return deliveryAssignmentCurrent(ctx, tx, b)
 }
 
 // DeliveryReady is the writer's bounded liveness confirmation in daemon memory.
@@ -654,7 +650,7 @@ func (s *Store) DeliveryReady(ctx context.Context, bindingID, writerID string) e
 		return err
 	}
 	s.deliveryReadyMu.Lock()
-	s.deliveryReady[bindingID] = deliveryReadyState{writer: writerID, until: time.Now().Add(deliveryReadyTTL)}
+	s.deliveryReady[bindingID] = time.Now().Add(deliveryReadyTTL)
 	s.deliveryReadyMu.Unlock()
 	return nil
 }
@@ -781,6 +777,11 @@ func (s *Store) DeliveryVerify(ctx context.Context, bindingID, writerID, attempt
 	if b.Status == "revoked" {
 		return result, observerError("revoked")
 	}
+	// A stale assignment (rebind, generation change, observer revoke) must not
+	// confirm a call: verification is part of the exact assignment.
+	if err := deliveryAssignmentCurrent(ctx, tx, b); err != nil {
+		return result, err
+	}
 	if b.WriterID != writerID {
 		return result, observerError("owner_conflict")
 	}
@@ -847,7 +848,7 @@ func (s *Store) DeliveryReceipt(ctx context.Context, bindingID, key string, rece
 	if err != nil || matched {
 		return result, err
 	}
-	seq, attemptState, messageData, err := s.deliveryReceiptGate(ctx, tx, bindingID, receipt)
+	seq, attemptState, messageData, err := s.deliveryReceiptGate(ctx, tx, bindingID, key, receipt)
 	if err != nil {
 		return result, err
 	}
@@ -880,7 +881,7 @@ func (s *Store) DeliveryReceipt(ctx context.Context, bindingID, key string, rece
 
 // deliveryReceiptGate validates form, identity, attempt and assignment, and
 // returns the message row position, attempt state and record for publishing.
-func (s *Store) deliveryReceiptGate(ctx context.Context, tx *sql.Tx, bindingID string, receipt struct {
+func (s *Store) deliveryReceiptGate(ctx context.Context, tx *sql.Tx, bindingID, receiptKey string, receipt struct {
 	MessageID, AttemptID, Type, MessageType, PiSessionID string
 	Details                                              map[string]any
 }) (int64, string, string, error) {
@@ -891,22 +892,28 @@ func (s *Store) deliveryReceiptGate(ctx context.Context, tx *sql.Tx, bindingID s
 	if b.Status == "revoked" {
 		return 0, "", "", observerError("revoked")
 	}
+	// A first receipt under a stale assignment (observer revoke, rebind,
+	// generation change) is always rejected; only the exact current assignment
+	// may publish, and only the key handed out with the message is accepted.
+	if err := deliveryAssignmentCurrent(ctx, tx, b); err != nil {
+		return 0, "", "", err
+	}
 	if receipt.Type != "before_agent_start" || receipt.MessageType != "custom" || receipt.PiSessionID != b.PiSessionID ||
 		receipt.Details == nil || receipt.Details["message_id"] != receipt.MessageID || receipt.Details["attempt_id"] != receipt.AttemptID {
 		return 0, "", "", observerError("invalid_request")
 	}
 	var seq int64
 	var blocked int
-	var messageData string
-	if err := tx.QueryRowContext(ctx, "SELECT seq,blocked,record FROM delivery_messages WHERE id=? AND binding_id=?", receipt.MessageID, bindingID).
-		Scan(&seq, &blocked, &messageData); err != nil {
+	var storedKey, messageData string
+	if err := tx.QueryRowContext(ctx, "SELECT seq,blocked,receipt_key,record FROM delivery_messages WHERE id=? AND binding_id=?", receipt.MessageID, bindingID).
+		Scan(&seq, &blocked, &storedKey, &messageData); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, "", "", observerError("not_found")
 		}
 		return 0, "", "", err
 	}
-	if blocked != 0 {
-		return 0, "", "", observerError("closed")
+	if storedKey != receiptKey {
+		return 0, "", "", observerError("invalid_request")
 	}
 	var attemptState string
 	if err := tx.QueryRowContext(ctx, "SELECT state FROM delivery_attempts WHERE attempt_id=? AND message_seq=? AND binding_id=?",
@@ -915,6 +922,11 @@ func (s *Store) deliveryReceiptGate(ctx context.Context, tx *sql.Tx, bindingID s
 			return 0, "", "", observerError("not_found")
 		}
 		return 0, "", "", err
+	}
+	if blocked != 0 && attemptState != "verified" {
+		// Closing before the call was confirmed forbids publication; an
+		// already verified turn of an unchanged assignment may still publish.
+		return 0, "", "", observerError("closed")
 	}
 	return seq, attemptState, messageData, nil
 }
@@ -937,24 +949,40 @@ func deliveryAttemptState(ctx context.Context, tx *sql.Tx, attemptID, state stri
 	return err
 }
 
+// deliveryObserverAssignment verifies the observer side of the immutable
+// assignment: current binding, generation, and runtime registration session.
+func deliveryObserverAssignment(ctx context.Context, tx *sql.Tx, observerID, runtimeID, projectID, piSessionID string, generation int64) error {
+	o, err := observerLoad(ctx, tx, observerID)
+	if err != nil {
+		return err
+	}
+	if o.Revoked || o.Binding == nil || o.Binding.RuntimeID != runtimeID || o.Binding.ProjectID != projectID || o.Generation != generation {
+		return observerError("assignment_mismatch")
+	}
+	if piSessionID != "" {
+		r, err := observerRuntimeLoad(ctx, tx, observerID, runtimeID)
+		if err != nil {
+			return err
+		}
+		if r.Registration.PiSessionID != piSessionID {
+			return observerError("assignment_mismatch")
+		}
+	}
+	return nil
+}
+
+// deliveryAssignmentCurrent verifies the observer side without a status gate.
+func deliveryAssignmentCurrent(ctx context.Context, tx *sql.Tx, b DeliveryBinding) error {
+	return deliveryObserverAssignment(ctx, tx, b.ObserverID, b.RuntimeID, b.ProjectID, b.PiSessionID, b.Generation)
+}
+
 // deliveryAssignmentCheck verifies the full immutable assignment in the spend transaction.
 func deliveryAssignmentCheck(ctx context.Context, tx *sql.Tx, b DeliveryBinding) error {
+	if b.Status == "revoked" {
+		return observerError("revoked")
+	}
 	if b.Status != "active" {
 		return observerError("not_ready")
 	}
-	o, err := observerLoad(ctx, tx, b.ObserverID)
-	if err != nil {
-		return err
-	}
-	if o.Revoked || o.Binding == nil || o.Binding.RuntimeID != b.RuntimeID || o.Binding.ProjectID != b.ProjectID || o.Generation != b.Generation {
-		return observerError("assignment_mismatch")
-	}
-	r, err := observerRuntimeLoad(ctx, tx, b.ObserverID, b.RuntimeID)
-	if err != nil {
-		return err
-	}
-	if r.Registration.PiSessionID != b.PiSessionID {
-		return observerError("assignment_mismatch")
-	}
-	return nil
+	return deliveryAssignmentCurrent(ctx, tx, b)
 }

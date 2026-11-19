@@ -70,16 +70,17 @@ function commission(text: string) {
   };
 }
 
-function writer(env: Env, transport: Transport, idle: () => boolean = () => true): DeliveryWriter {
+function writer(env: Env, transport: Transport, idle: () => boolean = () => true,
+  statuses: string[] = env.statuses): DeliveryWriter {
   return new DeliveryWriter(env.config, "ab".repeat(32), { isIdle: idle }, env.session, env.runtime,
-    text => { if (text) env.statuses.push(text); }, attempt => env.sent.push(attempt), transport);
+    text => { if (text) statuses.push(text); }, attempt => env.sent.push(attempt), transport);
 }
 
 async function until(cond: () => boolean, label: string, timeoutMs = 4000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (cond()) return;
-    if (Date.now() > deadline) throw new Error(`timeout waiting for ${label}; statuses follow`);
+    if (Date.now() > deadline) throw new Error(`timeout waiting for ${label}; statuses=${JSON.stringify(env.statuses)}`);
     await new Promise(resolve => setTimeout(resolve, 10));
   }
 }
@@ -503,20 +504,30 @@ test("revoke before verify and conflicting ownership keep the Pi count at zero",
     await w.stop();
 
     // An embedded old ownership marker terminates instead of reconnecting.
+    // The foreign marker is fixed for the whole run; a fresh random marker
+    // per cycle would model nothing and could not prove termination.
+    const foreign = randomUUID();
+    const secondStatuses: string[] = [];
     const second = stub({
       "GET /delivery/v1/context": () => ({
         database_instance_id: env.config.database_instance_id,
         delivery_binding_id: env.config.delivery_binding_id,
         status: "active", runtime_id: env.runtime, project_id: randomUUID(),
         pi_session_id: env.session, journal_id: env.config.journal_id,
-        generation: 1, writer_id: randomUUID(), ready: true,
+        generation: 1, writer_id: foreign, ready: true,
       }),
       "POST /delivery/v1/attach": () => ({}),
     }, {});
-    const w2 = writer(env, second.transport);
+    const before = env.statuses.length;
+    const w2 = writer(env, second.transport, () => true, secondStatuses);
     await w2.start();
-    await until(() => env.statuses.filter(s => s.includes("stopped")).length >= 1 || env.statuses.some(s => s.includes("conflict")), "conflict surfaced");
+    await until(() => secondStatuses.some(s => s.includes("stopped") || s.includes("conflict")),
+      "conflict surfaced on the second writer");
+    const callsAfter = second.calls.length;
+    await sleep(120);
+    assert.equal(second.calls.length, callsAfter, "terminated second writer polls no further");
     await w2.stop();
+    assert.equal(env.statuses.length, before, "second writer never reused the shared status sink");
   } finally { delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true }); }
 });
 

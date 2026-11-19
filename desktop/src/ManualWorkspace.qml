@@ -663,7 +663,7 @@ Item {
                                     Layout.fillWidth: true
                                     Caption {
                                         objectName: "messageStatus_" + messageRow.modelData.id
-                                        text: "%1 · %2".arg(messageRow.modelData.displayTimestamp).arg(messageRow.modelData.statusLabel)
+                                        text: "%1 · %2".arg(messageRow.modelData.displayTimestamp).arg(messageRow.modelData.blockReason ? "%1 · %2".arg(messageRow.modelData.statusLabel).arg(messageRow.modelData.blockReason) : messageRow.modelData.statusLabel)
                                         wrapMode: Text.Wrap
                                         color: theme.muted
                                         font.pixelSize: theme.secondary

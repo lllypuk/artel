@@ -163,7 +163,12 @@ func deliveryEnable(client ownerClient, a deliveryEnableArgs, out io.Writer, fai
 		if err = deliveryVerifyConfirmed(client, p); err != nil {
 			return fail(1, err.Error())
 		}
-		return printDelivery(out, p, "confirmed")
+		// One status vocabulary: always the server binding status.
+		var current store.DeliveryBinding
+		if err = client.request("GET", "/v1/observers/"+p.ObserverID+"/delivery/"+p.DeliveryBindingID, "", nil, &current); err != nil {
+			return fail(1, err.Error())
+		}
+		return printDelivery(out, p, current.Status)
 	}
 	resumeHint := "enable rejected or response lost; resume with --resume " + deliveryPendingPath(p)
 	var accepted store.DeliveryBinding

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -115,6 +116,10 @@ func (e *deliveryOwnerEnv) post(t *testing.T, taskID, key, text, binding, instan
 	if w.Code != status {
 		t.Fatalf("POST message: got %d want %d: %s", w.Code, status, w.Body.String())
 	}
+	if status == 200 {
+		r.Body = io.NopCloser(strings.NewReader(body))
+		checkContract(t, r, w)
+	}
 	var message store.DeliveryMessage
 	if status == 200 {
 		if err := json.Unmarshal(w.Body.Bytes(), &message); err != nil {
@@ -131,6 +136,9 @@ func (e *deliveryOwnerEnv) list(t *testing.T, taskID, query string, status int) 
 	e.owner.ServeHTTP(w, r)
 	if w.Code != status {
 		t.Fatalf("GET messages: got %d want %d: %s", w.Code, status, w.Body.String())
+	}
+	if status == 200 {
+		checkContract(t, r, w)
 	}
 	var page struct {
 		Messages []store.DeliveryMessage `json:"messages"`
@@ -183,6 +191,7 @@ func TestOwnerTaskMessageAppendListProjection(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
+	checkContract(t, r, w)
 	var projection struct {
 		TaskID    string `json:"task_id"`
 		ProjectID string `json:"project_id"`

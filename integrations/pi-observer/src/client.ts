@@ -31,7 +31,8 @@ export type Transport = (method: string, path: string, body: unknown, signal: Ab
 export function unixTransport(config: ObserverConfig, token: string, maxResponse = 16384): Transport {
   return (method, path, body, signal) => new Promise((resolve, reject) => {
     const data = body === undefined ? undefined : JSON.stringify(body);
-    if (data && Buffer.byteLength(data) > 16384) { reject(new ObserverFailure("invalid_metadata")); return; }    const req = request({ socketPath: config.observer_socket, method, path, signal,
+    if (data && Buffer.byteLength(data) > 16384) { reject(new ObserverFailure("invalid_metadata")); return; }
+    const req = request({ socketPath: config.observer_socket, method, path, signal,
       agent: false, maxHeaderSize: 8192,
       headers: { Host: "artel-observer", Authorization: `Bearer ${token}`,
         ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },

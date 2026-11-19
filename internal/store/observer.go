@@ -290,6 +290,18 @@ func (m ObserverOwnerMutation) validate() error {
 	}
 	return nil
 }
+
+// observerDeliverySideEffects revokes stale delivery bindings for bind/revoke
+// and returns their IDs for post-commit readiness invalidation.
+func observerDeliverySideEffects(ctx context.Context, tx *sql.Tx, action string, o observerRecord) ([]string, error) {
+	if action != "bind" && action != "revoke" {
+		return nil, nil
+	}
+	// A changed or revoked observer assignment atomically frees the delivery
+	// slot: stale bindings are revoked here, never left to block a new enable.
+	return deliveryRevokeStaleBindings(ctx, tx, o)
+}
+
 func (s *Store) MutateObserver(ctx context.Context, m ObserverOwnerMutation) (ObserverOwnerResult, error) {
 	var result ObserverOwnerResult
 	if err := m.validate(); err != nil {
@@ -322,6 +334,10 @@ func (s *Store) MutateObserver(ctx context.Context, m ObserverOwnerMutation) (Ob
 		return result, err
 	}
 	o, oldGeneration, pruned, err := observerOwnerApply(ctx, tx, m)
+	if err != nil {
+		return result, err
+	}
+	deliveryInvalidated, err := observerDeliverySideEffects(ctx, tx, m.Action, o)
 	if err != nil {
 		return result, err
 	}
@@ -359,10 +375,68 @@ func (s *Store) MutateObserver(ctx context.Context, m ObserverOwnerMutation) (Ob
 	if err := tx.Commit(); err != nil {
 		return result, err
 	}
+	for _, id := range deliveryInvalidated {
+		s.deliveryInvalidate(id)
+	}
 	// Invalidate only the new generation, revoked credentials and removed payloads.
 	// An unrelated candidate's accepted report retains its own freshness.
 	s.observerInvalidate(o, oldGeneration, m.Action, live)
 	return result, nil
+}
+
+// deliveryRevokeStaleBindings revokes the observer's delivery bindings whose
+// immutable assignment no longer matches the observer's current binding,
+// generation or revocation state, freeing the installation slot atomically
+// with the observer mutation. It returns the revoked binding IDs.
+func deliveryRevokeStaleBindings(ctx context.Context, tx *sql.Tx, o observerRecord) ([]string, error) {
+	// Delivery bindings exist only in schema v3+; raw legacy fixtures may not.
+	var tables int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE name='delivery_bindings'").Scan(&tables); err != nil || tables == 0 {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT id,record FROM delivery_bindings WHERE json_extract(record,'$.status') != 'revoked' AND json_extract(record,'$.observer_id')=?", o.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	type stale struct {
+		id  string
+		rec string
+	}
+	var candidates []stale
+	for rows.Next() {
+		var c stale
+		if err := rows.Scan(&c.id, &c.rec); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var revoked []string
+	for _, c := range candidates {
+		var b DeliveryBinding
+		if err := json.Unmarshal([]byte(c.rec), &b); err != nil {
+			return nil, err
+		}
+		stale := o.Revoked || o.Binding == nil || o.Generation != b.Generation ||
+			o.Binding.RuntimeID != b.RuntimeID || o.Binding.ProjectID != b.ProjectID
+		if !stale {
+			continue
+		}
+		b.Status = "revoked"
+		b.WriterID = ""
+		encoded, err := json.Marshal(b)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE delivery_bindings SET record=? WHERE id=?", string(encoded), b.ID); err != nil {
+			return nil, err
+		}
+		revoked = append(revoked, b.ID)
+	}
+	return revoked, nil
 }
 
 func (s *Store) observerInvalidate(o observerRecord, oldGeneration int64, action string, live map[string]bool) {

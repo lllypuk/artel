@@ -153,6 +153,12 @@ QVariantMap Panel::messageRow(const QVariantMap &row) const {
                                    ? tr("Pi started preparing the turn")
                                : status == "unknown" ? tr("Outcome unknown")
                                                      : tr("Stored"));
+  const auto blockReason = row.value("block_reason").toString();
+  result.insert("blockReason", blockReason == "task_closed"
+                                   ? tr("The task is closed")
+                               : blockReason == "project_archived"
+                                   ? tr("The project is archived")
+                                   : QString());
   return result;
 }
 QVariantList Panel::messages() const {

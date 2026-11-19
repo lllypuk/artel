@@ -585,9 +585,11 @@ void ApiClient::refreshMessageStatuses(const QString &task,
     if (!uuid(id))
       return;
     checked.append(id);
-    if (checked.size() > 50)
-      return;
   }
+  // Status polling stays bounded: refresh the newest commissions first so a
+  // long history never freezes the visible rows.
+  if (checked.size() > 50)
+    checked = checked.sliced(checked.size() - 50);
   const auto instance = m_instance;
   auto *reply = request("GET", "/v1/tasks/" + task +
                                    "/messages?ids=" + checked.join(','));
@@ -837,18 +839,18 @@ void ApiClient::sendMutation() {
                 .object()
                 .value("code")
                 .toString();
-        m_error = m_uncertain
-                      ? tr("Send outcome unknown; retry the same request "
-                           "with the same key")
-                  : detail == "closed"
-                      ? tr("Task or project is closed; commission not recorded")
-                  : detail == "not_ready"
-                      ? tr("Pi writer is not ready; commission not recorded")
-                  : detail == "assignment_mismatch"
-                      ? tr("The enabled assignment belongs to another project")
-                  : detail == "instance_mismatch"
-                      ? tr("Database changed; retry after reloading")
-                      : tr("Send rejected; text preserved");
+        m_error =
+            m_uncertain ? tr("Send outcome unknown; retry the same request "
+                             "with the same key")
+            : detail == "closed"
+                ? tr("Task or project is closed; commission not recorded")
+            : detail == "not_ready"
+                ? tr("Pi writer is not ready; commission not recorded")
+            : detail == "assignment_mismatch"
+                ? tr("The enabled assignment belongs to a different project")
+            : detail == "instance_mismatch"
+                ? tr("Database changed; retry after reloading")
+                : tr("Send rejected; text preserved");
       } else {
         m_error =
             m_uncertain ? tr("Save outcome unknown; retry the same request")

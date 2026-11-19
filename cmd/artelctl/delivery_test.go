@@ -443,8 +443,10 @@ func TestDeliveryEnableRejectsMismatchedSelection(t *testing.T) {
 		}
 	}
 	h.call(t, 1, args...)
-	if entries, err := os.ReadDir(filepath.Dir(output)); err == nil && len(entries) != 0 {
-		t.Fatal("artifacts created for a mismatched selection")
+	// Client-side rejection precedes any private directory creation: the
+	// parent must not even exist, so no artifact could have been written.
+	if _, err := os.Stat(filepath.Dir(output)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("private directory created for a mismatched selection: %v", err)
 	}
 }
 

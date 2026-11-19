@@ -112,6 +112,9 @@ func TestObserverV1UpgradePreservesPopulatedDatabase(t *testing.T) {
 		if countRows(t, s, "observers") != 0 {
 			t.Fatal("migration created observation")
 		}
+		if countRows(t, s, "delivery_bindings") != 0 || countRows(t, s, "delivery_messages") != 0 {
+			t.Fatal("migration created delivery state")
+		}
 		if err := s.Close(); err != nil {
 			t.Fatal(err)
 		}

@@ -259,7 +259,6 @@ class DeliverySlice(unittest.TestCase):
 
         try:
             BINDING = {'id': str(uuid.uuid4())}
-            wait(lambda: child.poll() is None, 'pi start')
             # The extension registers against the real daemon; owner binds it.
             runtime = {}
             def registered():
