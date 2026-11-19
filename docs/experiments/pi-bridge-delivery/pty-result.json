@@ -23,10 +23,10 @@
       "customStarts": 0,
       "userStarts": 1,
       "serverStatus": "absent",
+      "restarts": 0,
       "admissions": 0,
       "spends": 0,
-      "localPending": 1,
-      "restarts": 0
+      "localPending": 1
     },
     {
       "name": "busy-after-spend-final-idle-check",
@@ -52,6 +52,7 @@
       "serverStatus": "observed",
       "draftPreserved": 1,
       "oldMarkerUserTurns": 1,
+      "oldMarkerAdditionalReceiptWrites": 0,
       "restarts": 0
     },
     {
@@ -91,6 +92,18 @@
       "crashBarrier": "after-local-receipt-before-post"
     },
     {
+      "name": "restart-with-missing-unspent-journal",
+      "result": "PASS",
+      "piSends": 0,
+      "providerRequests": 0,
+      "beforeAgentStart": 0,
+      "customStarts": 0,
+      "userStarts": 0,
+      "serverStatus": "admitted",
+      "restarts": 1,
+      "setupRejected": 1
+    },
+    {
       "name": "owned-process-pty-cleanup",
       "result": "PASS",
       "piSends": 0,
@@ -107,9 +120,22 @@
   ],
   "processCleanup": {
     "result": "PASS",
-    "ownedProcessesReaped": 12,
+    "ownedProcessesReaped": 14,
     "orphanProcesses": 0,
-    "ptyDescriptorsClosed": 12
+    "ptyDescriptorsClosed": 14,
+    "partialStartupCleanup": "PASS",
+    "sigtermOwnedGroupCleanup": "PASS",
+    "sigtermForceKillCleanup": "PASS",
+    "startupTimeoutBeforeReadyCleanup": "PASS"
+  },
+  "runnerGuards": {
+    "lateDuplicateRejectedAfterDrain": true,
+    "lateFreshDeliveryRejectedAfterDrain": true,
+    "manualFirstLateStateRejectedAfterDrain": true,
+    "bufferedQuitReplyAfterExit": true,
+    "bufferedSetupErrorAfterExit": true,
+    "expiredDeadlineRejectedAndCleanedUp": true,
+    "persistedRestartMismatchRejected": true
   },
   "limitations": [
     "Process crash only; no power-loss or external-provider claim",

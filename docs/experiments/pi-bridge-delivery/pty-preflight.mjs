@@ -1,35 +1,3 @@
-// Validate the exact pinned CLI parser before the PTY runner starts any session.
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
-import { pathToFileURL } from 'node:url';
-
-const pkg = process.argv[2];
-const args = process.argv.slice(3);
-assert.equal(fs.realpathSync(pkg), '/home/sasha/.local/share/pi-node/node-v22.23.2-linux-x64/lib/node_modules/@earendil-works/pi-coding-agent');
-assert.equal(process.versions.node, '22.23.2');
-assert.equal(JSON.parse(fs.readFileSync(path.join(pkg, 'package.json'), 'utf8')).version, '1.5.2');
-const { VERSION } = await import(pathToFileURL(path.join(pkg, 'dist/index.js')));
-assert.equal(VERSION, '1.5.2');
-const { parseArgs } = await import(pathToFileURL(path.join(pkg, 'dist/cli/args.js')));
-const parsed = parseArgs(args);
-assert.deepEqual(parsed.diagnostics, []);
-assert.equal(parsed.unknownFlags.size, 0);
-assert.deepEqual(parsed.messages, []);
-assert.deepEqual(parsed.fileArgs, []);
-assert.equal(parsed.offline, true);
-assert.equal(parsed.projectTrustOverride, false);
-assert.equal(parsed.noExtensions, true);
-assert.equal(parsed.noSkills, true);
-assert.equal(parsed.noPromptTemplates, true);
-assert.equal(parsed.noContextFiles, true);
-assert.equal(parsed.noThemes, true);
-assert.equal(parsed.noMcp, true);
-assert.equal(parsed.noBuiltinTools, true);
-assert.equal(parsed.extensions.length, 2);
-assert.equal(parsed.model, 'artel-fixture/fixture');
-assert.equal(parsed.thinking, 'off');
-assert.equal(parsed.sessionId, 'fictional-pty-preflight');
-assert(path.isAbsolute(parsed.sessionDir));
-assert.equal(parsed.systemPrompt, 'Isolated numeric transport fixture. No tools. Reply only 42.');
-console.log(`PTY preflight: Pi ${VERSION}; exact isolated CLI arguments accepted`);
+// Resolve the public `pi` CLI after validating the actual Node and package versions.
+import { pinnedPi } from './pi-package.mjs';
+console.log(pinnedPi(process.env.PI_TEST_PACKAGE).cli);

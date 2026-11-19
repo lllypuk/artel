@@ -18,8 +18,9 @@ for (const value of [controlPath, eventPath, process.env.ARTEL_PTY_SERVER, proce
   assert(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
 }
 const { FakeArtel, LocalJournal, TestBridge } = await import(pathToFileURL(protocolPath));
-const oracleState = globalThis[Symbol.for('artel.pi-delivery-02.pty-oracle')];
-assert(oracleState?.activeAttempts instanceof Map, 'provider oracle extension must load first');
+const activeAttempts = new Map();
+// The separately loaded provider oracle can look up attempts for correlation.
+globalThis[Symbol.for('artel.pi-delivery-02.pty-bridge.lookup-attempt')] = messageId => activeAttempts.get(messageId);
 
 let artel;
 let journal;
@@ -51,7 +52,7 @@ function transmitSynchronouslyIfIdle(transmission) {
   // it earlier or insert an await between this check and sendMessage().
   if (!sessionContext.isIdle()) return false;
   assert.equal(transmission.ownerPid, process.pid, 'only the original owner may transmit');
-  oracleState.activeAttempts.set(transmission.messageId, transmission);
+  activeAttempts.set(transmission.messageId, transmission);
   piSends += 1;
   emit({
     type: 'pi-send',
@@ -75,15 +76,19 @@ let sessionContextPi;
 async function setupSession(pi, ctx) {
   sessionContext = ctx;
   sessionContextPi = pi;
-  artel = fs.existsSync(process.env.ARTEL_PTY_SERVER)
+  const mode = process.env.ARTEL_PTY_STATE_MODE;
+  assert(['bootstrap', 'recover'].includes(mode));
+  artel = mode === 'recover'
     ? await FakeArtel.open(process.env.ARTEL_PTY_SERVER)
     : await FakeArtel.create(process.env.ARTEL_PTY_SERVER, {
       sessionId: process.env.ARTEL_PTY_SESSION_ID,
       generation: Number(process.env.ARTEL_PTY_GENERATION),
     });
   assert.equal(artel.sessionId, ctx.sessionManager.getSessionId());
-  journal = fs.existsSync(process.env.ARTEL_PTY_JOURNAL)
-    ? await LocalJournal.open(process.env.ARTEL_PTY_JOURNAL)
+  const expectedJournalId = process.env.ARTEL_PTY_JOURNAL_ID;
+  if (mode === 'recover') assert(expectedJournalId, 'recovery requires the bootstrap journal ID');
+  journal = mode === 'recover'
+    ? await LocalJournal.open(process.env.ARTEL_PTY_JOURNAL, { expectedJournalId })
     : await LocalJournal.create(process.env.ARTEL_PTY_JOURNAL);
   bridge = new TestBridge({
     artel,
@@ -99,12 +104,13 @@ async function setupSession(pi, ctx) {
   });
 }
 
-// The socket handling the current delivery is used only to report barriers. A
-// separate release command can arrive while that delivery remains suspended.
+// The fixture expects one active control connection and routes barriers to
+// the most recently accepted socket. Releases can arrive during delivery.
 let controlSocket;
 
 async function writeObservation(messageId, observation) {
   const socket = controlSocket;
+  emit({ type: 'receipt-write-start', messageId });
   try {
     await barrier('receipt:beforeWrite', socket);
     const result = await bridge.recordObservation(messageId, observation);
@@ -202,7 +208,15 @@ function startControl(pi, ctx) {
       if (controlSocket === socket) controlSocket = undefined;
     });
   });
-  controlServer.listen(controlPath, () => {
+  controlServer.on('error', error => {
+    emit({ type: 'control-error', message: error.message });
+    process.exitCode = 1;
+    setImmediate(() => ctx.shutdown());
+  });
+  // AF_UNIX addresses are short, regardless of the caller's private root path.
+  const address = path.relative(process.cwd(), controlPath);
+  assert.equal(address, '../control.sock');
+  controlServer.listen(address, () => {
     fs.chmodSync(controlPath, 0o600);
     emit({ type: 'control-ready', controlPath });
   });
@@ -219,15 +233,21 @@ function stopControl() {
 
 export default function bridgeFixture(pi) {
   pi.on('session_start', async (_event, ctx) => {
-    await setupSession(pi, ctx);
-    startControl(pi, ctx);
-    emit({ type: 'bridge-ready', sessionId: ctx.sessionManager.getSessionId() });
+    try {
+      await setupSession(pi, ctx);
+      startControl(pi, ctx);
+      emit({ type: 'bridge-ready', sessionId: ctx.sessionManager.getSessionId(), journalId: journal.journalId });
+    } catch (error) {
+      emit({ type: 'setup-error', code: error.code, message: error.message });
+      process.exitCode = 1;
+      setImmediate(() => ctx.shutdown());
+    }
   });
 
   pi.on('before_agent_start', (event, ctx) => {
     if (event.messageType !== 'custom') return;
     const messageId = event.message.details?.message_id;
-    const attempt = oracleState.activeAttempts.get(messageId);
+    const attempt = activeAttempts.get(messageId);
     if (!attempt) {
       emit({ type: 'bridge-error', message: 'custom start has no active spent attempt' });
       return;

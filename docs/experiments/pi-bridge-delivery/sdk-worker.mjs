@@ -2,8 +2,10 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { Readable } from 'node:stream';
+import { pinnedPi } from './pi-package.mjs';
 import { FakeArtel, LocalJournal, TestBridge } from './protocol.mjs';
 
 process.umask(0o077);
@@ -53,7 +55,8 @@ const serverHooks = {
 };
 const bridgeHooks = {
   beforeSpend: () => barrier('bridge:beforeSpend'),
-  afterSpendResponse: async () => {
+  afterSpendResponse: async spent => {
+    if (spent.right) emit({ type: 'right-granted', right: spent.right });
     await barrier('bridge:afterSpendResponse');
     if (config.failJournalWrite === 'attempt') journal.failNextWrite();
   },
@@ -99,6 +102,7 @@ function transmitCombined(transmission) {
 }
 
 async function writeObservation(messageId, observation) {
+  emit({ type: 'receipt-write-start', messageId });
   try {
     await barrier('receipt:beforeWrite');
     if (config.failJournalWrite === 'receipt') journal.failNextWrite();
@@ -109,10 +113,59 @@ async function writeObservation(messageId, observation) {
   }
 }
 
+// A fixture-only fetch transport: at most one real loopback POST per ACK,
+// with no pooled sockets, redirects or retries. An acknowledged registration
+// without a complete HTTP body fails measurement, including on worker death.
+function installProviderTransport() {
+  const endpoint = `http://127.0.0.1:${config.providerPort}/v1/chat/completions`;
+  const pending = new Map();
+  process.on('message', message => {
+    if (message?.type === 'provider-intake-ready') {
+      const resolve = pending.get(message.id);
+      assert(resolve, 'unsolicited provider intake ACK');
+      pending.delete(message.id);
+      resolve();
+    }
+  });
+  globalThis.fetch = async (input, init) => {
+    let headers;
+    try {
+      assert.equal(String(input), endpoint, 'fixture transport only permits its numeric loopback endpoint');
+      assert.equal(init?.method, 'POST');
+      assert.equal(typeof init.body, 'string');
+      headers = new Headers(init.headers);
+      assert(headers.has('x-artel-probe-token'));
+      assert(!headers.has('x-artel-probe-intake'));
+    } catch (error) {
+      emit({ type: 'oracle-error', message: error.message });
+      throw error;
+    }
+    init.signal?.throwIfAborted();
+    const id = randomUUID();
+    await new Promise(resolve => {
+      pending.set(id, resolve);
+      emit({ type: 'provider-intake', id });
+    });
+    headers.set('x-artel-probe-intake', id);
+    headers.set('content-length', String(Buffer.byteLength(init.body)));
+    headers.set('connection', 'close');
+    return new Promise((resolve, reject) => {
+      const req = http.request(endpoint, {
+        method: 'POST', headers: Object.fromEntries(headers), signal: init.signal, agent: false,
+      }, res => {
+        resolve(new Response(Readable.toWeb(res), {
+          status: res.statusCode, statusText: res.statusMessage, headers: res.headers,
+        }));
+      });
+      req.on('error', reject);
+      req.end(init.body);
+    });
+  };
+}
+
 async function setupPi() {
-  const pkg = process.env.PI_TEST_PACKAGE;
-  assert(pkg, 'PI_TEST_PACKAGE is required');
-  const sdk = await import(pathToFileURL(path.join(pkg, 'dist/index.js')));
+  installProviderTransport();
+  const sdk = await import(pinnedPi(process.env.PI_TEST_PACKAGE).sdk);
   assert.equal(sdk.VERSION, '1.5.2');
   const cwd = path.join(config.scenarioRoot, 'project');
   const agentDir = path.join(config.scenarioRoot, 'agent');
@@ -190,6 +243,7 @@ async function setupPi() {
           attemptId: attempt?.attemptId,
           journalId: attempt?.journalId,
           ownerPid: attempt?.ownerPid,
+          ownerInstance: attempt?.ownerInstance,
         });
         if (event.messageType !== 'custom' || !attempt) return;
         const observation = {
@@ -201,7 +255,7 @@ async function setupPi() {
         // Do not await the writer in Pi's hook. The sole positive receipt is still
         // the exact custom observation above, never provider or completion events.
         if (config.mode === 'pi') {
-          emit({ type: 'observation', messageId, observation });
+          emit({ type: 'observation', messageId, ownerPid: attempt.ownerPid, observation });
         } else {
           queueMicrotask(() => { void writeObservation(messageId, observation); });
         }
@@ -261,7 +315,7 @@ async function setupBridge() {
     : await FakeArtel.open(config.serverPath, serverHooks);
   journal = config.createJournal
     ? await LocalJournal.create(config.journalPath)
-    : await LocalJournal.open(config.journalPath);
+    : await LocalJournal.open(config.journalPath, { expectedJournalId: config.expectedJournalId });
   bridge = new TestBridge({
     artel,
     journal,
@@ -288,7 +342,7 @@ async function deliver(command) {
 async function shutdown() {
   session?.dispose();
   emit({ type: 'shutdown', piSends });
-  process.disconnect();
+  if (process.connected) process.disconnect();
 }
 
 process.on('message', message => {
@@ -325,6 +379,9 @@ try {
   });
   if (config.autoDeliver && config.mode !== 'pi') queueMicrotask(() => { void deliver('initial'); });
 } catch (error) {
-  emit({ type: 'setup-error', code: error.code, message: error.message, stack: error.stack });
   process.exitCode = 1;
+  try { session?.dispose(); } finally {
+    emit({ type: 'setup-error', code: error.code, message: error.message, stack: error.stack });
+    if (process.connected) process.disconnect();
+  }
 }

@@ -14,10 +14,8 @@ assert.equal(endpoint.hash, '');
 const eventPath = process.env.ARTEL_PTY_ORACLE_EVENTS;
 assert(eventPath?.startsWith('/tmp/artel-pi-delivery-'));
 
-export const oracleState = globalThis[Symbol.for('artel.pi-delivery-02.pty-oracle')] ??= {
-  activeAttempts: new Map(),
-  currentToken: undefined,
-};
+const lookupAttempt = Symbol.for('artel.pi-delivery-02.pty-bridge.lookup-attempt');
+let currentToken;
 
 function emit(row) {
   fs.appendFileSync(eventPath, `${JSON.stringify({ ...row, processPid: process.pid })}\n`, { mode: 0o600 });
@@ -53,9 +51,9 @@ export default function providerFixture(pi) {
 
   pi.on('before_agent_start', (event, ctx) => {
     const token = randomUUID();
-    oracleState.currentToken = token;
+    currentToken = token;
     const messageId = event.messageType === 'custom' ? event.message.details?.message_id : undefined;
-    const attempt = messageId ? oracleState.activeAttempts.get(messageId) : undefined;
+    const attempt = messageId ? globalThis[lookupAttempt]?.(messageId) : undefined;
     emit({
       type: 'token-event',
       token,
@@ -68,31 +66,32 @@ export default function providerFixture(pi) {
       attemptId: attempt?.attemptId,
       journalId: attempt?.journalId,
       ownerPid: attempt?.ownerPid,
+      ownerInstance: attempt?.ownerInstance,
     });
   });
 
   pi.on('before_provider_headers', (event, ctx) => {
-    if (!oracleState.currentToken || ctx.model?.provider !== 'artel-fixture' || ctx.model?.id !== 'fixture') {
+    if (!currentToken || ctx.model?.provider !== 'artel-fixture' || ctx.model?.id !== 'fixture') {
       emit({ type: 'oracle-error', message: 'missing token or unexpected provider/model' });
       throw new Error('provider oracle refused an unmarked or unexpected request');
     }
-    event.headers['x-artel-probe-token'] = oracleState.currentToken;
+    event.headers['x-artel-probe-token'] = currentToken;
     emit({
       type: 'provider-headers',
-      token: oracleState.currentToken,
+      token: currentToken,
       provider: ctx.model.provider,
       model: ctx.model.id,
     });
   });
 
   pi.on('after_provider_response', event => {
-    emit({ type: 'provider-response', token: oracleState.currentToken, status: event.status });
+    emit({ type: 'provider-response', token: currentToken, status: event.status });
   });
 
-  pi.on('agent_end', () => emit({ type: 'agent-end', token: oracleState.currentToken }));
+  pi.on('agent_end', () => emit({ type: 'agent-end', token: currentToken }));
   pi.on('agent_settled', (_event, ctx) => emit({
     type: 'agent-settled',
-    token: oracleState.currentToken,
+    token: currentToken,
     idle: ctx.isIdle(),
     pending: ctx.hasPendingMessages(),
   }));

@@ -3,38 +3,29 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import fsPromises from 'node:fs/promises';
+import { once } from 'node:events';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { pinnedPi } from './pi-package.mjs';
 
-const EXPECTED_NODE = '/home/sasha/.local/share/pi-node/node-v22.23.2-linux-x64/bin/node';
-const EXPECTED_PACKAGE = '/home/sasha/.local/share/pi-node/node-v22.23.2-linux-x64/lib/node_modules/@earendil-works/pi-coding-agent';
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-const root = process.env.PROBE_ROOT;
-const pkg = process.env.PI_TEST_PACKAGE;
+const projectRoot = fs.realpathSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'));
+const parentRoot = process.env.PROBE_ROOT;
 process.umask(0o077);
-assert.equal(process.execPath, EXPECTED_NODE, 'run with the absolute pinned Node 22.23.2 binary');
-assert.equal(process.versions.node, '22.23.2');
-assert.equal(process.platform, 'linux');
-assert(pkg, 'PI_TEST_PACKAGE is required');
-assert.equal(fs.realpathSync(pkg), EXPECTED_PACKAGE, 'PI_TEST_PACKAGE must be the expected installed package');
-assert.equal(JSON.parse(fs.readFileSync(path.join(pkg, 'package.json'), 'utf8')).version, '1.5.2');
-const sdk = await import(new URL(`file://${path.join(pkg, 'dist/index.js')}`));
-assert.equal(sdk.VERSION, '1.5.2');
-for (const api of ['createAgentSession', 'DefaultResourceLoader', 'ModelRuntime', 'SessionManager', 'SettingsManager']) {
-  assert.equal(typeof sdk[api], 'function', `missing public Pi API ${api}`);
-}
-assert(root?.startsWith('/tmp/artel-pi-delivery-'), 'PROBE_ROOT must be an absolute private /tmp/artel-pi-delivery-* path');
-assert(path.isAbsolute(root) && path.relative(projectRoot, root).startsWith('..'), 'PROBE_ROOT must be outside the worktree');
-const rootStat = fs.statSync(root);
+assert(parentRoot?.startsWith('/tmp/artel-pi-delivery-'), 'PROBE_ROOT must be an absolute private /tmp/artel-pi-delivery-* path');
+assert(path.isAbsolute(parentRoot) && path.relative(projectRoot, parentRoot).startsWith('..'), 'PROBE_ROOT must be outside the worktree');
+const rootStat = fs.lstatSync(parentRoot);
 assert(rootStat.isDirectory() && rootStat.uid === process.getuid() && (rootStat.mode & 0o777) === 0o700);
-const realRoot = fs.realpathSync(root);
-assert(realRoot.startsWith('/tmp/artel-pi-delivery-') && path.relative(projectRoot, realRoot).startsWith('..'));
+const realRoot = fs.realpathSync(parentRoot);
+assert(realRoot.startsWith('/tmp/artel-pi-delivery-') && !realRoot.startsWith(`${projectRoot}/`) && realRoot !== projectRoot);
 for (const key of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'XDG_DATA_HOME', 'PI_CODING_AGENT_DIR']) {
   const value = process.env[key];
   assert(value?.startsWith('/'), `${key} must be an absolute private path`);
-  const relative = path.relative(realRoot, fs.realpathSync(value));
+  const directory = fs.realpathSync(value);
+  assert.equal(directory, value, `${key} must not use symlinks`);
+  const stat = fs.statSync(directory);
+  assert(stat.isDirectory() && stat.uid === process.getuid() && (stat.mode & 0o777) === 0o700);
+  const relative = path.relative(realRoot, directory);
   assert(relative && !relative.startsWith('..') && !path.isAbsolute(relative), `${key} must be inside PROBE_ROOT`);
 }
 assert.equal(process.env.PI_OFFLINE, '1', 'PI_OFFLINE=1 is required');
@@ -45,10 +36,52 @@ const allowedEnvironment = new Set([
 for (const key of Object.keys(process.env)) {
   assert(allowedEnvironment.has(key), `unapproved inherited environment variable: ${key}`);
 }
+const root = fs.mkdtempSync(path.join(realRoot, 'sdk-'));
+const env = { ...process.env, PROBE_ROOT: root };
+// Never import Pi or spawn children before the isolation checks. Use a fresh
+// tree even when the caller reuses an otherwise valid private parent directory.
+for (const key of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'XDG_DATA_HOME', 'PI_CODING_AGENT_DIR', 'TMPDIR']) {
+  const directory = path.join(root, key.toLowerCase());
+  fs.mkdirSync(directory, { mode: 0o700 });
+  process.env[key] = env[key] = directory;
+}
+process.env.PROBE_ROOT = root;
+const sdk = await import(pinnedPi(process.env.PI_TEST_PACKAGE).sdk);
+assert.equal(sdk.VERSION, '1.5.2');
+for (const api of ['createAgentSession', 'DefaultResourceLoader', 'ModelRuntime', 'SessionManager', 'SettingsManager']) {
+  assert.equal(typeof sdk[api], 'function', `missing public Pi API ${api}`);
+}
 const workerPath = fileURLToPath(new URL('./sdk-worker.mjs', import.meta.url));
 const children = new Set();
 const results = [];
-let currentScenario;
+const providers = new Set();
+const oracleErrors = [];
+const cancellation = { error: null };
+
+function checkCancelled(scenario) {
+  const error = cancellation.error ?? scenario?.cancellation.error ?? scenario?.watchdogError;
+  if (error) throw error;
+}
+
+function diagnostics(errors, append = fs.appendFileSync) {
+  const write = (file, data) => {
+    try {
+      append(file, data, { mode: 0o600 });
+    } catch (cause) {
+      errors.push(new Error(`diagnostic write failed (${path.basename(file)}): ${cause.message}`, { cause }));
+    }
+  };
+  return {
+    write,
+    report(error) {
+      errors.push(error);
+      write(path.join(root, 'runner-errors.log'), `${error.stack ?? error}\n`);
+    },
+  };
+}
+
+const runnerDiagnostics = diagnostics(oracleErrors);
+const entryError = runnerDiagnostics.report;
 
 function deferred() {
   let resolve;
@@ -58,46 +91,55 @@ function deferred() {
 }
 
 class OwnedChild {
-  constructor(scenario, config) {
+  constructor(scenario, config, { executable = process.execPath, reportError = entryError, writeDiagnostic = runnerDiagnostics.write } = {}) {
+    checkCancelled(scenario);
     this.scenario = scenario;
     this.config = config;
     this.messages = [];
     this.waiters = new Set();
-    this.stdout = '';
-    this.stderr = '';
     fs.writeFileSync(config.configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-    this.child = spawn(process.execPath, [workerPath, config.configPath], {
+    this.child = spawn(executable, [workerPath, config.configPath], {
       cwd: config.scenarioRoot,
-      env: process.env,
+      env,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
     this.child.stdout.on('data', chunk => {
-      this.stdout += chunk;
-      fs.appendFileSync(path.join(config.scenarioRoot, `${config.mode}-${this.child.pid}-stdout.log`), chunk, { mode: 0o600 });
+      writeDiagnostic(path.join(config.scenarioRoot, `${config.mode}-${this.child.pid}-stdout.log`), chunk);
     });
     this.child.stderr.on('data', chunk => {
-      this.stderr += chunk;
-      fs.appendFileSync(path.join(config.scenarioRoot, `${config.mode}-${this.child.pid}-stderr.log`), chunk, { mode: 0o600 });
+      writeDiagnostic(path.join(config.scenarioRoot, `${config.mode}-${this.child.pid}-stderr.log`), chunk);
     });
     this.child.on('message', message => {
       this.messages.push(message);
       if (message.type === 'token-event') {
-        assert(!scenario.tokens.has(message.token), 'before_agent_start must allocate a fresh token');
+        if (scenario.tokens.has(message.token)) entryError(new Error('duplicate before_agent_start token'));
         scenario.tokens.set(message.token, message);
       }
+      if (message.type === 'provider-intake') {
+        try {
+          scenario.provider.expectIntake(message.id);
+          if (this.child.connected) this.send({ type: 'provider-intake-ready', id: message.id });
+        } catch (error) {
+          entryError(error);
+        }
+      }
       if (message.type === 'pi-send') scenario.piSends += 1;
+      if (message.type === 'pi-transmit') scenario.transmitCommands += 1;
+      if (['oracle-error', 'extension-error'].includes(message.type)) entryError(new Error(message.message));
       for (const waiter of [...this.waiters]) waiter.check();
     });
     this.exited = deferred();
-    this.child.once('exit', (code, signal) => {
+    const terminal = (code, signal, error) => {
+      if (this.exit) return;
       children.delete(this);
-      this.exit = { code, signal };
+      this.exit = { code, signal, ...(error && { error }) };
       this.exited.resolve(this.exit);
       for (const waiter of [...this.waiters]) waiter.check();
-    });
+    };
+    this.child.once('close', (code, signal) => terminal(code, signal));
     this.child.once('error', error => {
-      this.spawnError = error;
-      for (const waiter of [...this.waiters]) waiter.check();
+      reportError(error);
+      if (!this.child.pid) terminal(null, null, error);
     });
     children.add(this);
   }
@@ -113,7 +155,7 @@ class OwnedChild {
           clearTimeout(timer);
           this.waiters.delete(entry);
           waiter.resolve(match);
-        } else if (this.exit || this.spawnError) {
+        } else if (this.exit) {
           clearTimeout(timer);
           this.waiters.delete(entry);
           waiter.reject(new Error(`${this.scenario.name}: child exited before ${type}; private log ${this.config.scenarioRoot}`));
@@ -125,12 +167,13 @@ class OwnedChild {
       waiter.reject(new Error(`${this.scenario.name}: barrier/event timeout ${type}; private log ${this.config.scenarioRoot}`));
     }, timeout);
     this.waiters.add(entry);
+    entry.check();
     return waiter.promise;
   }
 
   send(message) {
     assert(this.child.connected && !this.exit, `cannot send ${message.type} to exited ${this.scenario.name} child`);
-    this.child.send(message);
+    this.child.send(message, error => { if (error) entryError(error); });
   }
 
   release(name) { this.send({ type: 'release', name }); }
@@ -144,21 +187,39 @@ class OwnedChild {
   }
 
   async stop() {
-    if (this.exit) return;
+    assert(!this.exit, 'worker exited before shutdown');
     this.send({ type: 'shutdown' });
-    const timer = setTimeout(() => { if (!this.exit) this.child.kill('SIGKILL'); }, 2000);
+    const timer = setTimeout(() => {
+      reportAndKill([this], entryError, new Error(`${this.scenario.name}: shutdown watchdog expired`));
+    }, 2000);
     await this.exited.promise;
     clearTimeout(timer);
-    assert.equal(this.exit.code, 0, `${this.scenario.name}: clean worker shutdown`);
+    assert.deepEqual(this.exit, { code: 0, signal: null }, `${this.scenario.name}: clean worker shutdown`);
+    assert(this.messages.some(message => message.type === 'shutdown'));
   }
 }
 
 class NumericProvider {
-  constructor() {
+  constructor(scenario, reportError) {
+    this.scenario = scenario;
+    this.reportError = reportError;
     this.requests = [];
     this.waiters = new Set();
     this.policy = 'respond';
-    this.server = http.createServer((req, res) => { void this.handle(req, res); });
+    this.intake = new Map();
+    this.handlers = new Set();
+    this.server = http.createServer((req, res) => {
+      // This listener belongs to one scenario for its entire lifetime. Snapshot
+      // the policy at headers too; a slow body cannot migrate to another case.
+      const handler = this.handle(req, res, this.policy);
+      this.handlers.add(handler);
+      void handler.then(() => this.handlers.delete(handler), error => {
+        this.handlers.delete(handler);
+        this.reportError(error);
+      });
+    });
+    this.server.on('clientError', (error, socket) => { this.reportError(error); socket.destroy(); });
+    this.server.on('error', this.reportError);
   }
 
   async listen() {
@@ -166,12 +227,22 @@ class NumericProvider {
       this.server.once('error', reject);
       this.server.listen(0, '127.0.0.1', resolve);
     });
+    providers.add(this);
     this.port = this.server.address().port;
     assert(Number.isInteger(this.port));
   }
 
-  async handle(req, res) {
+  expectIntake(id) {
+    assert(!this.closing, 'provider transport registered after intake was sealed');
+    assert(typeof id === 'string' && id && !this.intake.has(id), 'invalid or duplicate provider transport ID');
+    this.intake.set(id, deferred());
+  }
+
+  async handle(req, res, policy) {
     try {
+      const intake = this.intake.get(req.headers['x-artel-probe-intake']);
+      assert(intake && !intake.started, 'unregistered or reused provider transport ID');
+      intake.started = true;
       assert.equal(req.method, 'POST');
       assert.equal(req.url, '/v1/chat/completions');
       let raw = '';
@@ -179,22 +250,24 @@ class NumericProvider {
         raw += chunk;
         assert(raw.length < 200000, 'provider fixture body limit');
       }
+      assert(req.complete, 'provider request body was truncated');
+      intake.resolve();
       const entry = {
         sequence: this.requests.length + 1,
-        scenario: currentScenario?.name,
+        scenario: this.scenario.name,
         token: req.headers['x-artel-probe-token'],
         headers: { ...req.headers },
         rawBody: raw,
         body: JSON.parse(raw),
-        held: this.policy === 'hold',
-        response: this.policy,
+        held: policy === 'hold',
+        response: policy,
       };
-      assert.equal(typeof entry.token, 'string', 'provider request is missing its independent token');
+      assert(typeof entry.token === 'string' && entry.token, 'provider request is missing its independent token');
       this.requests.push(entry);
-      fs.appendFileSync(path.join(root, 'provider-requests.jsonl'), `${JSON.stringify(entry)}\n`, { mode: 0o600 });
-      if (this.policy === 'disconnect') {
+      fs.appendFileSync(path.join(this.scenario.dir, 'provider-requests.jsonl'), `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+      if (this.closing || policy === 'disconnect') {
         req.socket.destroy();
-      } else if (this.policy !== 'hold') {
+      } else if (policy !== 'hold') {
         this.respond(entry, req, res);
       } else {
         entry.req = req;
@@ -202,8 +275,8 @@ class NumericProvider {
       }
       for (const waiter of [...this.waiters]) waiter.check();
     } catch (error) {
-      entryError(error);
-      res.writeHead(500);
+      this.reportError(error);
+      if (!res.headersSent && !res.destroyed) res.writeHead(500);
       res.end();
     }
   }
@@ -227,7 +300,7 @@ class NumericProvider {
   }
 
   drop(entry) {
-    if (entry?.req && !entry.req.destroyed) entry.req.socket.destroy();
+    if (entry?.res && !entry.res.destroyed) entry.res.destroy();
     if (entry) entry.held = false;
   }
 
@@ -247,29 +320,42 @@ class NumericProvider {
     };
     const timer = setTimeout(() => {
       this.waiters.delete(entry);
-      waiter.reject(new Error(`${currentScenario?.name}: provider request barrier timeout`));
+      waiter.reject(new Error(`${this.scenario.name}: provider request barrier timeout`));
     }, timeout);
     this.waiters.add(entry);
+    entry.check();
     return waiter.promise;
   }
 
-  async close() {
-    for (const request of this.requests) this.drop(request);
-    this.server.closeAllConnections();
-    await new Promise(resolve => this.server.close(resolve));
+  async close(timeout = 3000) {
+    this.closing = true;
+    for (const request of this.requests) if (request.held) this.drop(request);
+    let timer;
+    const expired = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${this.scenario.name}: provider intake drain timed out`)), timeout);
+    });
+    const closeListener = () => new Promise((resolve, reject) =>
+      this.server.close(error => error ? reject(error) : resolve()));
+    try {
+      // Producers have been reaped. Each one-shot write needed a registration
+      // ACK; keep accepting/parsing until every registered full body is seen.
+      // Neither child exit nor absence of HTTP callbacks proves that boundary.
+      await Promise.race([Promise.all([...this.intake.values()].map(item => item.promise)), expired]);
+      await Promise.race([closeListener().then(() => Promise.all([...this.handlers])), expired]);
+    } finally {
+      clearTimeout(timer);
+      if (this.server.listening) this.server.close();
+      this.server.closeAllConnections();
+      providers.delete(this);
+    }
   }
 }
 
-function entryError(error) {
-  fs.appendFileSync(path.join(root, 'runner-errors.log'), `${error.stack ?? error}\n`, { mode: 0o600 });
-}
-
-const provider = new NumericProvider();
-await provider.listen();
-
 class Scenario {
-  constructor(name) {
+  constructor(name, reportError = entryError, signalState = cancellation) {
     this.name = name;
+    this.cancellation = signalState;
+    this.watchdogError = null;
     this.dir = path.join(root, name);
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     this.identity = { messageId: `message-${name}`, generation: 7, sessionId: randomUUID() };
@@ -286,8 +372,11 @@ class Scenario {
     this.journalPath = path.join(this.dir, 'journal.json');
     this.tokens = new Map();
     this.piSends = 0;
+    this.transmitCommands = 0;
+    this.journalIds = new Map();
     this.children = [];
     this.sequence = 0;
+    this.provider = new NumericProvider(this, reportError);
   }
 
   async start(mode = 'combined', options = {}) {
@@ -297,7 +386,7 @@ class Scenario {
       root,
       scenarioRoot: this.dir,
       mode,
-      providerPort: provider.port,
+      providerPort: this.provider.port,
       identity: this.identity,
       payload: this.payload,
       serverPath: this.serverPath,
@@ -307,11 +396,16 @@ class Scenario {
       autoDeliver: options.autoDeliver ?? mode !== 'pi',
       ...options,
     };
-    delete config.configPath;
-    config.configPath = path.join(this.dir, `config-${number}.json`);
+    if (!config.createJournal && mode !== 'pi') {
+      config.expectedJournalId = this.journalIds.get(config.journalPath);
+      assert(config.expectedJournalId, 'recovery requires an original journal ID');
+    }
     const child = new OwnedChild(this, config);
     this.children.push(child);
-    if (!options.expectSetupError) await child.wait('ready');
+    if (!options.expectSetupError) {
+      const ready = await child.wait('ready');
+      if (ready.journalId) this.journalIds.set(config.journalPath, ready.journalId);
+    }
     return child;
   }
 
@@ -323,7 +417,7 @@ class Scenario {
     return { server: server.messages[this.identity.messageId], activeGeneration: server.activeGeneration, journal: journal?.messages[this.identity.messageId], journalId: journal?.journalId };
   }
 
-  providerRequests() { return provider.requests.filter(request => request.scenario === this.name); }
+  providerRequests() { return this.provider.requests; }
 
   async finishSuccessful(child) {
     await child.wait('receipt-result', message => message.result.status === 'observed');
@@ -343,8 +437,8 @@ class Scenario {
       perToken.set(request.token, request);
       assert.equal(request.body.model, 'fixture');
       assert(!request.body.tools || request.body.tools.length === 0);
-      assert(request.rawBody.includes(this.payload.details.marker), 'unique literal marker absent from actual request body');
-      assert(request.rawBody.includes(this.payload.content), 'custom content absent from first correlated request');
+      const initiatingText = event.messageType === 'custom' ? this.payload.content : event.prompt;
+      assertInitiatingMessage(request.body.messages, initiatingText);
       assert.equal(request.headers.authorization, 'Bearer fake-not-a-secret');
       if (event.messageType === 'custom') {
         assert.deepEqual(event.details, this.payload.details);
@@ -354,27 +448,40 @@ class Scenario {
         const state = this.state();
         assert.equal(event.attemptId, state.server.spend.attemptId);
         assert.equal(event.journalId, state.server.spend.journalId);
+        assert.equal(event.ownerPid, state.server.spend.ownerPid);
+        assert.equal(event.ownerInstance, state.server.spend.ownerInstance);
       } else {
         assert.equal(event.messageType, 'user');
-        assert(event.prompt.includes(this.payload.details.marker));
+        assert.equal(event.sessionId, this.identity.sessionId);
+        assert.equal(event.prompt, `MANUAL_OLD_MARKER ${this.payload.details.marker}`);
         assert.equal(event.attemptId, undefined);
       }
     }
-    if (manual) {
-      const users = [...this.tokens.values()].filter(event => event.messageType === 'user');
-      assert.equal(users.length, 1);
-      assert.equal(requests.filter(request => this.tokens.get(request.token)?.messageType === 'user').length, 1);
-      assert.equal(this.piSends, 1, 'manual old-marker turn must not be another bridge send');
-    }
+    assert.deepEqual(new Set(perToken.keys()), new Set(this.tokens.keys()), 'missing request for a recorded start');
+    assert.deepEqual([...this.tokens.values()].map(event => event.messageType),
+      [...Array(this.piSends).fill('custom'), ...(manual ? ['user'] : [])]);
+    if (manual) assert.equal(this.piSends, 1, 'manual old-marker turn must not be another bridge send');
+    assertOracleHealthy();
   }
 
-  summary(extra = {}) {
+  summary(options = {}) {
+    this.summaryOptions = options;
+  }
+
+  finalize(expectedPiSends) {
+    const extra = this.summaryOptions;
+    assert(extra, 'scenario did not supply summary options');
     const state = this.state();
     this.correlate(extra);
+    const expectedTurns = expectedPiSends + (extra.manual ? 1 : 0);
+    assert.deepEqual([this.piSends, this.providerRequests().length, this.tokens.size],
+      [expectedPiSends, expectedTurns, expectedTurns], `${this.name}: unexpected final Pi/HTTP/start counts`);
+    const verifiedCounts = extra.verify?.();
     const summary = {
       name: this.name,
       result: 'PASS',
       piSends: this.piSends,
+      transmitCommands: this.transmitCommands,
       providerRequests: this.providerRequests().length,
       beforeAgentStart: this.tokens.size,
       customStarts: [...this.tokens.values()].filter(event => event.messageType === 'custom').length,
@@ -382,33 +489,105 @@ class Scenario {
       serverStatus: state.server ? (state.server.receipt ? 'observed' : state.server.spend ? 'unknown' : 'admitted') : 'absent',
       activeGeneration: state.activeGeneration,
       ...extra.counts,
+      ...verifiedCounts,
     };
     results.push(summary);
-    console.log(`PASS ${this.name}: pi=${summary.piSends} provider=${summary.providerRequests} before_agent_start=${summary.beforeAgentStart} server=${summary.serverStatus}`);
     return summary;
   }
 }
 
-async function run(name, body) {
+async function run(name, expectedPiSends, body) {
+  checkCancelled();
   const scenario = new Scenario(name);
-  currentScenario = scenario;
-  provider.policy = 'respond';
-  const timeout = setTimeout(() => {
-    for (const child of scenario.children) if (!child.exit) child.child.kill('SIGKILL');
-  }, 15000);
+  const timeout = startWatchdog(scenario);
   try {
+    await scenario.provider.listen();
+    checkCancelled(scenario);
     await body(scenario);
   } finally {
-    clearTimeout(timeout);
-    for (const request of scenario.providerRequests()) if (request.held) provider.drop(request);
-    for (const child of [...scenario.children].reverse()) {
-      if (!child.exit) await child.kill();
+    try {
+      for (const request of scenario.providerRequests()) if (request.held) scenario.provider.drop(request);
+      await reapChildren(scenario.children);
+    } finally {
+      try {
+        if (providers.has(scenario.provider)) await scenario.provider.close();
+      } finally {
+        clearTimeout(timeout);
+      }
     }
   }
+  checkCancelled(scenario);
+  scenario.finalize(expectedPiSends);
+}
+
+function reportAndKill(owned, reportError, error) {
+  try {
+    reportError(error);
+  } finally {
+    for (const child of owned) if (!child.exit) child.child.kill('SIGKILL');
+  }
+}
+
+function startWatchdog(scenario, ms = 15000, reportError = entryError) {
+  return setTimeout(() => {
+    scenario.watchdogError = new Error(`${scenario.name}: scenario watchdog expired`);
+    reportAndKill(scenario.children, reportError, scenario.watchdogError);
+  }, ms);
+}
+
+async function reapChildren(owned) {
+  const pending = [...owned].filter(child => !child.exit);
+  const outcomes = await Promise.allSettled(pending.map(child => child.kill()));
+  const failures = outcomes.filter(outcome => outcome.status === 'rejected');
+  if (failures.length) throw new AggregateError(failures.map(failure => failure.reason), 'worker cleanup failed');
+}
+
+function connectPi(pi, ...bridges) {
+  assert([pi, ...bridges].every(worker => worker.child.connected && !worker.exit));
+  const transmit = message => {
+    if (message.type === 'pi-transmit') {
+      if (!pi.child.connected) entryError(new Error('transmission command has no live Pi route'));
+      else pi.send({ type: 'transmit', transmission: message.transmission });
+    }
+  };
+  const observe = message => {
+    if (message.type !== 'observation') return;
+    const owner = bridges.find(bridge => bridge.child.pid === message.ownerPid);
+    if (owner?.child.connected) owner.send(message);
+  };
+  for (const bridge of bridges) bridge.child.on('message', transmit);
+  pi.child.on('message', observe);
+  return () => {
+    for (const bridge of bridges) bridge.child.off('message', transmit);
+    pi.child.off('message', observe);
+  };
+}
+
+function assertOracleHealthy(errors = oracleErrors) {
+  assert.equal(errors.length, 0, `oracle/runner failures: ${errors.map(error => error.message).join('; ')}`);
+}
+
+function assertInitiatingMessage(messages, expected) {
+  assert(Array.isArray(messages));
+  const text = message => typeof message.content === 'string' ? message.content
+    : message.content?.map(part => part.type === 'text' ? part.text : '').join('');
+  assert.equal(messages.at(-1)?.role, 'user');
+  assert.equal(text(messages.at(-1)), expected, 'last provider message must be the exact initiator, not history');
+  assert.equal(messages.filter(message => message.role === 'user' && text(message) === expected).length, 1);
+}
+
+function assertPersistedRestart(before, after) {
+  assert.deepEqual(after, {
+    ...before,
+    server: { ...before.server, receipt: before.journal.receipt },
+  }, 'restart must preserve the full spend and journal and publish only the original local receipt');
 }
 
 async function recoverUnknown(scenario) {
   const before = scenario.providerRequests().length;
+  const persisted = scenario.state();
+  assert(persisted.server.spend);
+  assert.equal(persisted.journal.receipt, null);
   const sends = scenario.piSends;
   const recovered = await scenario.start('combined', { createServer: false, createJournal: false });
   const delivery = await recovered.wait('delivery-result', message => message.command === 'initial');
@@ -417,21 +596,26 @@ async function recoverUnknown(scenario) {
   assert.equal(scenario.providerRequests().length, before);
   assert.equal(scenario.piSends, sends);
   await recovered.stop();
+  assertPersistedRestart(persisted, scenario.state());
   return recovered;
 }
 
-async function redeliverObserved(child, scenario) {
+function requestRedelivery(child) {
   const firstNewMessage = child.messages.length;
   child.send({ type: 'deliver' });
-  const replay = await child.wait('delivery-result', message => message.command === 'redelivery'
+  return child.wait('delivery-result', message => message.command === 'redelivery'
     && child.messages.indexOf(message) >= firstNewMessage);
+}
+
+async function redeliverObserved(child, scenario) {
+  const replay = await requestRedelivery(child);
   assert.equal(replay.result.status, 'observed');
   assert.equal(scenario.piSends, 1);
   assert.equal(scenario.providerRequests().length, 1);
 }
 
 async function positiveControl() {
-  await run('positive-control', async scenario => {
+  await run('positive-control', 1, async scenario => {
     const child = await scenario.start();
     await scenario.finishSuccessful(child);
     assert.equal(scenario.piSends, 1);
@@ -446,15 +630,19 @@ async function positiveControl() {
     assert.equal(scenario.providerRequests().length, 2);
     assert.equal(scenario.tokens.size, 2);
     assert.equal(scenario.piSends, 1);
-    scenario.correlate({ manual: true });
     await child.stop();
-    scenario.summary({ manual: true });
+    scenario.summary({ manual: true, verify: () => {
+      // Check the complete IPC stream, even for an idempotent extra writer invocation.
+      assert.equal(child.messages.filter(message => message.type === 'receipt-write-start').length, 1,
+        'old-marker user turn must not start another receipt writer');
+      return { oldMarkerAdditionalReceiptWrites: 0 };
+    } });
   });
 }
 
 async function admissionResponseMatrix() {
   for (const phase of ['beforeCommit', 'beforeResponse']) {
-    await run(`admission-response-lost-${phase}`, async scenario => {
+    await run(`admission-response-lost-${phase}`, 1, async scenario => {
       const child = await scenario.start('combined', { failAt: [`admission:${phase}`] });
       await child.wait('delivery-error', message => message.command === 'initial');
       assert.equal(scenario.piSends, 0);
@@ -472,7 +660,7 @@ async function admissionResponseMatrix() {
 }
 
 async function crashBeforeSpend() {
-  await run('crash-before-spend-safe-continuation', async scenario => {
+  await run('crash-before-spend-safe-continuation', 1, async scenario => {
     const child = await scenario.start('combined', { pauses: ['bridge:beforeSpend'] });
     await child.wait('barrier', message => message.name === 'bridge:beforeSpend');
     assert.equal(scenario.state().server.spend, null);
@@ -496,7 +684,7 @@ async function crashSpentBeforePi() {
     ['crash-after-attempt-before-pi', 'bridge:afterAttemptCommit', true],
   ];
   for (const [name, barrier, attemptCommitted] of cases) {
-    await run(name, async scenario => {
+    await run(name, 0, async scenario => {
       const child = await scenario.start('combined', { pauses: [barrier] });
       await child.wait('barrier', message => message.name === barrier);
       assert(scenario.state().server.spend);
@@ -511,23 +699,23 @@ async function crashSpentBeforePi() {
 }
 
 async function transmissionAndReceiptMatrix() {
-  await run('whole-sdk-crash-after-transmission-before-receipt', async scenario => {
-    provider.policy = 'hold';
+  await run('whole-sdk-crash-after-transmission-before-receipt', 1, async scenario => {
+    scenario.provider.policy = 'hold';
     const child = await scenario.start('combined', { pauses: ['receipt:beforeWrite'] });
-    const request = await provider.wait(item => item.scenario === scenario.name);
+    const request = await scenario.provider.wait(item => item.scenario === scenario.name);
     await child.wait('barrier', message => message.name === 'receipt:beforeWrite');
     assert.equal(scenario.state().journal.receipt, null);
     assert.equal(scenario.state().server.receipt, null);
     assert.equal(scenario.piSends, 1);
     await child.kill();
-    provider.drop(request);
+    scenario.provider.drop(request);
     await recoverUnknown(scenario);
     assert.equal(scenario.providerRequests().length, 1);
     scenario.summary();
   });
 
-  await run('http-disconnect-after-body-before-headers', async scenario => {
-    provider.policy = 'disconnect';
+  await run('http-disconnect-after-body-before-headers', 1, async scenario => {
+    scenario.provider.policy = 'disconnect';
     const child = await scenario.start();
     await child.wait('receipt-result', message => message.result.status === 'observed');
     await child.wait('agent-settled');
@@ -538,17 +726,17 @@ async function transmissionAndReceiptMatrix() {
     scenario.summary();
   });
 
-  await run('crash-after-local-receipt-before-post', async scenario => {
-    provider.policy = 'hold';
+  await run('crash-after-local-receipt-before-post', 1, async scenario => {
+    scenario.provider.policy = 'hold';
     const child = await scenario.start('combined', { pauses: ['bridge:afterReceiptCommit'] });
-    const request = await provider.wait(item => item.scenario === scenario.name);
+    const request = await scenario.provider.wait(item => item.scenario === scenario.name);
     await child.wait('barrier', message => message.name === 'bridge:afterReceiptCommit');
     const before = scenario.state();
     assert(before.journal.receipt);
     assert.equal(before.server.receipt, null);
     const attemptId = before.server.spend.attemptId;
     await child.kill();
-    provider.drop(request);
+    scenario.provider.drop(request);
 
     const recovered = await scenario.start('combined', { createServer: false, createJournal: false });
     const replay = await recovered.wait('delivery-result', message => message.command === 'initial');
@@ -556,13 +744,13 @@ async function transmissionAndReceiptMatrix() {
     assert.equal(replay.result.attemptId, attemptId);
     assert.equal(scenario.piSends, 1);
     assert.equal(scenario.providerRequests().length, 1);
-    assert.deepEqual(scenario.state().server.receipt, before.journal.receipt);
     await recovered.stop();
+    assertPersistedRestart(before, scenario.state());
     scenario.summary();
   });
 
   for (const phase of ['beforeCommit', 'beforeResponse']) {
-    await run(`receipt-response-lost-${phase}`, async scenario => {
+    await run(`receipt-response-lost-${phase}`, 1, async scenario => {
       const child = await scenario.start('combined', { failAt: [`receipt:${phase}`] });
       await child.wait('receipt-error');
       await child.wait('agent-settled');
@@ -578,7 +766,7 @@ async function transmissionAndReceiptMatrix() {
 }
 
 async function writeFailureMatrix() {
-  await run('attempt-write-failure-zero-calls', async scenario => {
+  await run('attempt-write-failure-zero-calls', 0, async scenario => {
     const child = await scenario.start('combined', { failJournalWrite: 'attempt' });
     const failure = await child.wait('delivery-error', message => message.command === 'initial');
     assert.equal(failure.code, 'ATTEMPT_WRITE_FAILED');
@@ -586,17 +774,14 @@ async function writeFailureMatrix() {
     assert.equal(scenario.providerRequests().length, 0);
     assert(scenario.state().server.spend);
     assert.equal(scenario.state().journal.attempt, null);
-    const firstNewMessage = child.messages.length;
-    child.send({ type: 'deliver' });
-    const replay = await child.wait('delivery-result', message => message.command === 'redelivery'
-      && child.messages.indexOf(message) >= firstNewMessage);
+    const replay = await requestRedelivery(child);
     assert.equal(replay.result.status, 'unknown');
     assert.equal(replay.result.transmitted, false);
     await child.stop();
     scenario.summary();
   });
 
-  await run('local-receipt-write-failure-remains-unknown', async scenario => {
+  await run('local-receipt-write-failure-remains-unknown', 1, async scenario => {
     const child = await scenario.start('combined', { failJournalWrite: 'receipt' });
     const failure = await child.wait('receipt-error');
     assert.equal(failure.code, 'INJECTED_WRITE_FAILURE');
@@ -605,10 +790,7 @@ async function writeFailureMatrix() {
     assert.equal(scenario.state().server.receipt, null);
     assert.equal(scenario.piSends, 1);
     assert.equal(scenario.providerRequests().length, 1);
-    const firstNewMessage = child.messages.length;
-    child.send({ type: 'deliver' });
-    const replay = await child.wait('delivery-result', message => message.command === 'redelivery'
-      && child.messages.indexOf(message) >= firstNewMessage);
+    const replay = await requestRedelivery(child);
     assert.equal(replay.result.status, 'unknown');
     assert.equal(replay.result.transmitted, false);
     assert.equal(scenario.piSends, 1);
@@ -618,8 +800,8 @@ async function writeFailureMatrix() {
 }
 
 async function splitProcessMatrix() {
-  await run('pi-crash-after-transmission-bridge-alive', async scenario => {
-    provider.policy = 'hold';
+  await run('pi-crash-after-transmission-bridge-alive', 1, async scenario => {
+    scenario.provider.policy = 'hold';
     const pi = await scenario.start('pi', { autoDeliver: false });
     const bridge = await scenario.start('bridge', {
       createServer: true,
@@ -627,34 +809,50 @@ async function splitProcessMatrix() {
       autoDeliver: false,
       pauses: ['receipt:beforeWrite'],
     });
-    bridge.child.on('message', message => {
-      if (message.type === 'pi-transmit' && !pi.exit) pi.send({ type: 'transmit', transmission: message.transmission });
-    });
-    pi.child.on('message', message => {
-      if (message.type === 'observation' && !bridge.exit) bridge.send({ type: 'observation', ...message });
-    });
+    const disconnect = connectPi(pi, bridge);
+    const initialPi = await pi.wait('ready');
     bridge.send({ type: 'deliver' });
-    const request = await provider.wait(item => item.scenario === scenario.name);
+    const request = await scenario.provider.wait(item => item.scenario === scenario.name);
     await bridge.wait('barrier', message => message.name === 'receipt:beforeWrite');
-    assert.equal(scenario.piSends, 1);
-    assert.equal(scenario.state().server.receipt, null);
+    const persistedFiles = () => [scenario.serverPath, scenario.journalPath].map(file => fs.readFileSync(file));
+    const before = persistedFiles();
+    const state = scenario.state();
+    assert.equal(state.server.spend.ownerPid, bridge.child.pid);
+    assert.deepEqual(state.journal.attempt, state.server.spend);
+    assert.equal(state.journal.receipt, null);
+    assert.equal(state.server.receipt, null);
+    const counts = () => [scenario.transmitCommands, scenario.piSends, scenario.providerRequests().length];
+    const countsBefore = counts();
+    assert.deepEqual(countsBefore, [1, 1, 1]);
     await pi.kill();
-    provider.drop(request);
+    disconnect();
+    scenario.provider.drop(request);
 
-    const firstNewMessage = bridge.messages.length;
-    bridge.send({ type: 'deliver' });
-    const replay = await bridge.wait('delivery-result', message => message.command === 'redelivery'
-      && bridge.messages.indexOf(message) >= firstNewMessage);
+    // Reopen the test session if Pi had already written it; otherwise create
+    // a fresh Pi runtime with the same fixture identity (not recovered history).
+    const restartedPi = await scenario.start('pi', { sessionFile: initialPi.sessionFile });
+    assert.equal(initialPi.sessionId, scenario.identity.sessionId);
+    assert.equal((await restartedPi.wait('ready')).sessionId, initialPi.sessionId);
+    connectPi(restartedPi, bridge);
+    const replay = await requestRedelivery(bridge);
     assert.equal(replay.result.status, 'unknown');
     assert.equal(replay.result.transmitted, false);
-    assert.equal(scenario.piSends, 1);
-    assert.equal(scenario.providerRequests().length, 1);
+    assert.equal(replay.result.attemptId, state.server.spend.attemptId);
     await bridge.stop();
-    scenario.summary();
+    await restartedPi.stop();
+    scenario.summary({ verify() {
+      const deltas = counts().map((count, index) => count - countsBefore[index]);
+      assert.deepEqual(deltas, [0, 0, 0], 'redelivery to the live replacement must not add IPC/Pi/HTTP');
+      assert.deepEqual(persistedFiles(), before, 'full persisted server and journal must match after shutdown');
+      assert.equal(scenario.state().server.receipt, null);
+      const [postRestartTransmitCommands, postRestartPiSends, postRestartProviderRequests] = deltas;
+      return { sameSessionPiRestart: true, postRestartTransmitCommands, postRestartPiSends,
+        postRestartProviderRequests, persistedStateUnchanged: true };
+    } });
   });
 
-  await run('bridge-crash-pi-alive-late-completion-and-restart', async scenario => {
-    provider.policy = 'hold';
+  await run('bridge-crash-pi-alive-late-completion-and-restart', 1, async scenario => {
+    scenario.provider.policy = 'hold';
     const oldPi = await scenario.start('pi', { autoDeliver: false });
     const oldPiReady = oldPi.messages.find(message => message.type === 'ready');
     const bridge = await scenario.start('bridge', {
@@ -663,18 +861,15 @@ async function splitProcessMatrix() {
       autoDeliver: false,
       pauses: ['receipt:beforeWrite'],
     });
-    bridge.child.on('message', message => {
-      if (message.type === 'pi-transmit' && !oldPi.exit) oldPi.send({ type: 'transmit', transmission: message.transmission });
-    });
-    oldPi.child.on('message', message => {
-      if (message.type === 'observation' && !bridge.exit) bridge.send({ type: 'observation', ...message });
-    });
+    connectPi(oldPi, bridge);
     bridge.send({ type: 'deliver' });
-    const request = await provider.wait(item => item.scenario === scenario.name);
+    const request = await scenario.provider.wait(item => item.scenario === scenario.name);
     await bridge.wait('barrier', message => message.name === 'receipt:beforeWrite');
-    const attemptId = scenario.state().server.spend.attemptId;
+    const before = scenario.state();
+    assert(before.server.spend);
+    assert.equal(before.journal.receipt, null);
     await bridge.kill();
-    provider.release(request);
+    scenario.provider.release(request);
     const late = await oldPi.wait('agent-settled');
     assert.equal(late.assistantText, '42');
     assert.equal(scenario.state().server.receipt, null);
@@ -689,24 +884,32 @@ async function splitProcessMatrix() {
       sessionFile: oldPiReady.sessionFile,
     });
     assert.equal(restartedPi.messages.find(message => message.type === 'ready').sessionId, scenario.identity.sessionId);
-    const recoveredBridge = await scenario.start('bridge', { createServer: false, createJournal: false });
-    const replay = await recoveredBridge.wait('delivery-result', message => message.command === 'initial');
+    const recoveredBridge = await scenario.start('bridge', { autoDeliver: false });
+    connectPi(restartedPi, recoveredBridge);
+    const commandsBefore = scenario.transmitCommands;
+    assert.equal(commandsBefore, 1);
+    recoveredBridge.send({ type: 'deliver' });
+    const replay = await recoveredBridge.wait('delivery-result', message => message.command === 'redelivery');
     assert.equal(replay.result.status, 'unknown');
     assert.equal(replay.result.transmitted, false);
-    assert.equal(scenario.state().server.spend.attemptId, attemptId);
+    assert.equal(replay.result.attemptId, before.server.spend.attemptId);
     assert.equal(scenario.piSends, 1);
     assert.equal(scenario.providerRequests().length, 1);
     await recoveredBridge.stop();
     await restartedPi.stop();
-    scenario.summary({ counts: { latePiCompletions: 1, postRestartAttempts: 0 } });
+    assertPersistedRestart(before, scenario.state());
+    const postRestartTransmitCommands = scenario.transmitCommands - commandsBefore;
+    assert.equal(postRestartTransmitCommands, 0);
+    scenario.summary({ counts: { latePiCompletions: 1, postRestartTransmitCommands } });
   });
 }
 
 async function journalRedeliveryMatrix() {
-  await run('redelivery-with-missing-local-journal', async scenario => {
+  await run('redelivery-with-missing-local-journal', 1, async scenario => {
     const child = await scenario.start();
     await scenario.finishSuccessful(child);
     await child.stop();
+    const before = scenario.state();
     fs.rmSync(scenario.journalPath);
     const recovery = await scenario.start('combined', {
       createServer: false,
@@ -715,13 +918,14 @@ async function journalRedeliveryMatrix() {
     });
     const failure = await recovery.wait('setup-error');
     assert.equal(failure.code, 'ENOENT');
-    await recovery.exited.promise;
+    assert.deepEqual(await recovery.exited.promise, { code: 1, signal: null });
+    assert.deepEqual(scenario.state(), { ...before, journal: undefined, journalId: undefined });
     assert.equal(scenario.piSends, 1);
     assert.equal(scenario.providerRequests().length, 1);
     scenario.summary();
   });
 
-  await run('redelivery-with-restored-pre-attempt-copy', async scenario => {
+  await run('redelivery-with-restored-pre-attempt-copy', 0, async scenario => {
     const child = await scenario.start('combined', {
       pauses: ['bridge:afterSpendResponse', 'bridge:afterAttemptCommit'],
     });
@@ -745,31 +949,63 @@ async function journalRedeliveryMatrix() {
     scenario.summary();
   });
 
-  await run('redelivery-with-competing-sender', async scenario => {
-    provider.policy = 'hold';
-    const original = await scenario.start('combined', { pauses: ['receipt:beforeWrite'] });
-    const ready = original.messages.find(message => message.type === 'ready');
-    const request = await provider.wait(item => item.scenario === scenario.name);
-    await original.wait('barrier', message => message.name === 'receipt:beforeWrite');
-    const attemptId = scenario.state().server.spend.attemptId;
-    await original.kill();
-    provider.drop(request);
-
-    const competitor = await scenario.start('combined', {
-      createServer: false,
-      createJournal: true,
-      journalPath: path.join(scenario.dir, 'competitor-journal.json'),
-      sessionFile: ready.sessionFile,
-    });
-    const replay = await competitor.wait('delivery-result', message => message.command === 'initial');
-    assert.equal(replay.result.status, 'unknown');
-    assert.equal(replay.result.transmitted, false);
-    assert.equal(scenario.state().server.spend.attemptId, attemptId);
-    assert.notEqual(scenario.state().server.spend.ownerPid, competitor.child.pid);
+  await run('redelivery-with-invalid-persisted-receipt', 1, async scenario => {
+    const child = await scenario.start('combined', { pauses: ['bridge:afterReceiptCommit'] });
+    await scenario.provider.wait(item => item.scenario === scenario.name);
+    await child.wait('barrier', message => message.name === 'bridge:afterReceiptCommit');
+    await child.kill();
+    const document = JSON.parse(fs.readFileSync(scenario.journalPath, 'utf8'));
+    document.messages[scenario.identity.messageId].receipt.messageType = 'user';
+    fs.writeFileSync(scenario.journalPath, JSON.stringify(document));
+    const before = scenario.state().server;
+    const recovered = await scenario.start('combined', { expectSetupError: true });
+    const failure = await recovered.wait('setup-error');
+    assert.equal(failure.code, 'CORRUPT_STATE');
+    assert.deepEqual(await recovered.exited.promise, { code: 1, signal: null });
+    assert.deepEqual(scenario.state().server, before);
     assert.equal(scenario.piSends, 1);
     assert.equal(scenario.providerRequests().length, 1);
-    await competitor.stop();
     scenario.summary();
+  });
+
+  await run('two-live-competing-senders', 1, async scenario => {
+    const pi = await scenario.start('pi');
+    const startSender = options => scenario.start('bridge', {
+      autoDeliver: false, createJournal: true, pauses: ['bridge:beforeSpend'], ...options,
+    });
+    const first = await startSender({ createServer: true });
+    const second = await startSender({ journalPath: path.join(scenario.dir, 'competitor-journal.json') });
+    const senders = [first, second];
+    connectPi(pi, ...senders);
+    for (const sender of senders) sender.send({ type: 'deliver' });
+    await Promise.all(senders.map(sender => sender.wait('barrier', message => message.name === 'bridge:beforeSpend')));
+    assert(senders.every(sender => sender.child.connected && !sender.exit));
+    assert.equal(scenario.state().server.spend, null);
+    assert.equal(scenario.transmitCommands, 0);
+    assert.notEqual(...scenario.journalIds.values());
+    for (const sender of senders) sender.release('bridge:beforeSpend');
+    const deliveries = await Promise.all(senders.map(sender => sender.wait('delivery-result')));
+    const grants = senders.flatMap(sender => sender.messages.filter(message => message.type === 'right-granted'));
+    assert.equal(grants.length, 1);
+    const spend = scenario.state().server.spend;
+    assert.equal(grants[0].right.attemptId, spend.attemptId);
+    assert(deliveries.every(item => item.result.attemptId === spend.attemptId));
+    assert.equal(deliveries.filter(item => item.result.transmitted).length, 1);
+    const winner = senders.find(sender => sender.child.pid === spend.ownerPid);
+    assert(winner);
+    assert.equal(scenario.journalIds.get(winner.config.journalPath), spend.journalId);
+    for (const sender of senders) {
+      const local = JSON.parse(fs.readFileSync(sender.config.journalPath, 'utf8')).messages[scenario.identity.messageId];
+      assert.deepEqual(local.attempt, sender === winner ? spend : null);
+    }
+    await winner.wait('receipt-result', message => message.result.status === 'observed');
+    assert.equal((await pi.wait('agent-settled')).assistantText, '42');
+    await pi.stop();
+    await Promise.all(senders.map(sender => sender.stop()));
+    assert.equal(scenario.transmitCommands, 1);
+    assert.equal(scenario.piSends, 1);
+    assert.equal(scenario.providerRequests().length, 1);
+    scenario.summary({ counts: { liveSendersBeforeSpend: 2, spendGrants: grants.length } });
   });
 }
 
@@ -782,7 +1018,7 @@ async function revokeAtBarrier(scenario, child, barrier) {
 }
 
 async function revocationMatrix() {
-  await run('revocation-before-admission', async scenario => {
+  await run('revocation-before-admission', 0, async scenario => {
     const child = await scenario.start('combined', { revokeBeforeDeliver: true });
     const failure = await child.wait('delivery-error', message => message.command === 'initial');
     assert.equal(failure.code, 'REVOKED_GENERATION');
@@ -793,7 +1029,7 @@ async function revocationMatrix() {
     scenario.summary();
   });
 
-  await run('revocation-after-admission-before-spend', async scenario => {
+  await run('revocation-after-admission-before-spend', 0, async scenario => {
     const child = await scenario.start('combined', { pauses: ['bridge:beforeSpend'] });
     await revokeAtBarrier(scenario, child, 'bridge:beforeSpend');
     const failure = await child.wait('delivery-error', message => message.command === 'initial');
@@ -805,7 +1041,7 @@ async function revocationMatrix() {
     scenario.summary();
   });
 
-  await run('revocation-after-spend-before-final-verification', async scenario => {
+  await run('revocation-after-spend-before-final-verification', 0, async scenario => {
     const child = await scenario.start('combined', { pauses: ['bridge:afterAttemptCommit'] });
     await revokeAtBarrier(scenario, child, 'bridge:afterAttemptCommit');
     const result = await child.wait('delivery-result', message => message.command === 'initial');
@@ -817,16 +1053,16 @@ async function revocationMatrix() {
     scenario.summary();
   });
 
-  await run('revocation-after-transmission-historical-receipt', async scenario => {
-    provider.policy = 'hold';
+  await run('revocation-after-transmission-historical-receipt', 1, async scenario => {
+    scenario.provider.policy = 'hold';
     const child = await scenario.start('combined', { pauses: ['receipt:beforeWrite'] });
-    const request = await provider.wait(item => item.scenario === scenario.name);
+    const request = await scenario.provider.wait(item => item.scenario === scenario.name);
     await child.wait('barrier', message => message.name === 'receipt:beforeWrite');
     child.send({ type: 'revoke' });
     const revoked = await child.wait('revoked');
     const activeGeneration = revoked.activeGeneration;
     child.release('receipt:beforeWrite');
-    provider.release(request);
+    scenario.provider.release(request);
     await scenario.finishSuccessful(child);
     assert.equal(scenario.state().activeGeneration, activeGeneration);
     assert.equal(scenario.state().server.identity.generation, scenario.identity.generation);
@@ -836,7 +1072,7 @@ async function revocationMatrix() {
     scenario.summary();
   });
 
-  await run('residual-final-check-to-send-revocation-race', async scenario => {
+  await run('residual-final-check-to-send-revocation-race', 1, async scenario => {
     const child = await scenario.start('combined', { pauses: ['bridge:afterFinalVerification'] });
     await revokeAtBarrier(scenario, child, 'bridge:afterFinalVerification');
     await scenario.finishSuccessful(child);
@@ -848,6 +1084,245 @@ async function revocationMatrix() {
   });
 }
 
+async function assertLateDuplicateDrained() {
+  let sampled;
+  const count = results.length;
+  await assert.rejects(run('late-provider-duplicate-check', 1, async scenario => {
+    sampled = scenario;
+    const oracle = scenario.provider;
+    const child = await scenario.start();
+    await scenario.finishSuccessful(child);
+    await child.stop();
+    const token = randomUUID();
+    const prompt = `MANUAL_OLD_MARKER ${scenario.payload.details.marker}`;
+    scenario.tokens.set(token, { token, messageType: 'user', prompt, sessionId: scenario.identity.sessionId });
+    const body = JSON.stringify({ model: 'fixture', messages: [{ role: 'user', content: prompt }] });
+    const headers = { 'x-artel-probe-token': token, authorization: 'Bearer fake-not-a-secret',
+      'content-length': Buffer.byteLength(body) };
+    const url = `http://127.0.0.1:${oracle.port}/v1/chat/completions`;
+    const signal = AbortSignal.timeout(3000);
+    // Deliberately use a keep-alive client here (not used by the SDK worker)
+    // so the old close-before-drain path would discard the idle socket.
+    const agent = new http.Agent({ keepAlive: true });
+    try {
+      const firstId = randomUUID();
+      oracle.expectIntake(firstId);
+      const accepted = once(oracle.server, 'connection', { signal });
+      const idle = once(agent, 'free', { signal });
+      const first = http.request(url, { method: 'POST', agent, signal, headers: { ...headers, 'x-artel-probe-intake': firstId } });
+      const response = once(first, 'response', { signal }).then(async ([res]) => {
+        assert.equal(res.statusCode, 200);
+        for await (const _ of res) { /* consume the response to idle the socket */ }
+      });
+      first.end(body);
+      const [[socket], [duplicate]] = await Promise.all([accepted, idle, response]);
+      const duplicateId = randomUUID();
+      oracle.expectIntake(duplicateId);
+      const wire = Buffer.from([
+        'POST /v1/chat/completions HTTP/1.1', `Host: 127.0.0.1:${oracle.port}`,
+        'Connection: close', `x-artel-probe-intake: ${duplicateId}`,
+        ...Object.entries(headers).map(([key, value]) => `${key}: ${value}`), '', body,
+      ].join('\r\n'));
+      const clientClosed = new Promise(resolve => duplicate.once('close', resolve));
+      const buffered = deferred();
+      // A readable listener buffers TCP bytes without forwarding them to the
+      // HTTP parser's data listener. Verify arrival, not just client write().
+      const onReadable = () => {
+        if (socket.readableLength >= wire.length) buffered.resolve();
+      };
+      socket.on('readable', onReadable);
+      signal.addEventListener('abort', () => buffered.reject(signal.reason), { once: true });
+      duplicate.write(wire);
+      await buffered.promise;
+      assert.equal(oracle.intake.get(duplicateId).started, undefined, 'HTTP callback ran before shutdown');
+      assert.equal(scenario.providerRequests().length, 2);
+      scenario.correlate({ manual: true }); // The sample would pass without the buffered duplicate.
+      scenario.summary({ manual: true });
+      const close = oracle.close.bind(oracle);
+      oracle.close = async () => {
+        const draining = close();
+        socket.off('readable', onReadable);
+        socket.resume();
+        try { await draining; } finally {
+          agent.destroy();
+          await clientClosed;
+        }
+      };
+    } catch (error) {
+      agent.destroy();
+      throw error;
+    }
+  }), /duplicate request for one token/);
+  assert.deepEqual(sampled.providerRequests().map(item => item.scenario), Array(3).fill(sampled.name));
+  assert.equal(results.length, count);
+}
+
+async function assertLateFreshDeliveryRejected() {
+  let sampled;
+  const count = results.length;
+  await assert.rejects(run('late-fresh-delivery-check', 1, async scenario => {
+    sampled = scenario;
+    const child = await scenario.start();
+    await scenario.finishSuccessful(child);
+    await redeliverObserved(child, scenario);
+    await child.stop();
+    scenario.correlate();
+    scenario.summary();
+
+    const oracle = scenario.provider;
+    const [initial] = scenario.providerRequests();
+    const id = randomUUID();
+    const token = randomUUID();
+    oracle.expectIntake(id);
+    const close = oracle.close.bind(oracle);
+    oracle.close = async () => {
+      // Simulate a send and fresh start captured at shutdown, with the matching
+      // complete POST still in flight at drain. Correlation alone must pass.
+      scenario.piSends += 1;
+      scenario.tokens.set(token, { ...scenario.tokens.get(initial.token), token });
+      const post = http.request(`http://127.0.0.1:${oracle.port}/v1/chat/completions`, {
+        method: 'POST', signal: AbortSignal.timeout(3000),
+        headers: { connection: 'close', 'x-artel-probe-intake': id,
+          'x-artel-probe-token': token, authorization: initial.headers.authorization,
+          'content-length': Buffer.byteLength(initial.rawBody) },
+      });
+      const closed = new Promise(resolve => post.once('close', resolve));
+      post.on('error', error => {
+        // The provider destroys the socket rather than responding during drain.
+        if (error.code !== 'ECONNRESET') entryError(error);
+      });
+      post.end(initial.rawBody);
+      await Promise.all([close(), closed]);
+      scenario.correlate();
+    };
+  }), /unexpected final Pi\/HTTP\/start counts/);
+  assert.equal(sampled.providerRequests().length, 2);
+  assert.equal(results.length, count);
+}
+
+async function exerciseRunnerGuards() {
+  const faults = [];
+  const report = error => faults.push(error);
+  const signalState = { error: null };
+  const scenario = new Scenario('runner-guard-checks', report, signalState);
+  const oracle = scenario.provider;
+  try {
+    await oracle.listen();
+    const url = `http://127.0.0.1:${oracle.port}/v1/chat/completions`;
+    const body = JSON.stringify({ model: 'fixture', messages: [] });
+    const unregistered = await fetch(url, { method: 'POST', headers: { connection: 'close' }, body });
+    assert.equal(unregistered.status, 500);
+    await unregistered.text();
+    assert.throws(() => assertOracleHealthy(faults), /unregistered or reused provider transport ID/);
+    faults.length = 0;
+
+    const id = randomUUID();
+    oracle.expectIntake(id);
+    const res = await fetch(url, {
+      method: 'POST', headers: { connection: 'close', 'x-artel-probe-intake': id }, body,
+    });
+    assert.equal(res.status, 500);
+    await res.text();
+    assert.equal(oracle.requests.length, 0);
+    assert.throws(() => assertOracleHealthy(faults), /missing its independent token/);
+    assert.throws(() => assertInitiatingMessage([
+      { role: 'user', content: 'expected' }, { role: 'user', content: 'different' },
+    ], 'expected'), /not history/);
+
+    faults.length = 0;
+    const failed = new OwnedChild(scenario, {
+      scenarioRoot: scenario.dir, configPath: path.join(scenario.dir, 'spawn-rejection.json'),
+    }, { executable: path.join(scenario.dir, 'does-not-exist'), reportError: report });
+    await assert.rejects(failed.wait('ready'), /exited before ready/);
+    assert.equal((await failed.exited.promise).error.code, 'ENOENT');
+    assert(!children.has(failed));
+    assert.throws(() => assertOracleHealthy(faults), /ENOENT/);
+
+    faults.length = 0;
+    const worker = await scenario.start('bridge', { autoDeliver: false });
+    const watchdog = startWatchdog(scenario, 1, report);
+    try {
+      assert.deepEqual(await worker.exited.promise, { code: null, signal: 'SIGKILL' });
+      await worker.kill(); // A crash path awaiting SIGKILL also accepts the watchdog's exit.
+      assert.throws(() => assertOracleHealthy(faults), /scenario watchdog expired/);
+      const configCount = scenario.children.length;
+      await assert.rejects(scenario.start('bridge', { autoDeliver: false }), /scenario watchdog expired/);
+      assert.equal(scenario.children.length, configCount, 'watchdog must prevent recovery worker spawn');
+    } finally {
+      clearTimeout(watchdog);
+    }
+    faults.length = 0;
+    const broken = diagnostics(faults, () => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }); });
+    const diagnosticScenario = { ...scenario, watchdogError: null };
+    for (const terminate of [false, true]) {
+      const config = { ...worker.config, createServer: false, createJournal: false,
+        expectedJournalId: scenario.journalIds.get(worker.config.journalPath) };
+      const owned = new OwnedChild(diagnosticScenario, config, { reportError: broken.report, writeDiagnostic: broken.write });
+      scenario.children.push(owned);
+      await owned.wait('ready');
+      owned.child.stdout.emit('data', Buffer.from('fictional stdout'));
+      owned.child.stderr.emit('data', Buffer.from('fictional stderr'));
+      assert.throws(() => assertOracleHealthy(faults), /diagnostic write failed.*stdout.*diagnostic write failed.*stderr/);
+      if (terminate) terminateOwned([owned], [], broken.report, signalState);
+      else startWatchdog({ ...diagnosticScenario, children: [owned] }, 1, broken.report);
+      assert.deepEqual(await owned.exited.promise, { code: null, signal: 'SIGKILL' });
+      assert(!children.has(owned));
+      assert.throws(() => assertOracleHealthy(faults), /diagnostic write failed \(runner-errors.log\)/);
+      faults.length = 0;
+    }
+
+    const configPath = path.join(scenario.dir, 'cancelled-guard.json');
+    const assertSpawnBlocked = guard => {
+      assert.throws(() => new OwnedChild(guard, { ...worker.config, configPath }), /runner interrupted by SIGTERM/);
+      assert(!fs.existsSync(configPath), 'SIGTERM must block worker launch before writing its config');
+    };
+    assertSpawnBlocked(diagnosticScenario); // Local latch also blocks recovery.
+    checkCancelled(); // Do not mask a real SIGTERM.
+    try {
+      // Inject the global latch synchronously, as if SIGTERM arrived while
+      // the guard listener was starting, with no workers yet to kill.
+      terminateOwned([], [], () => {});
+      assertSpawnBlocked({ ...diagnosticScenario, cancellation: { error: null } });
+    } finally {
+      cancellation.error = null;
+    }
+
+    const before = { server: { spend: { attemptId: 'original', ownerPid: 123 }, receipt: null },
+      journal: { receipt: { type: 'before_agent_start' } } };
+    assertPersistedRestart(before, { ...before, server: { ...before.server, receipt: before.journal.receipt } });
+    assert.throws(() => assertPersistedRestart(before, before), /publish only the original local receipt/);
+    const unknown = { ...before, journal: { receipt: null } };
+    assert.throws(() => assertPersistedRestart(unknown, { ...unknown, server: { ...unknown.server, receipt: before.journal.receipt } }), /publish only the original local receipt/);
+    assert.throws(() => assertPersistedRestart(unknown, { ...unknown, server: { spend: { attemptId: 'original', ownerPid: 456 }, receipt: null } }), /preserve the full spend/);
+
+    await assertLateDuplicateDrained();
+    await assertLateFreshDeliveryRejected();
+    oracle.expectIntake(randomUUID()); // Acknowledged, but no measurable HTTP body will arrive.
+    await assert.rejects(oracle.close(50), /provider intake drain timed out/);
+    assert(!oracle.server.listening);
+    assertOracleHealthy(faults);
+    return { untaggedRequestRejected: true, historicalMessageRejected: true, spawnFailureReaped: true,
+      watchdogFatal: true, watchdogPreventsRecoveryLaunch: true, diagnosticWriteFailureFatalAndReaped: true,
+      sigtermPreventsWorkerLaunch: true, globalSigtermPreventsGuardLaunch: true,
+      persistedRestartMismatchRejected: true, preCallbackDuplicateRejectedAfterDrain: true,
+      lateFreshDeliveryRejectedAfterDrain: true, unregisteredProviderTransportRejected: true, unresolvedProviderIntakeRejected: true };
+  } finally {
+    try { await reapChildren(scenario.children); } finally {
+      if (providers.has(oracle)) await oracle.close();
+    }
+  }
+}
+
+function terminateOwned(owned = children, activeProviders = providers, reportError = entryError, state = cancellation) {
+  state.error ??= new Error('runner interrupted by SIGTERM');
+  try {
+    reportAndKill(owned, reportError, state.error);
+  } finally {
+    for (const provider of activeProviders) provider.server.closeAllConnections();
+  }
+}
+const terminate = () => terminateOwned();
+process.on('SIGTERM', terminate);
 try {
   await positiveControl();
   await admissionResponseMatrix();
@@ -858,10 +1333,17 @@ try {
   await splitProcessMatrix();
   await journalRedeliveryMatrix();
   await revocationMatrix();
-  const output = { piVersion: sdk.VERSION, nodeVersion: process.versions.node, scenarios: results };
+  const runnerGuards = await exerciseRunnerGuards();
+  assertOracleHealthy();
+  const output = { piVersion: sdk.VERSION, nodeVersion: process.versions.node, scenarios: results, runnerGuards };
   fs.writeFileSync(path.join(root, 'result.json'), `${JSON.stringify(output, null, 2)}\n`, { mode: 0o600 });
+  for (const summary of results) {
+    console.log(`PASS ${summary.name}: pi=${summary.piSends} provider=${summary.providerRequests} before_agent_start=${summary.beforeAgentStart} server=${summary.serverStatus}`);
+  }
   console.log(`RESULT ${results.length} SDK scenarios passed; private traces: ${root}`);
 } finally {
-  for (const child of [...children]) if (!child.exit) await child.kill();
-  await provider.close();
+  try { await reapChildren(children); } finally {
+    await Promise.all([...providers].map(provider => provider.close()));
+    process.off('SIGTERM', terminate);
+  }
 }
