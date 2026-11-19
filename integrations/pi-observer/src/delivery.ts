@@ -31,11 +31,13 @@ interface DeliveryContext {
 interface DeliveryTestHooks {
   holdReadyMs: number;
   sends: number;
+  pollMs?: number;
+  readyMs?: number;
 }
 
 const TEST_HOOK = Symbol.for("artel.delivery.test");
 
-interface ActiveAttempt {
+export interface ActiveAttempt {
   messageId: string;
   attemptId: string;
   receiptKey: string;
@@ -55,6 +57,8 @@ export class DeliveryWriter {
   private readonly status: (text: string) => void;
   private readonly send: (attempt: ActiveAttempt) => void;
   private readonly hooks: DeliveryTestHooks;
+  private readonly pollMs: number;
+  private readonly readyMs: number;
 
   private lock: Server | undefined;
   private journal: DeliveryJournal | undefined;
@@ -68,9 +72,10 @@ export class DeliveryWriter {
   private readonly attempts = new Map<string, ActiveAttempt>();
 
   constructor(config: DeliveryConfig, token: string, ctx: { isIdle(): boolean },
-    sessionId: string, runtimeId: string, status: (text: string) => void, send: (attempt: ActiveAttempt) => void) {
+    sessionId: string, runtimeId: string, status: (text: string) => void, send: (attempt: ActiveAttempt) => void,
+    transport?: Transport) {
     this.config = config;
-    this.transport = unixTransport({ observer_socket: config.observer_socket } as unknown as Parameters<typeof unixTransport>[0], token, 65536);
+    this.transport = transport ?? unixTransport({ observer_socket: config.observer_socket } as unknown as Parameters<typeof unixTransport>[0], token, 65536);
     this.ctx = ctx;
     this.sessionId = sessionId;
     this.runtimeId = runtimeId;
@@ -78,6 +83,8 @@ export class DeliveryWriter {
     this.send = send;
     const hooks = (globalThis as Record<symbol, unknown>)[TEST_HOOK] as DeliveryTestHooks | undefined;
     this.hooks = hooks ?? { holdReadyMs: 0, sends: 0 };
+    this.pollMs = this.hooks.pollMs ?? 1000;
+    this.readyMs = this.hooks.readyMs ?? 2000;
   }
 
   activeAttempt(messageId: string): ActiveAttempt | undefined {
@@ -95,6 +102,9 @@ export class DeliveryWriter {
     const attemptId = details.attempt_id;
     const attempt = typeof messageId === "string" ? this.attempts.get(messageId) : undefined;
     if (!attempt || attempt.attemptId !== attemptId || sessionId !== this.sessionId) return;
+    // A receipt already confirmed published is never queued again: a duplicated
+    // callback of one writer must not multiply republication.
+    if (this.journal?.entry(attempt.messageId)?.receipt?.published) return;
     queueMicrotask(() => { void publish(attempt); });
   }
 
@@ -147,7 +157,7 @@ export class DeliveryWriter {
       this.timer = undefined;
       this.controller = new AbortController();
       void this.cycle(this.controller.signal).finally(() => {
-        if (!this.closed && !this.stopped) this.schedule(1000);
+        if (!this.closed && !this.stopped) this.schedule(this.pollMs);
       });
     }, delay);
   }
@@ -166,7 +176,7 @@ export class DeliveryWriter {
         this.attached = true;
         this.status("Artel: delivery attached");
       }
-      if (performance.now() - this.lastReady >= 2000) {
+      if (performance.now() - this.lastReady >= this.readyMs) {
         if (this.hooks.holdReadyMs > 0) {
           const held = this.hooks.holdReadyMs;
           this.hooks.holdReadyMs = 0;
@@ -176,6 +186,9 @@ export class DeliveryWriter {
         await this.transport("POST", "/delivery/v1/ready", { writer_id: this.writerId }, signal);
         this.lastReady = performance.now();
       }
+      // Republication of receipts stored before a restart never touches Pi;
+      // the receipt key is replayed idempotently.
+      void this.flushReceipts();
       if (this.closed || this.stopped || !this.ctx.isIdle()) return;
       const next = await this.transport("GET", "/delivery/v1/next", undefined, signal) as { message?: DeliveryMessage; receipt_key?: string };
       if (this.closed || this.stopped || !next.message) return;
@@ -191,11 +204,13 @@ export class DeliveryWriter {
         text: message.text, right: spend.right === true,
       };
       if (!attempt.right || !attempt.receiptKey) {
-        // Already spent elsewhere or a replayed state: never call Pi again.
+        // Already spent elsewhere or a replayed state: never call Pi again,
+        // and drop any stale in-memory right the server just disclaimed.
+        this.attempts.delete(message.id);
         return;
       }
       this.attempts.set(message.id, attempt);
-      this.journal?.recordAttempt(message.id, spend.attempt_id);
+      this.journal?.recordAttempt(message.id, spend.attempt_id, attempt.receiptKey);
       const verified = await this.transport("POST", "/delivery/v1/verify",
         { writer_id: this.writerId, attempt_id: attempt.attemptId }, signal) as { verified?: boolean };
       if (!verified.verified) {
@@ -212,7 +227,12 @@ export class DeliveryWriter {
         return;
       }
       if (code === "owner_conflict" || code === "revoked" || code === "assignment_mismatch") {
+        // Terminal for this assignment: a competing or revoked ownership marker
+        // never reconnects under the same writer identity.
+        this.stopped = true;
         this.attempts.clear();
+        this.status(`Artel: delivery stopped — ${code}`);
+        return;
       }
       this.status("Artel: delivery reconnecting");
     }
@@ -234,15 +254,38 @@ export class DeliveryWriter {
   private transmit(attempt: ActiveAttempt): void {
     const current = this.attempts.get(attempt.messageId);
     if (current !== attempt || !attempt.right || this.closed || this.stopped) return;
-    if (!this.ctx.isIdle()) return;
+    // Busy after spend: extinguish the right without a call; the attempt stays
+    // unknown on the server and is never retried automatically.
+    if (!this.ctx.isIdle()) { attempt.right = false; return; }
     attempt.right = false;
     this.hooks.sends += 1;
     this.send(attempt);
   }
 
-  async publishReceipt(attempt: ActiveAttempt): Promise<void> {
-    this.journal?.recordReceipt(attempt.messageId, { type: "before_agent_start", message_type: "custom", published: false });
+  private flushing = false;
+
+  // Retry every receipt the journal holds unpublished: a failed or lost ACK
+  // republishes with the original key and never re-acquires a Pi-call right.
+  private async flushReceipts(): Promise<void> {
+    if (this.flushing || !this.journal || this.closed || this.stopped) return;
+    this.flushing = true;
     try {
+      for (const [messageId, entry] of this.journal.entriesView()) {
+        if (this.closed || this.stopped) return;
+        if (!entry.attempt_id || !entry.receipt_key || !entry.receipt || entry.receipt.published) continue;
+        await this.publishReceipt({ messageId, attemptId: entry.attempt_id, receiptKey: entry.receipt_key, text: "", right: false });
+      }
+    } finally { this.flushing = false; }
+  }
+
+  private readonly receiptInflight = new Set<string>();
+
+  async publishReceipt(attempt: ActiveAttempt): Promise<void> {
+    if (this.closed || this.stopped) return;
+    if (this.receiptInflight.has(attempt.messageId) || this.journal?.entry(attempt.messageId)?.receipt?.published) return;
+    this.receiptInflight.add(attempt.messageId);
+    try {
+      this.journal?.recordReceipt(attempt.messageId, { type: "before_agent_start", message_type: "custom", published: false });
       await this.transport("POST", "/delivery/v1/receipt", {
         key: attempt.receiptKey,
         message_id: attempt.messageId,
@@ -252,10 +295,11 @@ export class DeliveryWriter {
         pi_session_id: this.sessionId,
         details: { message_id: attempt.messageId, attempt_id: attempt.attemptId },
       }, AbortSignal.timeout(4000));
+      if (this.closed || this.stopped) return;
       this.journal?.recordReceipt(attempt.messageId, { type: "before_agent_start", message_type: "custom", published: true });
     } catch {
       // The journal keeps the receipt; the next cycle republishes idempotently.
-    }
+    } finally { this.receiptInflight.delete(attempt.messageId); }
   }
 
   async stop(): Promise<void> {

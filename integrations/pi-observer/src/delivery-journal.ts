@@ -3,6 +3,7 @@ import { basename, dirname, join } from "node:path";
 
 export interface JournalEntry {
   attempt_id?: string;
+  receipt_key?: string;
   receipt?: { type: string; message_type: string; published: boolean };
 }
 
@@ -37,9 +38,14 @@ export class DeliveryJournal {
     return this.entries.get(messageId);
   }
 
-  recordAttempt(messageId: string, attemptId: string): void {
+  entriesView(): ReadonlyMap<string, JournalEntry> {
+    return new Map(this.entries);
+  }
+
+  recordAttempt(messageId: string, attemptId: string, receiptKey: string): void {
     const entry = this.entries.get(messageId) ?? {};
     entry.attempt_id = attemptId;
+    entry.receipt_key = receiptKey;
     this.entries.set(messageId, entry);
     this.persist();
   }
