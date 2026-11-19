@@ -515,7 +515,7 @@ func TestDeliveryPendingRefusesAppendWithoutRecord(t *testing.T) {
 	if _, _, err := s.DeliveryNext(t.Context(), env.binding.ID); !observerIs(err, "not_ready") {
 		t.Fatalf("pending next: %v", err)
 	}
-	if countRows(t, s, "delivery_messages") != 0 || deliveryReceiptCount(t, s, "task:"+env.task.ID) != 0 {
+	if countRows(t, s, "delivery_messages") != 0 || deliveryReceiptCount(t, s, "binding:"+env.binding.ID) != 0 {
 		t.Fatal("pending append left a record")
 	}
 	// Activation happens on attach (Task 1 semantics), not on enable.
@@ -881,7 +881,7 @@ func TestDeliveryForeignScopeRefusedWithoutRecord(t *testing.T) {
 	if !observerIs(err, "not_found") {
 		t.Fatalf("unknown task: %v", err)
 	}
-	if countRows(t, s, "delivery_messages") != 0 || deliveryReceiptCount(t, s, "task:"+task2.ID) != 0 {
+	if countRows(t, s, "delivery_messages") != 0 || deliveryReceiptCount(t, s, "binding:"+env.binding.ID) != 0 {
 		t.Fatal("foreign scope left a record")
 	}
 }
