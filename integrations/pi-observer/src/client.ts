@@ -28,11 +28,10 @@ export type Transport = (method: string, path: string, body: unknown, signal: Ab
 
 // No proxy, redirects, TCP fallback, or response/error text logging. Absolute deadline
 // also bounds peers which keep a connection alive by trickling individual bytes.
-export function unixTransport(config: ObserverConfig, token: string): Transport {
+export function unixTransport(config: ObserverConfig, token: string, maxResponse = 16384): Transport {
   return (method, path, body, signal) => new Promise((resolve, reject) => {
     const data = body === undefined ? undefined : JSON.stringify(body);
-    if (data && Buffer.byteLength(data) > 16384) { reject(new ObserverFailure("invalid_metadata")); return; }
-    const req = request({ socketPath: config.observer_socket, method, path, signal,
+    if (data && Buffer.byteLength(data) > 16384) { reject(new ObserverFailure("invalid_metadata")); return; }    const req = request({ socketPath: config.observer_socket, method, path, signal,
       agent: false, maxHeaderSize: 8192,
       headers: { Host: "artel-observer", Authorization: `Bearer ${token}`,
         ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
@@ -41,7 +40,7 @@ export function unixTransport(config: ObserverConfig, token: string): Transport 
       let size = 0;
       res.on("data", (chunk: Buffer) => {
         size += chunk.length;
-        if (size > 16384) {
+        if (size > maxResponse) {
           reject(new ObserverFailure("protocol_error")); req.destroy();
         } else chunks.push(chunk);
       });
@@ -82,6 +81,7 @@ export class ObserverClient {
   private lastReport = -Infinity;
   private retry = 0;
   private timing: typeof defaults;
+  private bound: Context | undefined;
 
   private readonly config: ObserverConfig;
   readonly registration: Registration;
@@ -128,7 +128,12 @@ export class ObserverClient {
     if (this.generation !== c.generation) {
       this.generation = c.generation; this.seq = 0; this.packet = undefined;
     }
+    this.bound = c;
     return c;
+  }
+  // Bound runtime of the last accepted context; delivery starts only there.
+  boundRuntime(): string | undefined {
+    return this.bound?.disposition === "bound" ? this.bound.binding?.runtime_id : undefined;
   }
   private async cycle(signal: AbortSignal): Promise<void> {
     try {

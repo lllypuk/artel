@@ -184,6 +184,7 @@ func New(s *store.Store) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { failure(w, "not_found") })
 	rate := &limiter{times: map[string][]time.Time{}}
+	mountDelivery(mux, s)
 	mux.HandleFunc("GET /observer/v1/context", func(w http.ResponseWriter, r *http.Request) {
 		query, err := url.ParseQuery(r.URL.RawQuery)
 		if err != nil || len(query) != 1 || len(query["runtime_id"]) != 1 {
@@ -231,7 +232,13 @@ func protect(s *store.Store, mux http.Handler) http.Handler {
 			failure(w, "origin_forbidden")
 			return
 		}
-		if e := s.AuthenticateObserver(r.Context(), verifier(r)); e != nil {
+		if isDeliveryPath(r.URL.Path) {
+			var ok bool
+			r, ok = authenticateDelivery(r.Context(), s, w, r)
+			if !ok {
+				return
+			}
+		} else if e := s.AuthenticateObserver(r.Context(), verifier(r)); e != nil {
 			reply(w, nil, e)
 			return
 		}
@@ -250,7 +257,10 @@ func protect(s *store.Store, mux http.Handler) http.Handler {
 			return
 		}
 		switch r.Method + " " + r.URL.Path {
-		case "GET /observer/v1/context", "POST /observer/v1/register", "PUT /observer/v1/report":
+		case "GET /observer/v1/context", "POST /observer/v1/register", "PUT /observer/v1/report",
+			"GET /delivery/v1/context", "GET /delivery/v1/next",
+			"POST /delivery/v1/attach", "POST /delivery/v1/ready", "POST /delivery/v1/spend",
+			"POST /delivery/v1/verify", "POST /delivery/v1/receipt":
 			mux.ServeHTTP(w, r)
 		default:
 			failure(w, "not_found")

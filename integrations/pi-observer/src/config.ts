@@ -41,8 +41,7 @@ function privateBytes(path: string, limit: number): Buffer {
 
 // Consumer boundary: pending provisioning records are never runtime config.
 export function readConfirmedConfig(path: string): { config: ObserverConfig; token: string } {
-  try {
-    const config = JSON.parse(privateBytes(path, 16384).toString("utf8")) as ObserverConfig;
+  return readPrivateConfig<ObserverConfig>(path, (config, token) => {
     const id = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
     if (config.status !== "confirmed" || !id.test(config.observer_id) || !id.test(config.database_instance_id) ||
         !id.test(config.provisioning_key) || !isAbsolute(config.observer_socket) ||
@@ -50,11 +49,40 @@ export function readConfirmedConfig(path: string): { config: ObserverConfig; tok
         typeof config.payload.label !== "string" || !config.payload.label ||
         !/^[0-9a-f]{64}$/.test(config.payload.verifier))
       throw new Error("invalid config");
+    return { config, token };
+  }, config => config.payload.verifier);
+}
+
+export interface DeliveryConfig {
+  status: "confirmed";
+  delivery_binding_id: string;
+  database_instance_id: string;
+  observer_socket: string;
+  token_file: string;
+  journal_file: string;
+  journal_id: string;
+}
+
+export function readDeliveryConfig(path: string): { config: DeliveryConfig; token: string } {
+  return readPrivateConfig<DeliveryConfig>(path, (config, token) => {
+    const id = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    if (config.status !== "confirmed" || !id.test(config.delivery_binding_id) || !id.test(config.database_instance_id) ||
+        !id.test(config.journal_id) || !isAbsolute(config.observer_socket) || !isAbsolute(config.journal_file) ||
+        Buffer.byteLength(config.observer_socket) > 107)
+      throw new Error("invalid config");
+    return { config, token };
+  }, () => "");
+}
+
+function readPrivateConfig<T extends { token_file: string }>(path: string,
+  validate: (config: T, token: string) => { config: T; token: string }, verify: (config: T) => string): { config: T; token: string } {
+  try {
+    const config = JSON.parse(privateBytes(path, 16384).toString("utf8")) as T;
     const text = privateBytes(config.token_file, 65).toString("utf8");
     if (!/^[0-9a-f]{64}\n$/.test(text)) throw new Error("invalid token");
     const token = text.slice(0, 64);
-    if (createHash("sha256").update(token).digest("hex") !== config.payload.verifier)
-      throw new Error("credential mismatch");
-    return { config, token };
+    const want = verify(config);
+    if (want && createHash("sha256").update(token).digest("hex") !== want) throw new Error("credential mismatch");
+    return validate(config, token);
   } catch { throw new Error("observer config unavailable, pending or unsafe"); }
 }

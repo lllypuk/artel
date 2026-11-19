@@ -31,6 +31,7 @@ func New(ctx context.Context, s *store.Store) http.Handler {
 	a := &server{ctx: ctx, store: s, app: app.New(s)}
 	mux := http.NewServeMux()
 	observerapi.MountOwner(mux, s)
+	MountDeliveryOwner(mux, s)
 	mux.Handle("GET /healthz", Handler())
 	mux.HandleFunc("GET /v1/snapshot", a.snapshot)
 	mux.HandleFunc("GET /v1/events", a.history)
