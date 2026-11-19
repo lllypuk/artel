@@ -50,7 +50,7 @@ function makeEnv(options: { pollMs?: number; readyMs?: number } = {}): Env {
   return env;
 }
 
-function contextRoute(env: Env, state: Record<string, unknown>): Record<string, Handler> {
+function contextRoute(env: Env): Record<string, Handler> {
   return {
     "GET /delivery/v1/context": (_body, s) => ({
       database_instance_id: env.config.database_instance_id,
@@ -98,7 +98,7 @@ test("lost attach response reconciles under the lock with one writer id", async 
   try {
     const message = commission("Fictional commission");
     const { transport, calls, state } = stub({
-      ...contextRoute(env, {}),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => {
         if (!s.writer) { s.writer = body.writer_id; throw new ObserverFailure("offline"); }
         s.reattached = { expected_previous: body.expected_previous, writer_id: body.writer_id };
@@ -124,7 +124,7 @@ test("ready refreshes on a bound and polling stops on shutdown", async () => {
   const env = makeEnv({ readyMs: 80 });
   try {
     const { transport, calls } = stub({
-      ...contextRoute(env, {}),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
       "POST /delivery/v1/ready": () => ({}),
       "GET /delivery/v1/next": () => ({ message: null }),
@@ -145,7 +145,7 @@ test("CAS ownership transfers to a new writer after a clean stop", async () => {
   const shared: Record<string, unknown> = {};
   try {
     const first = stub({
-      ...contextRoute(env, shared),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
       "POST /delivery/v1/ready": () => ({}),
       "GET /delivery/v1/next": () => ({ message: null }),
@@ -158,7 +158,7 @@ test("CAS ownership transfers to a new writer after a clean stop", async () => {
 
     const message = commission("Second fictional commission");
     const second = stub({
-      ...contextRoute(env, shared),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => { s.transfer = { expected_previous: body.expected_previous }; s.writer = body.writer_id; return {}; },
       "POST /delivery/v1/ready": () => ({}),
       "GET /delivery/v1/next": (_b, s) => s.spent ? { message: null } : { message, receipt_key: (message as { receipt_key: string }).receipt_key },
@@ -180,7 +180,7 @@ test("old callbacks stay neutral after the lock is released", async () => {
     const message = commission("Fictional commission");
     const attemptId = randomUUID();
     const first = stub({
-      ...contextRoute(env, {}),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
       "POST /delivery/v1/ready": () => ({}),
       "GET /delivery/v1/next": (_b, s) => s.spent ? { message: null } : { message, receipt_key: (message as { receipt_key: string }).receipt_key },
@@ -203,7 +203,7 @@ test("old callbacks stay neutral after the lock is released", async () => {
     assert.equal(first.calls.filter(c => c.path === "/delivery/v1/receipt").length, 0);
     // The released lock admits a fresh writer bootstrap.
     const probe = stub({
-      ...contextRoute(env, {}),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
       "POST /delivery/v1/ready": () => ({}),
     }, {});
@@ -223,7 +223,7 @@ test("replaced or corrupt journal is refused before any bridge call; missing one
   try {
     // Replaced: a journal with a different pinned ID must never be adopted.
     writeFileSync(env.config.journal_file, JSON.stringify({ journal_id: randomUUID(), entries: {} }) + "\n", { mode: 0o600 });
-    const refused = stub({ ...contextRoute(env, {}) }, {});
+    const refused = stub({ ...contextRoute(env) }, {});
     const w = writer(env, refused.transport);
     await w.start();
     await until(() => env.statuses.some(s => s.includes("unavailable")), "refused status");
@@ -232,7 +232,7 @@ test("replaced or corrupt journal is refused before any bridge call; missing one
 
     // Corrupt content is equally unsafe.
     writeFileSync(env.config.journal_file, "{not json", { mode: 0o600 });
-    const corrupt = stub({ ...contextRoute(env, {}) }, {});
+    const corrupt = stub({ ...contextRoute(env) }, {});
     const w2 = writer(env, corrupt.transport);
     await w2.start();
     await until(() => env.statuses.filter(s => s.includes("unavailable")).length >= 2, "corrupt refused");
@@ -242,7 +242,7 @@ test("replaced or corrupt journal is refused before any bridge call; missing one
     // Missing at first bootstrap: created under the lock and attached.
     rmSync(env.config.journal_file);
     const fresh = stub({
-      ...contextRoute(env, {}),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
       "POST /delivery/v1/ready": () => ({}),
     }, {});
@@ -260,7 +260,7 @@ test("lost spend response never reaches Pi and keeps polling", async () => {
   try {
     const message = commission("Fictional commission");
     const { transport, calls } = stub({
-      ...contextRoute(env, {}),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
       "POST /delivery/v1/ready": () => ({}),
       "GET /delivery/v1/next": (_b, s) => s.spent ? { message: null } : { message, receipt_key: (message as { receipt_key: string }).receipt_key },
@@ -286,7 +286,7 @@ test("journal write failure after spend keeps the right from Pi", async () => {
     const message = commission("Fictional commission");
     const attemptId = randomUUID();
     const { transport, calls, state } = stub({
-      ...contextRoute(env, {}),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
       "POST /delivery/v1/ready": () => ({}),
       "GET /delivery/v1/next": (_b, s) => s.allow && !s.spent ? { message, receipt_key: (message as { receipt_key: string }).receipt_key } : { message: null },
@@ -318,7 +318,7 @@ test("restart after spend never retransmits and republishes the stored receipt w
     const attemptId = randomUUID();
     const receiptKey = (message as { receipt_key: string }).receipt_key;
     const first = stub({
-      ...contextRoute(env, {}),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
       "POST /delivery/v1/ready": () => ({}),
       "GET /delivery/v1/next": (_b, s) => s.spent ? { message: null } : { message, receipt_key: (message as { receipt_key: string }).receipt_key },
@@ -343,7 +343,7 @@ test("restart after spend never retransmits and republishes the stored receipt w
     const secondHooks = { holdReadyMs: 0, sends: 0, pollMs: 15, readyMs: 60 };
     (globalThis as Record<symbol, unknown>)[TEST_HOOK] = secondHooks;
     const second = stub({
-      ...contextRoute(env, {}),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
       "POST /delivery/v1/ready": () => ({}),
       "GET /delivery/v1/next": () => ({ message: null }),
@@ -368,7 +368,7 @@ test("restart after a local receipt does not call Pi again even with no receipt 
   try {
     const message = commission("Fictional commission");
     const first = stub({
-      ...contextRoute(env, {}),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
       "POST /delivery/v1/ready": () => ({}),
       "GET /delivery/v1/next": (_b, s) => s.spent ? { message: null } : { message, receipt_key: (message as { receipt_key: string }).receipt_key },
@@ -383,7 +383,7 @@ test("restart after a local receipt does not call Pi again even with no receipt 
     const secondHooks = { holdReadyMs: 0, sends: 0, pollMs: 15, readyMs: 60 };
     (globalThis as Record<symbol, unknown>)[TEST_HOOK] = secondHooks;
     const second = stub({
-      ...contextRoute(env, {}),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
       "POST /delivery/v1/ready": () => ({}),
       "GET /delivery/v1/next": () => ({ message: null }),
@@ -404,7 +404,7 @@ test("maximum escaped 8 KiB text round-trips through the stubbed transport", asy
     assert.equal(Buffer.byteLength(text), 8192);
     const message = commission(text);
     const { transport } = stub({
-      ...contextRoute(env, {}),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
       "POST /delivery/v1/ready": () => ({}),
       "GET /delivery/v1/next": (_b, s) => s.spent ? { message: null } : { message, receipt_key: (message as { receipt_key: string }).receipt_key },
@@ -426,7 +426,7 @@ test("duplicated callback and repeated observation keep one Pi call and one rece
     const message = commission("Fictional commission");
     const attemptId = randomUUID();
     const { transport, calls } = stub({
-      ...contextRoute(env, {}),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
       "POST /delivery/v1/ready": () => ({}),
       "GET /delivery/v1/next": (_b, s) => s.spent ? { message: null } : { message, receipt_key: (message as { receipt_key: string }).receipt_key },
@@ -460,7 +460,7 @@ test("busy Pi keeps the Pi count at zero until idle, then delivers once", async 
     let idle = false;
     const message = commission("Fictional commission");
     const { transport, calls } = stub({
-      ...contextRoute(env, {}),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
       "POST /delivery/v1/ready": () => ({}),
       "GET /delivery/v1/next": (_b, s) => s.spent ? { message: null } : { message, receipt_key: (message as { receipt_key: string }).receipt_key },
@@ -484,7 +484,7 @@ test("revoke before verify and conflicting ownership keep the Pi count at zero",
   try {
     const message = commission("Fictional commission");
     const { transport, calls } = stub({
-      ...contextRoute(env, {}),
+      ...contextRoute(env),
       "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
       "POST /delivery/v1/ready": () => ({}),
       "GET /delivery/v1/next": (_b, s) => s.spent ? { message: null } : { message, receipt_key: (message as { receipt_key: string }).receipt_key },
