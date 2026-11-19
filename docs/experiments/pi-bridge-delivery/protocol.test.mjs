@@ -99,6 +99,25 @@ test('success persists intent, attempt and only custom before_agent_start as the
   assert.equal(transmissions.length, 1);
 });
 
+test('a final busy check after spend returns unknown without a Pi call or a recovered right', async t => {
+  const { artel, journal } = await fixture(t);
+  const bridge = new TestBridge({
+    artel,
+    journal,
+    transmit: () => false,
+  });
+  const result = await bridge.deliver(identity, payload);
+  assert.equal(result.status, 'unknown');
+  assert.equal(result.transmitted, false);
+  assert(artel.snapshot(identity.messageId).spend);
+  assert(journal.entry(identity.messageId).attempt);
+  assert.equal(journal.entry(identity.messageId).receipt, null);
+
+  const replay = await bridge.deliver(identity, payload);
+  assert.equal(replay.status, 'unknown');
+  assert.equal(replay.transmitted, false);
+});
+
 test('admission and spend retries return state without another Pi right', async t => {
   const { artel } = await fixture(t);
   assert.equal((await artel.admit(identity, payload)).status, 'admitted');

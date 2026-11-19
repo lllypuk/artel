@@ -1,0 +1,119 @@
+{
+  "piVersion": "1.5.2",
+  "nodeVersion": "22.23.2",
+  "scenarios": [
+    {
+      "name": "positive-custom-redelivery",
+      "result": "PASS",
+      "piSends": 1,
+      "providerRequests": 1,
+      "beforeAgentStart": 1,
+      "customStarts": 1,
+      "userStarts": 0,
+      "serverStatus": "observed",
+      "redeliveries": 1,
+      "restarts": 0
+    },
+    {
+      "name": "manual-first-busy-local-pending",
+      "result": "PASS",
+      "piSends": 0,
+      "providerRequests": 1,
+      "beforeAgentStart": 1,
+      "customStarts": 0,
+      "userStarts": 1,
+      "serverStatus": "absent",
+      "admissions": 0,
+      "spends": 0,
+      "localPending": 1,
+      "restarts": 0
+    },
+    {
+      "name": "busy-after-spend-final-idle-check",
+      "result": "PASS",
+      "piSends": 0,
+      "providerRequests": 1,
+      "beforeAgentStart": 1,
+      "customStarts": 0,
+      "userStarts": 1,
+      "serverStatus": "unknown",
+      "spentRight": 1,
+      "finalIdleRejected": 1,
+      "restarts": 0
+    },
+    {
+      "name": "custom-first-draft-and-old-marker",
+      "result": "PASS",
+      "piSends": 1,
+      "providerRequests": 3,
+      "beforeAgentStart": 3,
+      "customStarts": 1,
+      "userStarts": 2,
+      "serverStatus": "observed",
+      "draftPreserved": 1,
+      "oldMarkerUserTurns": 1,
+      "restarts": 0
+    },
+    {
+      "name": "restart-after-spend-before-pi",
+      "result": "PASS",
+      "piSends": 0,
+      "providerRequests": 0,
+      "beforeAgentStart": 0,
+      "customStarts": 0,
+      "userStarts": 0,
+      "serverStatus": "unknown",
+      "restarts": 1,
+      "crashBarrier": "after-attempt-before-pi"
+    },
+    {
+      "name": "restart-after-transmission-before-receipt",
+      "result": "PASS",
+      "piSends": 1,
+      "providerRequests": 1,
+      "beforeAgentStart": 1,
+      "customStarts": 1,
+      "userStarts": 0,
+      "serverStatus": "unknown",
+      "restarts": 1,
+      "crashBarrier": "after-transmission-before-receipt"
+    },
+    {
+      "name": "restart-after-local-receipt-before-post",
+      "result": "PASS",
+      "piSends": 1,
+      "providerRequests": 1,
+      "beforeAgentStart": 1,
+      "customStarts": 1,
+      "userStarts": 0,
+      "serverStatus": "observed",
+      "restarts": 1,
+      "crashBarrier": "after-local-receipt-before-post"
+    },
+    {
+      "name": "owned-process-pty-cleanup",
+      "result": "PASS",
+      "piSends": 0,
+      "providerRequests": 0,
+      "beforeAgentStart": 0,
+      "customStarts": 0,
+      "userStarts": 0,
+      "serverStatus": "absent",
+      "restarts": 1,
+      "sigkillReaps": 1,
+      "gracefulReaps": 1,
+      "orphanProcesses": 0
+    }
+  ],
+  "processCleanup": {
+    "result": "PASS",
+    "ownedProcessesReaped": 12,
+    "orphanProcesses": 0,
+    "ptyDescriptorsClosed": 12
+  },
+  "limitations": [
+    "Process crash only; no power-loss or external-provider claim",
+    "No steer/follow-up queue probe; no task completion or exactly-once claim",
+    "No real Artel API, agterm, host settings, credentials or tools used"
+  ]
+}

@@ -495,11 +495,11 @@ export class TestBridge {
     }
     // No lock can remove this residual verify-to-call window. Revocation after the
     // final check is not promised to cancel a call which is already being issued.
-    await this.#transmit({
+    const transmitted = await this.#transmit({
       ...spent.right,
       payload: clone(payload),
     });
-    return { status: 'unknown', attemptId: spent.right.attemptId, transmitted: true };
+    return { status: 'unknown', attemptId: spent.right.attemptId, transmitted: transmitted !== false };
   }
 
   async recordObservation(messageId, observation) {

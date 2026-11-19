@@ -70,6 +70,11 @@ Pi-сессии. Оно сначала записывается в локаль�
 после успешной проверки может не отменить уже выдаваемый вызов. Тест фиксирует это окно
 явным барьером; обещания отмены после допуска или exactly-once нет.
 
+Передатчик PTY дополнительно делает синхронный `ctx.isIdle()` непосредственно перед
+`sendMessage`. Если к этому моменту начался ручной ход, он возвращает `false`: вызова Pi
+нет, а уже потраченное право и локальный attempt остаются в `unknown`; повтор права не
+восстанавливает. Это отдельная busy-проверка, а не ослабление границы отзыва поколения.
+
 ## Журнал, проверяемые операции и восстановление
 
 На Linux fixture принимает только принадлежащий текущему UID каталог `0700` и обычные
@@ -195,4 +200,73 @@ coordinator-dead/Pi-alive старый ход поздно завершаетс�
 Отзыв после финальной проверки, но до синхронного входа в `sendMessage`, измерен отдельно:
 вызов всё же происходит. Это остаточное окно протокола, а не обещание отмены или exactly-once.
 SDK/json и process crash не доказывают PTY/TUI, внешних провайдеров, power loss, восстановление
-agterm/zmx или надёжность реальной сессии. PTY и итоговый продуктовый отчёт здесь не выполняются.
+agterm/zmx или надёжность реальной сессии. Ниже PTY проверяется отдельно.
+
+## Настоящий Pi TUI в изолированном PTY
+
+`pty_matrix.py` запускает установленный `dist/cli.js` Pi 1.5.2 в настоящем Linux PTY,
+без окна, agterm и SDK-обхода. Два явных тестовых `-e` загружаются вместе с
+`--no-extensions --no-skills --no-prompt-templates --no-context-files --no-themes --no-mcp
+--no-builtin-tools`; `session_start` дополнительно требует `ctx.mode=tui` и пустой активный
+набор инструментов. `pty-preflight.mjs` заранее передаёт точные аргументы парсеру pinned Pi.
+Приватные settings отключают retry/compaction; внешние конфиги, credentials и ресурсы не
+наследуются и не читаются. Ничего не устанавливается и не патчится.
+
+Точное воспроизведение из корня Artel:
+
+```bash
+NODE=/home/sasha/.local/share/pi-node/node-v22.23.2-linux-x64/bin/node
+PACKAGE=/home/sasha/.local/share/pi-node/node-v22.23.2-linux-x64/lib/node_modules/@earendil-works/pi-coding-agent
+umask 077
+ROOT=$(mktemp -d /tmp/artel-pi-delivery-XXXXXXXX)
+mkdir -p "$ROOT/home" "$ROOT/config" "$ROOT/cache" "$ROOT/state" "$ROOT/data" "$ROOT/agent" "$ROOT/sessions"
+timeout 240s env -i \
+  HOME="$ROOT/home" XDG_CONFIG_HOME="$ROOT/config" XDG_CACHE_HOME="$ROOT/cache" \
+  XDG_STATE_HOME="$ROOT/state" XDG_DATA_HOME="$ROOT/data" \
+  PI_CODING_AGENT_DIR="$ROOT/agent" PI_OFFLINE=1 LANG=C.UTF-8 \
+  PATH="$(dirname "$NODE"):/usr/bin:/bin" \
+  PROBE_ROOT="$ROOT" PI_TEST_PACKAGE="$PACKAGE" \
+  /usr/bin/python3 -B docs/experiments/pi-bridge-delivery/pty_matrix.py
+```
+
+Runner принимает только абсолютный pinned Node 22.23.2/package и приватный `PROBE_ROOT`
+`0700` вне worktree; окружение вне белого списка отклоняется. Каждый сценарий ограничен
+watchdog, а команда — внешним `timeout`. Синхронизация идёт через Unix-socket ответы,
+файловые события и provider barriers, не через sleeps. SIGKILL направляется только группе
+созданного runner-ом Pi-процесса. После graceful exit/SIGKILL проверяются reap, пустая
+owned process group, закрытие PTY/control FD и удаление socket. Все 12 процессов финального
+прогона очищены, orphan count равен нулю.
+
+Полные ANSI PTY traces, control/events и фактические provider headers/body остаются только
+в приватном `PROBE_ROOT` (`pty-*.raw`, `control.jsonl`, `*-events.jsonl`,
+`provider-requests.jsonl`). В Git сохраняются лишь сокращённые счётчики `pty-result.json`.
+Provider oracle на каждом `before_agent_start` создаёт свежий UUID, а
+`before_provider_headers` ставит его только для `artel-fixture/fixture`. Runner сопоставляет
+полное фактическое body с типом инициатора, session ID, details/prompt, generation, attempt,
+journal и owner. Повтор запроса для одного токена, отсутствующий токен/хук или barrier timeout
+— FAIL, не PASS. Provider trace не доступен логике recovery bridge.
+
+### Подтверждённая PTY-матрица
+
+| Сценарий | Pi sends | HTTP | starts custom/user | Итог |
+|---|---:|---:|---:|---|
+| positive custom + idempotent redelivery | 1 | 1 | 1/0 | `observed`, второй вызов отсутствует |
+| manual first, provider удержан | 0 | 1 | 0/1 | ноль admission/spend, intent только local pending, Pi queue пуст |
+| busy появилась после spend/attempt | 0 | 1 | 0/1 | финальный `ctx.isIdle()` отклонил send; право потрачено, `unknown` |
+| custom first, draft + отдельный old-marker user turn | 1 | 3 | 1/2 | draft сохранён; три свежих токена; старый маркер не создал receipt |
+| crash после attempt, до Pi; restart | 0 | 0 | 0/0 | `unknown`, ноль новых вызовов |
+| crash после передачи, до receipt; restart | 1 | 1 | 1/0 | `unknown`, ноль новых вызовов |
+| crash после local receipt, до POST; restart | 1 | 1 | 1/0 | тот же receipt/attempt опубликован, `observed`, ноль новых вызовов |
+| owned PTY cleanup control | 0 | 0 | 0/0 | SIGKILL и graceful exit очищены, orphans=0 |
+
+В manual-first ветке внешняя команда доставки при busy пишет только local intent; у bridge
+нет `agent_settled` follow-up. В custom-first ветке уникальный ручной текст вводится в настоящий
+TUI editor **без Enter** во время held streaming. Публичный `ctx.ui.getEditorText()` подтверждает
+сохранность до и после custom `agent_settled`; Enter отправляется только затем. Provider body
+и `before_agent_start` подтверждают отсутствие потери, подмены и дубля. Отдельный ручной ход со
+старым маркером получает новый токен и `messageType=user`, но не новый bridge send/receipt.
+
+Steer/follow-up очередь в этой матрице не проверяется; от неё здесь не требуется новый
+`before_agent_start`. Результаты ограничены process crash, числовым loopback fixture и данной
+версией Pi: это не provider ACK, completion, exactly-once, power-loss или внешний provider claim.
+Итоговое продуктовое решение и Task 4 этим стендом не выполняются.
