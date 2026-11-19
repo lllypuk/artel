@@ -229,6 +229,7 @@ export class FakeArtel {
         throw new ProtocolError('REVOKED_GENERATION', 'message does not belong to the active test session generation');
       }
       const record = { identity, payload, spend: null, receipt: null };
+      await this.#hooks.beforeCommit?.('admission', clone(record));
       await this.#document.replace({ ...data, messages: { ...data.messages, [identity.messageId]: record } });
       return this.#response('admission', record);
     });
@@ -257,6 +258,7 @@ export class FakeArtel {
         ...record,
         spend: { attemptId: randomUUID(), ownerPid, journalId },
       };
+      await this.#hooks.beforeCommit?.('spend', clone(nextRecord));
       await this.#document.replace({
         ...data,
         messages: { ...data.messages, [binding.messageId]: nextRecord },
@@ -308,6 +310,7 @@ export class FakeArtel {
       }
       // A late observation is historical evidence; it does not reactivate the generation.
       const nextRecord = { ...record, receipt: clone(receipt) };
+      await this.#hooks.beforeCommit?.('receipt', clone(nextRecord));
       await this.#document.replace({
         ...data,
         messages: { ...data.messages, [right.messageId]: nextRecord },
@@ -469,6 +472,7 @@ export class TestBridge {
     if (admission.status !== 'admitted') {
       return { ...admission, transmitted: false };
     }
+    await this.#hooks.beforeSpend?.(identity);
     const spent = await this.#artel.spend({
       ...identity,
       ownerPid: this.#ownerPid,
@@ -483,6 +487,7 @@ export class TestBridge {
     } catch (cause) {
       throw new ProtocolError('ATTEMPT_WRITE_FAILED', 'attempt was not committed; transmission is forbidden', { cause });
     }
+    await this.#hooks.afterAttemptCommit?.(spent.right);
     const valid = await this.#artel.verify(spent.right);
     await this.#hooks.afterFinalVerification?.(spent.right, valid);
     if (!valid) {
@@ -504,6 +509,7 @@ export class TestBridge {
     }
     const right = { ...entry.attempt, ...entry.identity };
     const receipt = await this.#journal.recordReceipt(right, observation);
+    await this.#hooks.afterReceiptCommit?.(right, receipt);
     // Artel remains unknown until this atomic server receipt write commits.
     return this.#artel.publishReceipt(right, receipt);
   }
