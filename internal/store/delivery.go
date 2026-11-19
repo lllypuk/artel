@@ -404,6 +404,9 @@ func (s *Store) deliveryAppendGate(ctx context.Context, tx *sql.Tx, taskID, bind
 	if b.Status != "active" || !s.deliveryReadyNow(b.ID) {
 		return b, observerError("not_ready")
 	}
+	if err := deliveryAssignmentCheck(ctx, tx, b); err != nil {
+		return b, err
+	}
 	if projectID != b.ProjectID {
 		return b, observerError("assignment_mismatch")
 	}
@@ -670,8 +673,10 @@ func (s *Store) DeliveryNext(ctx context.Context, bindingID string) (DeliveryMes
 	if err != nil {
 		return result, "", err
 	}
-	if b.Status != "active" {
-		return result, "", observerError("not_ready")
+	// A stale assignment (rebind, generation or runtime change, revoke) must not
+	// hand out text even though this read grants no right.
+	if err := deliveryAssignmentCheck(ctx, tx, b); err != nil {
+		return result, "", err
 	}
 	row := tx.QueryRowContext(ctx, `SELECT m.seq,m.blocked,m.receipt_key,m.record FROM delivery_messages m
 		WHERE m.binding_id=? AND m.blocked=0 AND NOT EXISTS (SELECT 1 FROM delivery_attempts a WHERE a.message_seq=m.seq)
