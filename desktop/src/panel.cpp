@@ -25,8 +25,11 @@ Panel::Panel(ApiClient *client, QObject *parent)
       m_history.clear();
       m_historyCursor = 0;
       m_historyMore = true;
-      if (!m_task.isEmpty())
+      resetCommissions();
+      if (!m_task.isEmpty()) {
         moreHistory();
+        loadCommissionPage();
+      }
     }
     if (!m_client->dirty() && !m_client->pending() && !m_client->uncertain())
       m_kind.clear();
@@ -56,6 +59,179 @@ Panel::Panel(ApiClient *client, QObject *parent)
             m_historyMore = more;
             emit changed();
           });
+  connect(client, &ApiClient::messagesReceived, this,
+          [this](const QVariantList &rows, qint64 after, bool more) {
+            if (m_messagesTask.isEmpty())
+              return;
+            if (after == 0)
+              m_messages.clear();
+            m_messages += rows;
+            m_messagesCursor = after;
+            m_messagesMore = more;
+            armStatusPoll();
+            emit changed();
+          });
+  connect(client, &ApiClient::messageStatusesReceived, this,
+          [this](const QVariantList &rows) {
+            for (const auto &value : rows) {
+              const auto row = value.toMap();
+              for (auto &existing : m_messages) {
+                if (existing.toMap().value("id").toString() ==
+                    row.value("id").toString())
+                  existing = row;
+              }
+            }
+            armStatusPoll();
+            emit changed();
+          });
+  connect(client, &ApiClient::deliveryReceived, this,
+          [this](const QVariantMap &projection) {
+            if (!m_deliveryTask.isEmpty())
+              m_delivery = projection;
+            emit changed();
+          });
+  connect(client, &ApiClient::commissionAccepted, this,
+          [this](const QVariantMap &) {
+            // One explicit send records exactly one commission; clear only the
+            // commission text, never the domain editor draft.
+            m_commission.clear();
+            m_messagesCursor = 0;
+            m_messages.clear();
+            m_messagesMore = true;
+            loadCommissionPage();
+            emit changed();
+          });
+  m_statusPoll.setSingleShot(true);
+  m_statusPoll.setInterval(2000);
+  connect(&m_statusPoll, &QTimer::timeout, this, [this] {
+    if (m_task.isEmpty() || m_messages.isEmpty())
+      return;
+    QStringList ids;
+    for (const auto &value : m_messages)
+      ids.append(value.toMap().value("id").toString());
+    m_client->refreshMessageStatuses(m_task, ids);
+  });
+  m_deliveryPoll.setSingleShot(true);
+  m_deliveryPoll.setInterval(3000);
+  connect(&m_deliveryPoll, &QTimer::timeout, this, [this] {
+    if (m_task.isEmpty())
+      return;
+    m_deliveryTask = m_task;
+    m_client->loadDelivery(m_task);
+    m_deliveryPoll.start(); // Bounded: only while this task stays selected.
+  });
+}
+void Panel::setCommissionText(const QString &text) {
+  if (m_commission == text)
+    return;
+  m_commission = text;
+  emit changed();
+}
+void Panel::armStatusPoll() {
+  if (m_task.isEmpty())
+    return;
+  for (const auto &value : m_messages) {
+    if (value.toMap().value("status").toString() != "observed") {
+      if (!m_statusPoll.isActive())
+        m_statusPoll.start();
+      return;
+    }
+  }
+  m_statusPoll.stop();
+}
+QVariantMap Panel::messageRow(const QVariantMap &row) const {
+  auto result = row;
+  const auto timestamp =
+      QDateTime::fromString(row.value("created_at").toString(), Qt::ISODate);
+  result.insert(
+      "displayTimestamp",
+      timestamp.isValid()
+          ? QLocale().toString(timestamp.toLocalTime(), QLocale::ShortFormat)
+          : row.value("created_at").toString());
+  const auto status = row.value("status").toString();
+  result.insert("statusLabel", status == "observed"
+                                   ? tr("Pi started preparing the turn")
+                               : status == "unknown" ? tr("Outcome unknown")
+                                                     : tr("Stored"));
+  return result;
+}
+QVariantList Panel::messages() const {
+  QVariantList result;
+  for (const auto &value : m_messages)
+    result.append(messageRow(value.toMap()));
+  return result;
+}
+QVariantMap Panel::assignment() const {
+  QVariantMap result{{"enabled", false},
+                     {"available", false},
+                     {"canSend", false},
+                     {"reason", QString()}};
+  const auto task = this->task();
+  if (task.isEmpty())
+    return result;
+  result.insert("taskId", m_task);
+  const auto state = task.value("state").toString();
+  const auto terminal = QStringList{"done", "cancelled"}.contains(state);
+  const auto archived = project().value("archived").toBool();
+  const auto binding = m_delivery.value("binding").toMap();
+  if (binding.isEmpty()) {
+    result.insert("reason",
+                  tr("Delivery to Pi is not enabled for this installation"));
+    return result;
+  }
+  result.insert("enabled", true);
+  result.insert("bindingId", binding.value("delivery_binding_id").toString());
+  result.insert("piSession", binding.value("pi_session_id").toString());
+  result.insert("status", binding.value("status").toString());
+  result.insert("ready", m_delivery.value("ready").toBool());
+  QString reason;
+  if (archived)
+    reason = tr("The project is archived");
+  else if (terminal)
+    reason = tr("The task is closed");
+  else if (binding.value("status").toString() != "active")
+    reason = tr("The Pi assignment is not active");
+  else if (binding.value("project_id").toString() !=
+           task.value("project_id").toString())
+    reason = tr("The enabled assignment belongs to a different project");
+  else if (!m_delivery.value("ready").toBool())
+    reason = tr("The Pi writer is not ready right now");
+  result.insert("reason", reason);
+  result.insert("available", reason.isEmpty());
+  result.insert("canSend", reason.isEmpty() && writable() &&
+                               !m_commission.trimmed().isEmpty());
+  return result;
+}
+void Panel::resetCommissions() {
+  m_statusPoll.stop();
+  m_deliveryPoll.stop();
+  m_messagesTask.clear();
+  m_deliveryTask.clear();
+  m_messages.clear();
+  m_messagesCursor = 0;
+  m_messagesMore = false;
+  m_delivery = {};
+  m_client->cancelMessages();
+}
+void Panel::loadCommissionPage() {
+  if (m_task.isEmpty() || !m_client->online())
+    return;
+  m_messagesTask = m_task;
+  m_deliveryTask = m_task;
+  m_client->loadMessages(m_task, 0);
+  m_client->loadDelivery(m_task);
+  m_deliveryPoll.start();
+}
+bool Panel::sendCommission() {
+  const auto target = assignment();
+  if (!target.value("canSend").toBool())
+    return false;
+  return m_client->sendMessage(m_task, m_commission,
+                               target.value("bindingId").toString());
+}
+void Panel::moreMessages() {
+  if (!m_task.isEmpty() && m_messagesMore && !messagesLoading())
+    m_client->loadMessages(m_task, m_messagesCursor);
 }
 QVariantList Panel::history() const {
   const QMap<QString, QString> labels{
@@ -231,6 +407,7 @@ void Panel::setProjectSelection(const QString &id) {
   m_history.clear();
   m_historyCursor = 0;
   m_historyMore = true;
+  resetCommissions();
 }
 bool Panel::selectProject(const QString &id) {
   if (dirty() || m_client->pending() || uncertain())
@@ -250,7 +427,9 @@ bool Panel::selectTask(const QString &id) {
   m_history.clear();
   m_historyCursor = 0;
   m_historyMore = true;
+  resetCommissions();
   moreHistory();
+  loadCommissionPage();
   emit changed();
   return true;
 }

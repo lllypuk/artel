@@ -34,6 +34,12 @@ class Panel : public QObject {
   Q_PROPERTY(bool conflict READ conflict NOTIFY changed)
   Q_PROPERTY(bool historyMore READ historyMore NOTIFY changed)
   Q_PROPERTY(bool historyLoading READ historyLoading NOTIFY changed)
+  Q_PROPERTY(QString commissionText READ commissionText WRITE setCommissionText
+                 NOTIFY changed)
+  Q_PROPERTY(QVariant assignment READ assignment NOTIFY changed)
+  Q_PROPERTY(QVariant messages READ messages NOTIFY changed)
+  Q_PROPERTY(bool messagesMore READ messagesMore NOTIFY changed)
+  Q_PROPERTY(bool messagesLoading READ messagesLoading NOTIFY changed)
   Q_PROPERTY(
       bool showArchived READ showArchived WRITE setShowArchived NOTIFY changed)
 public:
@@ -65,6 +71,13 @@ public:
   }
   bool historyMore() const { return m_historyMore; }
   bool historyLoading() const { return m_client->historyLoading(); }
+  QString commissionText() const { return m_commission; }
+  void setCommissionText(const QString &text);
+  // Exact assignment, binding state, writer readiness and the blocking reason.
+  QVariantMap assignment() const;
+  QVariantList messages() const;
+  bool messagesMore() const { return m_messagesMore; }
+  bool messagesLoading() const { return m_client->messagesLoading(); }
   bool showArchived() const { return m_archived; }
   void setShowArchived(bool value);
   Q_INVOKABLE bool selectProject(const QString &id);
@@ -83,16 +96,28 @@ public:
   Q_INVOKABLE bool transition(const QString &state);
   Q_INVOKABLE bool allowed(const QString &state) const;
   Q_INVOKABLE void moreHistory();
+  Q_INVOKABLE bool sendCommission();
+  Q_INVOKABLE void moreMessages();
   Q_INVOKABLE QString stateLabel(const QString &state) const;
 signals:
   void changed();
 
 private:
   void setProjectSelection(const QString &id);
+  void resetCommissions();
+  void loadCommissionPage();
+  void armStatusPoll();
+  QVariantMap messageRow(const QVariantMap &row) const;
   QVariantList queueIds() const;
   bool begin(const QString &kind, const QVariantMap &value);
   ApiClient *m_client;
   ObserverClient m_observers;
+  QTimer m_statusPoll, m_deliveryPoll;
+  QString m_commission, m_messagesTask, m_deliveryTask;
+  QVariantList m_messages;
+  QVariantMap m_delivery;
+  qint64 m_messagesCursor = 0;
+  bool m_messagesMore = false;
   QString m_project, m_task, m_kind, m_editorId, m_editorProject,
       m_historyInstance, m_editorInstance;
   qint64 m_seenSequence = -1;

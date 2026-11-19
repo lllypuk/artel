@@ -55,11 +55,27 @@ public:
   bool historyLoading() const { return m_historyReply; }
   void loadHistory(const QString &project, const QString &task, qint64 after);
   void cancelHistory();
+  // Delivery commissions: pages, status refresh and the assignment projection
+  // for one selected task. All replies are dropped when the task or database
+  // instance changes before they arrive.
+  bool messagesLoading() const { return m_messagesReply || m_statusReply; }
+  void loadMessages(const QString &task, qint64 after);
+  void refreshMessageStatuses(const QString &task, const QStringList &ids);
+  void loadDelivery(const QString &task);
+  void cancelMessages();
+  // One owner commission. An unknown outcome (timeout/5xx/lost reply) keeps
+  // the original instance/task/binding/body/key for an explicit same retry.
+  Q_INVOKABLE bool sendMessage(const QString &task, const QString &text,
+                               const QString &binding);
   ObjectModel *projects() { return &m_projects; }
   ObjectModel *tasks() { return &m_tasks; }
   ObjectModel *queues() { return &m_queues; }
   QString status() const { return m_status; }
-  QString error() const { return m_error.isEmpty() ? m_historyError : m_error; }
+  QString error() const {
+    return !m_error.isEmpty()          ? m_error
+           : !m_historyError.isEmpty() ? m_historyError
+                                       : m_messagesError;
+  }
   bool online() const { return m_online; }
   bool loading() const { return m_snapshot; }
   bool pending() const { return m_mutation; }
@@ -89,6 +105,10 @@ signals:
   void changed();
   void mutationSucceeded(const QVariantMap &result, const QString &instance);
   void historyReceived(const QVariantList &events, qint64 cursor, bool more);
+  void messagesReceived(const QVariantList &messages, qint64 after, bool more);
+  void messageStatusesReceived(const QVariantList &messages);
+  void deliveryReceived(const QVariantMap &projection);
+  void commissionAccepted(const QVariantMap &message);
 
 private:
   QNetworkReply *request(const QByteArray &method, const QString &path,
@@ -100,16 +120,20 @@ private:
   void fail(const QString &message);
   void sendMutation();
   void cancel(QNetworkReply *&reply);
+  bool validMessage(const QJsonObject &obj) const;
   QNetworkAccessManager m_network;
   ObjectModel m_projects, m_tasks, m_queues;
   QUrl m_endpoint;
   QByteArray m_token;
   QNetworkReply *m_snapshot = nullptr, *m_stream = nullptr,
-                *m_mutation = nullptr, *m_historyReply = nullptr;
+                *m_mutation = nullptr, *m_historyReply = nullptr,
+                *m_messagesReply = nullptr, *m_statusReply = nullptr,
+                *m_deliveryReply = nullptr;
   QTimer m_reconnect, m_coalesce;
   quint64 m_generation = 0, m_draftRevision = 0, m_sentRevision = 0;
   QString m_instance, m_status = QStringLiteral("disconnected"), m_error,
-                      m_historyError;
+                      m_historyError, m_messagesError;
+  QString m_messagesTask, m_statusTask, m_deliveryTask;
   qint64 m_sequence = 0, m_cursor = 0;
   bool m_online = false, m_uncertain = false, m_conflict = false,
        m_reloadAgain = false, m_stopped = true;
