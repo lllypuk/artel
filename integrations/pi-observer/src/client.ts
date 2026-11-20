@@ -50,7 +50,8 @@ export function unixTransport(config: ObserverConfig, token: string, maxResponse
         try {
           const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
           if (res.statusCode !== 200) {
-            const codes = ["unauthorized", "runtime_retired", "runtime_superseded", "generation_conflict", "sequence_conflict", "capacity_exceeded", "invalid_request", "rate_limited", "unavailable"];
+            const codes = ["unauthorized", "runtime_retired", "runtime_superseded", "generation_conflict", "sequence_conflict", "capacity_exceeded", "invalid_request", "rate_limited", "unavailable",
+              "not_ready", "owner_conflict", "closed", "revoked", "assignment_mismatch", "instance_mismatch", "slot_occupied", "version_conflict", "idempotency_conflict", "not_found", "task_closed"];
             const code = codes.includes(value.error) ? value.error : "protocol_error";
             const quota = ["runtime_payloads", "runtime_identities", "observers"].includes(value.capacity) ? value.capacity : "unknown";
             reject(new ObserverFailure(code === "capacity_exceeded" ? `capacity_${quota}` : code));

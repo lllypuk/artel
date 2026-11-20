@@ -68,6 +68,8 @@ class Owner:
                 return response.status, json.loads(response.read())
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read())
+        except urllib.error.URLError:
+            return 0, None
 
 
 class Control:

@@ -32,9 +32,10 @@ type DeliveryBinding struct {
 	CreatedAt   string `json:"created_at"`
 }
 
-// DeliveryMessage is one owner commission. Status: stored, unknown, observed.
-// An unobserved commission reads as unknown once its delivery can no longer
-// be confirmed (blocked, or a spent/verified attempt without a receipt).
+// DeliveryMessage is one owner commission. The stored record keeps the
+// server transition (stored/observed); list reads derive the owner-visible
+// status, mapping an unconfirmed terminal state (blocked, or a spent/verified
+// attempt without a receipt) to unknown.
 type DeliveryMessage struct {
 	ID          string `json:"id"`
 	TaskID      string `json:"task_id"`
@@ -187,16 +188,18 @@ func (s *Store) MutateDeliveryBinding(ctx context.Context, m DeliveryOwnerMutati
 	}
 	defer func() { _ = tx.Rollback() }()
 	principal := "observer:" + m.ObserverID
-	matched, err := deliveryReplayLookup(ctx, tx, principal, m.Key, requestHash, &result)
-	if err != nil || matched {
-		return result, err
-	}
+	// Pin the database identity before any replay lookup: a historical receipt
+	// in a copied database must never bypass the instance check.
 	instance, err := observerDatabase(ctx, tx)
 	if err != nil {
 		return result, err
 	}
 	if m.Action == "enable" && instance != m.InstanceID {
 		return result, observerError("instance_mismatch")
+	}
+	matched, err := deliveryReplayLookup(ctx, tx, principal, m.Key, requestHash, &result)
+	if err != nil || matched {
+		return result, err
 	}
 	o, err := observerLoad(ctx, tx, m.ObserverID)
 	if err != nil {

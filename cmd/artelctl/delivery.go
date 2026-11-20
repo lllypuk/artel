@@ -170,6 +170,12 @@ func deliveryEnable(client ownerClient, a deliveryEnableArgs, out io.Writer, fai
 		}
 		return printDelivery(out, p, current.Status)
 	}
+	// The saved credential must be usable before anything is replayed or
+	// published: a resume that confirms a grant whose token is gone occupies
+	// the slot with a writer that can never authenticate.
+	if token, err := local.ReadToken(p.TokenFile); err != nil || local.TokenVerifier(token) != p.Verifier {
+		return fail(1, "delivery credential unavailable or unsafe; require a new explicit grant")
+	}
 	resumeHint := "enable rejected or response lost; resume with --resume " + deliveryPendingPath(p)
 	var accepted store.DeliveryBinding
 	if err = client.request("PUT", "/v1/observers/"+p.ObserverID+"/delivery", p.IdempotencyKey, p.Request, &accepted); err != nil {
@@ -187,7 +193,15 @@ func deliveryEnable(client ownerClient, a deliveryEnableArgs, out io.Writer, fai
 	if err = deliveryCheckBinding(p, confirmed); err != nil {
 		return fail(1, err.Error())
 	}
-	if err = deliveryEnsureJournal(p, true); err != nil {
+	// Journal creation is allowed only while no confirmed config exists: an
+	// interrupted bootstrap that already published the config must never
+	// recreate a lost journal under it.
+	_, configErr := os.Lstat(p.Output)
+	allowCreate := errors.Is(configErr, os.ErrNotExist)
+	if configErr != nil && !allowCreate {
+		return fail(1, errDeliveryUnsafe.Error())
+	}
+	if err = deliveryEnsureJournal(p, allowCreate); err != nil {
 		return fail(1, err.Error())
 	}
 	writer := deliveryWriterConfig{Status: "confirmed", DeliveryBindingID: p.DeliveryBindingID, DatabaseInstanceID: p.DatabaseInstanceID,
@@ -497,6 +511,11 @@ func deliveryRevoke(client ownerClient, id, binding, output, key string, out io.
 	return printOutput(out, string(b))
 }
 
+// clearDeliveryArtifacts removes the confirmed writer config only when it
+// belongs to the revoked binding. Without --output (or when the config is
+// unreadable or belongs to another binding) local credential files stay on
+// disk: they are inert — a restarted writer terminates on the revoked grant —
+// but the owner should rerun revoke with the correct --output to clear them.
 func clearDeliveryArtifacts(output, binding string) error {
 	if raw, err := local.ReadPrivateFile(output); err == nil {
 		var config deliveryWriterConfig

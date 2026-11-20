@@ -1,5 +1,7 @@
-import { closeSync, constants, fsyncSync, openSync, readSync, renameSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, openSync, readSync, renameSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+
+const UUID_PATTERN = /^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export interface JournalEntry {
   attempt_id?: string;
@@ -14,6 +16,8 @@ export class DeliveryJournal {
   readonly journalId: string;
   private readonly path: string;
   private entries = new Map<string, JournalEntry>();
+  private lastMtimeMs = -1;
+  private lastIno = -1;
 
   private constructor(path: string, journalId: string, entries: Map<string, JournalEntry>) {
     this.path = path;
@@ -21,17 +25,42 @@ export class DeliveryJournal {
     this.entries = entries;
   }
 
+  private stamp(): void {
+    const fd = openSync(this.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const info = fstatSync(fd);
+      this.lastMtimeMs = info.mtimeMs;
+      this.lastIno = info.ino;
+    } finally {
+      closeSync(fd);
+    }
+  }
+
   static create(path: string, journalId: string): DeliveryJournal {
     const journal = new DeliveryJournal(path, journalId, new Map());
     journal.persist();
     return journal;
   }
-
   static open(path: string, journalId: string): DeliveryJournal {
     const raw = JSON.parse(readPrivate(path)) as { journal_id?: string; entries?: Record<string, JournalEntry> };
-    if (raw.journal_id !== journalId || typeof raw.entries !== "object" || raw.entries === null)
+    if (raw.journal_id !== journalId || typeof raw.entries !== "object" || raw.entries === null || Array.isArray(raw.entries))
       throw new Error("journal mismatch");
-    return new DeliveryJournal(path, journalId, new Map(Object.entries(raw.entries)));
+    for (const [id, entry] of Object.entries(raw.entries)) {
+      // A malformed entry must disable delivery, never crash or derail Pi.
+      if (!UUID_PATTERN.test(id) || typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+        throw new Error("journal mismatch");
+      }
+      const record = entry as Record<string, unknown>;
+      if ((record.attempt_id !== undefined && !UUID_PATTERN.test(String(record.attempt_id))) ||
+          (record.receipt_key !== undefined && !UUID_PATTERN.test(String(record.receipt_key))) ||
+          (record.receipt !== undefined && (typeof record.receipt !== "object" || record.receipt === null ||
+            typeof (record.receipt as { published?: unknown }).published !== "boolean"))) {
+        throw new Error("journal mismatch");
+      }
+    }
+    const journal = new DeliveryJournal(path, journalId, new Map(Object.entries(raw.entries)));
+    journal.stamp();
+    return journal;
   }
 
   entry(messageId: string): JournalEntry | undefined {
@@ -43,6 +72,7 @@ export class DeliveryJournal {
   }
 
   recordAttempt(messageId: string, attemptId: string, receiptKey: string): void {
+    this.verifyUnchanged();
     const entry = this.entries.get(messageId) ?? {};
     entry.attempt_id = attemptId;
     entry.receipt_key = receiptKey;
@@ -51,10 +81,30 @@ export class DeliveryJournal {
   }
 
   recordReceipt(messageId: string, receipt: JournalEntry["receipt"]): void {
+    this.verifyUnchanged();
     const entry = this.entries.get(messageId) ?? {};
     entry.receipt = receipt;
     this.entries.set(messageId, entry);
     this.persist();
+  }
+
+  // External replacement or deletion of the journal between open and write
+  // must stop the writer, not silently overwrite the new file.
+  private verifyUnchanged(): void {
+    try {
+      const fd = openSync(this.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const info = fstatSync(fd);
+        if (!info.isFile() || info.mtimeMs !== this.lastMtimeMs || info.ino !== this.lastIno) {
+          throw new Error("journal changed on disk");
+        }
+      } finally {
+        closeSync(fd);
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message === "journal changed on disk") throw error;
+      throw new Error("journal unavailable or unsafe");
+    }
   }
 
   private persist(): void {
@@ -74,12 +124,18 @@ export class DeliveryJournal {
     } finally {
       closeSync(dir);
     }
+    this.stamp();
   }
 }
 
 function readPrivate(path: string): string {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  // O_NONBLOCK keeps a FIFO or device from blocking the Pi event loop; the
+  // fstat check refuses anything but a regular owned file.
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
+    const info = fstatSync(fd);
+    if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o7777) !== 0o600)
+      throw new Error("journal unavailable or unsafe");
     const chunks: Buffer[] = [];
     const buffer = Buffer.alloc(65536);
     for (;;) {

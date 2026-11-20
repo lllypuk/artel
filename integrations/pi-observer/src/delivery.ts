@@ -64,6 +64,7 @@ export class DeliveryWriter {
   private journal: DeliveryJournal | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private controller: AbortController | undefined;
+  private receiptController = new AbortController();
   private closed = false;
   private stopped = false;
   private writerId = randomUUID();
@@ -117,8 +118,12 @@ export class DeliveryWriter {
   async start(): Promise<void> {
     try {
       await this.acquireLock();
+      if (this.closed) throw new Error("stopped during lock acquisition");
       this.journal = this.openJournal();
     } catch (error) {
+      // A failed startup is terminal for this writer object: the pickup loop
+      // drops it and can activate a fresh grant for the same runtime.
+      this.stopped = true;
       this.status(`Artel: delivery unavailable — ${error instanceof Error ? error.message : "stopped"}`);
       this.releaseLock();
       return;
@@ -146,7 +151,8 @@ export class DeliveryWriter {
       } catch (error) {
         this.lock = undefined;
         server.close();
-        if (attempt > 0 || !(await this.lockPathIsStale(lockPath))) throw new Error("another writer owns this assignment");
+        if (attempt > 0 || this.closed || !(await this.lockPathIsStale(lockPath))) throw new Error("another writer owns this assignment");
+        if (this.closed) throw new Error("stopped during lock recovery");
         rmSync(lockPath, { force: true });
       }
     }
@@ -216,6 +222,9 @@ export class DeliveryWriter {
       const message = next.message;
       if (!UUID.test(message.id) || typeof message.text !== "string" || typeof next.receipt_key !== "string" || !UUID.test(next.receipt_key))
         throw new ObserverFailure("protocol_error");
+      // Recheck idle immediately before spending: a manual turn that started
+      // while next was in flight must not consume the delivery right.
+      if (!this.ctx.isIdle()) return;
       const spend = await this.transport("POST", "/delivery/v1/spend",
         { writer_id: this.writerId, message_id: message.id }, signal) as { attempt_id?: string; right?: boolean; state?: string };
       if (!spend.attempt_id || typeof spend.attempt_id !== "string") throw new ObserverFailure("protocol_error");
@@ -249,9 +258,11 @@ export class DeliveryWriter {
       }
       if (code === "owner_conflict" || code === "revoked" || code === "assignment_mismatch") {
         // Terminal for this assignment: a competing or revoked ownership marker
-        // never reconnects under the same writer identity.
+        // never reconnects under the same writer identity. The kernel lock is
+        // released so a replacement writer can take the grant in this process.
         this.stopped = true;
         this.attempts.clear();
+        this.releaseLock();
         this.status(`Artel: delivery stopped — ${code}`);
         return;
       }
@@ -315,7 +326,7 @@ export class DeliveryWriter {
         message_type: "custom",
         pi_session_id: this.sessionId,
         details: { message_id: attempt.messageId, attempt_id: attempt.attemptId },
-      }, AbortSignal.timeout(4000));
+      }, this.receiptController.signal);
       if (this.closed || this.stopped) return;
       this.journal?.recordReceipt(attempt.messageId, { type: "before_agent_start", message_type: "custom", published: true });
     } catch {
@@ -330,6 +341,7 @@ export class DeliveryWriter {
     clearTimeout(this.timer);
     this.attempts.clear();
     this.controller?.abort();
+    this.receiptController?.abort();
     this.releaseLock();
     this.status("");
   }

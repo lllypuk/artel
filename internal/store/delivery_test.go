@@ -1385,3 +1385,34 @@ func TestDeliveryEnableRejectsObserverVerifierReuse(t *testing.T) {
 		t.Fatal("rejected enable recorded a binding")
 	}
 }
+
+func TestObserverProvisionRejectsDeliveryVerifierReuse(t *testing.T) {
+	s := openTest(t)
+	env := mustDeliveryEnv(t, s)
+	// The delivery credential must never be provisioned as an observer
+	// credential: one token, one channel.
+	if _, err := s.MutateObserver(t.Context(), ObserverOwnerMutation{
+		ObserverID: uuid.NewString(), Key: uuid.NewString(), Action: "provision",
+		Label: "Fictional", Verifier: env.deliveryVerifier,
+	}); !observerIs(err, "idempotency_conflict") {
+		t.Fatalf("provision with delivery verifier: %v", err)
+	}
+	if countRows(t, s, "observers") != 1 {
+		t.Fatal("rejected provision recorded an observer")
+	}
+}
+
+func TestDeliveryEnableReplayAfterInstanceChange(t *testing.T) {
+	s := openTest(t)
+	env := mustDeliveryEnv(t, s)
+	m := env.freshEnable(t, s)
+	// A recorded key replayed with a different instance identity must pin the
+	// database first: instance_mismatch, never the historical receipt.
+	m.InstanceID = uuid.NewString()
+	if _, err := s.MutateDeliveryBinding(t.Context(), m); !observerIs(err, "instance_mismatch") {
+		t.Fatalf("replayed enable with wrong instance: %v", err)
+	}
+	if countRows(t, s, "delivery_bindings") != 1 {
+		t.Fatal("rejected enable recorded a binding")
+	}
+}

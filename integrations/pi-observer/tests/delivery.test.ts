@@ -530,6 +530,8 @@ test("revoke before verify and conflicting ownership keep the Pi count at zero",
     await w2.start();
     await until(() => secondStatuses.some(s => s.includes("stopped") || s.includes("conflict")),
       "conflict surfaced on the second writer");
+    assert.ok(second.calls.some(c => c.path.startsWith("/delivery/v1/context")),
+      "termination must follow real cycles, not a missing fixture route");
     const callsAfter = second.calls.length;
     await sleep(120);
     assert.equal(second.calls.length, callsAfter, "terminated second writer polls no further");
@@ -563,8 +565,9 @@ test("journal pins the ID at create and refuses a changed one at open", () => {
     const path = join(dir, "journal.json");
     const journalId = randomUUID();
     const journal = DeliveryJournal.create(path, journalId);
-    journal.recordAttempt("msg-1", "attempt-1", "key-1");
-    assert.equal(DeliveryJournal.open(path, journalId).entry("msg-1")?.receipt_key, "key-1");
+    const messageId = randomUUID(), attemptId = randomUUID(), receiptKey = randomUUID();
+    journal.recordAttempt(messageId, attemptId, receiptKey);
+    assert.equal(DeliveryJournal.open(path, journalId).entry(messageId)?.receipt_key, receiptKey);
     assert.throws(() => DeliveryJournal.open(path, randomUUID()), /journal mismatch/);
     writeFileSync(path, JSON.stringify({ journal_id: journalId, entries: null }) + "\n");
     assert.throws(() => DeliveryJournal.open(path, journalId), /journal mismatch/);

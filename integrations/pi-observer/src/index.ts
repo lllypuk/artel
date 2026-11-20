@@ -75,7 +75,12 @@ export default function observer(pi: ExtensionAPI) {
     deliveryTimer = setInterval(() => {
       try {
         if (deliveryShutdown) return;
-        if (writer?.terminated()) writer = undefined;
+        if (writer?.terminated()) {
+          // Close the dropped writer so its kernel lock and timers are
+          // released before a fresh grant activates in this process.
+          void writer.stop();
+          writer = undefined;
+        }
         if (writer || !existsSync(deliveryPath)) return;
         if (client?.boundRuntime() !== registration.runtime_id) return;
         const { config, token } = readDeliveryConfig(deliveryPath);
@@ -118,8 +123,10 @@ export default function observer(pi: ExtensionAPI) {
     const oldWriter = writer; writer = undefined;
     deliveryShutdown = true;
     stopDeliveryTimer();
-    await old?.stop();
+    // Stop the delivery writer first: it aborts its cycle and in-flight
+    // receipt publish, so nothing can spend or transmit during teardown.
     await oldWriter?.stop();
+    await old?.stop();
     deliveryShutdown = false;
     if (old) status("");
     current = undefined; tools.clear(); waiting = false;

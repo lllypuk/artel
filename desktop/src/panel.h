@@ -105,6 +105,7 @@ signals:
 private:
   void setProjectSelection(const QString &id);
   void resetCommissions();
+  void resetCommissionView();
   void loadCommissionPage();
   void armStatusPoll();
   QVariantMap messageRow(const QVariantMap &row) const;
@@ -117,6 +118,7 @@ private:
   QVariantList m_messages;
   QVariantMap m_delivery;
   qint64 m_messagesCursor = 0;
+  qsizetype m_statusOffset = 0;
   bool m_messagesMore = false;
   QString m_project, m_task, m_kind, m_editorId, m_editorProject,
       m_historyInstance, m_editorInstance;

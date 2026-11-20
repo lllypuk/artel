@@ -570,6 +570,17 @@ void ApiClient::loadMessages(const QString &task, qint64 after) {
                                     rows.size() == 20);
             } else {
               m_messagesError = tr("Commissions unavailable or invalid");
+              // A failed first page must not hide history until the task is
+              // reselected: retry the same page once shortly, if still current.
+              if (after == 0 && instance == m_instance &&
+                  task == m_messagesTask && m_online && !m_stopped) {
+                const auto retryTask = task;
+                QTimer::singleShot(2000, this, [this, retryTask] {
+                  if (m_online && !m_stopped && m_messagesTask == retryTask &&
+                      m_messagesReply == nullptr)
+                    loadMessages(retryTask, 0);
+                });
+              }
             }
             emit changed();
           });

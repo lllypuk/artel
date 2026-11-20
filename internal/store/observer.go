@@ -472,6 +472,21 @@ func observerProvision(ctx context.Context, tx *sql.Tx, m ObserverOwnerMutation)
 	if count != 0 {
 		return o, observerError("idempotency_conflict")
 	}
+	// One credential, one channel: a delivery verifier must never double as
+	// an observer credential, or the same token would pass both auths. The
+	// table exists only in schema v3+; raw legacy fixtures may not have it.
+	var tables int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE name='delivery_bindings'").Scan(&tables); err != nil {
+		return o, err
+	}
+	if tables != 0 {
+		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM delivery_bindings WHERE verifier=?", m.Verifier).Scan(&count); err != nil {
+			return o, err
+		}
+		if count != 0 {
+			return o, observerError("idempotency_conflict")
+		}
+	}
 	o = observerRecord{ID: m.ObserverID, Label: m.Label, Version: 1}
 	data, err := json.Marshal(o)
 	if err != nil {

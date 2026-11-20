@@ -60,10 +60,12 @@ The 256-observer cap includes revoked credentials. Navigation is desktop-only,
 checked session selection, not guaranteed pane focus or foreground activation.
 See the repository's stable docs/development.md for the full operating contract.
 
-Owner commissions (stage 4a): a second opt-in mode delivers one owner's task
-message into the exactly bound Pi session. It requires a confirmed `delivery.json`
-plus delivery token written by `artelctl delivery enable` next to the observer
-config; observation config alone never activates it. The writer takes a
+Owner commissions (stage 4a), a separate opt-in mode from observation: it
+delivers one owner's task message into the exactly bound Pi session and needs
+its own confirmed `delivery.json` plus delivery token written by
+`artelctl delivery enable` next to the observer config; observation config
+alone never activates it, and disabling observation does not disable or
+enable commissions — each mode has its own credential and config. The writer takes a
 kernel-exclusive lock (unix bind), CAS-attaches, spends one delivery right,
 transmits synchronously only while idle, and publishes the observed receipt
 idempotently. Busy sessions are never prompted, manual input is never replaced,

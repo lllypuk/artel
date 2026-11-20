@@ -111,7 +111,16 @@ Panel::Panel(ApiClient *client, QObject *parent)
     QStringList ids;
     for (const auto &value : m_messages)
       ids.append(value.toMap().value("id").toString());
+    // Rotate a bounded window so long histories keep refreshing everywhere.
+    if (ids.size() > 50) {
+      m_statusOffset = (m_statusOffset + 50) % ids.size();
+      const auto count = std::min<qsizetype>(50, ids.size() - m_statusOffset);
+      ids = ids.sliced(m_statusOffset, count);
+    }
     m_client->refreshMessageStatuses(m_task, ids);
+    // An offline tick arms no reply; rearm so reconnect resumes polling.
+    if (!m_client->messagesLoading())
+      armStatusPoll();
   });
   m_deliveryPoll.setSingleShot(true);
   m_deliveryPoll.setInterval(3000);
@@ -213,9 +222,6 @@ QVariantMap Panel::assignment() const {
 void Panel::resetCommissions() {
   m_statusPoll.stop();
   m_deliveryPoll.stop();
-  // The commission draft belongs to one task only; it never follows a task or
-  // project switch to a different recipient.
-  m_commission.clear();
   m_messagesTask.clear();
   m_deliveryTask.clear();
   m_messages.clear();
@@ -223,6 +229,14 @@ void Panel::resetCommissions() {
   m_messagesMore = false;
   m_delivery = {};
   m_client->cancelMessages();
+}
+
+// resetCommissionView drops the typed commission text as well; use it only
+// when the recipient context actually changed (task/project switch), never
+// for snapshot refreshes of the same selection.
+void Panel::resetCommissionView() {
+  resetCommissions();
+  m_commission.clear();
 }
 void Panel::loadCommissionPage() {
   if (m_task.isEmpty() || !m_client->online())
@@ -418,7 +432,7 @@ void Panel::setProjectSelection(const QString &id) {
   m_history.clear();
   m_historyCursor = 0;
   m_historyMore = true;
-  resetCommissions();
+  resetCommissionView();
 }
 bool Panel::selectProject(const QString &id) {
   if (dirty() || m_client->pending() || uncertain())
@@ -438,6 +452,9 @@ bool Panel::selectTask(const QString &id) {
   m_history.clear();
   m_historyCursor = 0;
   m_historyMore = true;
+  // The commission draft survives re-selection and snapshot refreshes: the
+  // view resets, the typed text is cleared only on a real recipient change
+  // (project/task switch via resetCommissionView).
   resetCommissions();
   moreHistory();
   loadCommissionPage();
