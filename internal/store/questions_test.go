@@ -98,7 +98,8 @@ func (e questionEnv) answerReceipt(attempt DeliveryAttemptResult, questionID str
 
 func questionByID(t *testing.T, s *Store, taskID, instanceID, questionID string) OwnerQuestion {
 	t.Helper()
-	questions, _, err := s.ListOwnerQuestions(t.Context(), taskID, instanceID, 0, 0, []string{questionID})
+	page, err := s.ListOwnerQuestions(t.Context(), taskID, instanceID, 0, 0, []string{questionID})
+	questions := page.Questions
 	if err != nil || len(questions) != 1 {
 		t.Fatalf("question refresh: %+v %v", questions, err)
 	}
@@ -330,18 +331,18 @@ func walkOwnerQuestionPages(t *testing.T, s *Store, e questionEnv) []OwnerQuesti
 	var pages []OwnerQuestion
 	after := int64(0)
 	for {
-		page, next, err := s.ListOwnerQuestions(t.Context(), e.task.ID, e.instance, after, 2, nil)
+		page, err := s.ListOwnerQuestions(t.Context(), e.task.ID, e.instance, after, 2, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		pages = append(pages, page...)
-		if len(page) < 2 {
+		pages = append(pages, page.Questions...)
+		if !page.HasMore {
 			return pages
 		}
-		if next <= after {
+		if page.NextAfter <= after {
 			t.Fatal("question cursor did not advance")
 		}
-		after = next
+		after = page.NextAfter
 	}
 }
 
@@ -358,11 +359,12 @@ func TestOwnerQuestionPaginationAndLegacyMessageFiltering(t *testing.T) {
 			t.Fatalf("question order at %d", i)
 		}
 	}
-	refresh, _, err := s.ListOwnerQuestions(t.Context(), e.task.ID, e.instance, 999, 0, []string{questionIDs[6], questionIDs[0]})
+	page, err := s.ListOwnerQuestions(t.Context(), e.task.ID, e.instance, 999, 0, []string{questionIDs[6], questionIDs[0]})
+	refresh := page.Questions
 	if err != nil || len(refresh) != 2 || refresh[0].ID != questionIDs[0] || refresh[1].ID != questionIDs[6] {
 		t.Fatalf("question ID refresh: %+v %v", refresh, err)
 	}
-	if _, _, err := s.ListOwnerQuestions(t.Context(), e.task.ID, uuid.NewString(), 0, 0, []string{questionIDs[0]}); !observerIs(err, "instance_mismatch") {
+	if _, err := s.ListOwnerQuestions(t.Context(), e.task.ID, uuid.NewString(), 0, 0, []string{questionIDs[0]}); !observerIs(err, "instance_mismatch") {
 		t.Fatalf("foreign database refresh: %v", err)
 	}
 	messages := walkDeliveryPages(t, s, e.task.ID, 2)
@@ -379,9 +381,20 @@ func TestOwnerQuestionPaginationAndLegacyMessageFiltering(t *testing.T) {
 	if err != nil || len(mixed) != 2 || mixed[0].ID != commissionIDs[0] || mixed[1].ID != commissionIDs[1] {
 		t.Fatalf("legacy mixed IDs included answer: %+v %v", mixed, err)
 	}
-	// The writer queue still returns both kinds, including answer context.
-	if _, _, err := s.DeliveryNext(t.Context(), e.binding.ID, e.instance, e.writer); err != nil {
-		t.Fatal(err)
+	assertMixedQuestionPickup(t, s, e, commissionIDs[0], answer)
+}
+
+func assertMixedQuestionPickup(t *testing.T, s *Store, e questionEnv, commissionID string, answer OwnerQuestion) {
+	t.Helper()
+	first, firstKey, err := s.DeliveryNext(t.Context(), e.binding.ID, e.instance, e.writer)
+	if err != nil || first.ID != commissionID || first.Kind == "answer" || firstKey == "" {
+		t.Fatalf("first pickup: %+v %v", first, err)
+	}
+	e.mustSpend(t, s, e.writer, first)
+	second, secondKey, err := s.DeliveryNext(t.Context(), e.binding.ID, e.instance, e.writer)
+	if err != nil || second.ID != answer.AnswerMessageID || second.Kind != "answer" ||
+		second.QuestionID != answer.ID || second.QuestionText != answer.Text || second.Text != answer.AnswerText || secondKey == "" {
+		t.Fatalf("second pickup: %+v %v", second, err)
 	}
 }
 

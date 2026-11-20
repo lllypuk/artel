@@ -278,7 +278,7 @@ func TestDeliveryEnableLostAckResumeSameKey(t *testing.T) {
 		inner.ServeHTTP(w, r)
 	})
 	drop.Store(true)
-	stdout, _ := h.call(t, 1, h.enableArgs(output)...)
+	stdout, _ := h.call(t, 1, append(h.enableArgs(output), "--allow-owner-questions")...)
 	if stdout != "" {
 		t.Fatal("output on failed enable")
 	}
@@ -297,6 +297,7 @@ func TestDeliveryEnableLostAckResumeSameKey(t *testing.T) {
 	if len(puts) < 1 {
 		t.Fatal("no enable request recorded")
 	}
+	initialPuts := len(puts)
 	firstKey, firstBody := puts[0].key, puts[0].body
 	for _, put := range puts {
 		if put.key != firstKey || !bytes.Equal(put.body, firstBody) {
@@ -305,11 +306,17 @@ func TestDeliveryEnableLostAckResumeSameKey(t *testing.T) {
 	}
 	pendingPath := filepath.Join(filepath.Dir(output), "delivery", mustBindingID(t, firstBody), "pending.json")
 	p := readPending(t, pendingPath)
-	if p.Status != "pending" {
-		t.Fatalf("pending status: %s", p.Status)
+	if p.Status != "pending" || !p.Request.AllowOwnerQuestions {
+		t.Fatal("opted-in pending grant did not survive the lost ACK")
 	}
 	mu.Unlock()
 	drop.Store(false)
+	assertDeliveryResumeRejectsExplicitOptIn(t, h, pendingPath, output)
+	mu.Lock()
+	if len(puts) != initialPuts {
+		t.Fatalf("rejected resume retried the enable request: %d PUTs", len(puts))
+	}
+	mu.Unlock()
 	resumeOut, _ := h.call(t, 0, "delivery", "enable", "--resume", pendingPath)
 	mu.Lock()
 	if len(puts) == 0 || puts[len(puts)-1].key != firstKey || !bytes.Equal(puts[len(puts)-1].body, firstBody) {
@@ -323,6 +330,19 @@ func TestDeliveryEnableLostAckResumeSameKey(t *testing.T) {
 	}
 	if !bytes.Contains(confirmed, []byte(p.DeliveryBindingID)) {
 		t.Fatal("confirmed config does not name the resumed binding")
+	}
+}
+
+func assertDeliveryResumeRejectsExplicitOptIn(t *testing.T, h *deliveryHarness, pendingPath, output string) {
+	t.Helper()
+	for _, option := range []string{"--allow-owner-questions=false", "--allow-owner-questions=true"} {
+		_, stderr := h.call(t, 1, "delivery", "enable", "--resume", pendingPath, option)
+		if !strings.Contains(stderr, "resume cannot change enable arguments") {
+			t.Fatalf("unexpected resume rejection: %s", stderr)
+		}
+		if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("rejected resume published config: %v", err)
+		}
 	}
 }
 

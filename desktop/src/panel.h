@@ -65,6 +65,7 @@ public:
   bool canArchive() const;
   bool saveable() const;
   bool dirty() const { return m_client->dirty(); }
+  bool hasAnswerDrafts() const { return !m_answers.isEmpty(); }
   bool uncertain() const { return m_client->uncertain(); }
   bool canAbandon() const { return m_client->canAbandon(); }
   bool conflict() const { return m_client->conflict() && !m_adopted; }
@@ -104,12 +105,16 @@ public:
   Q_INVOKABLE bool sendCommission();
   Q_INVOKABLE QString answerText(const QString &question) const;
   Q_INVOKABLE void setAnswerText(const QString &question, const QString &text);
+  Q_INVOKABLE QString answerTextError(const QString &text) const {
+    return m_client->answerTextError(text);
+  }
   Q_INVOKABLE bool answerQuestion(const QString &question);
   Q_INVOKABLE void moreQuestions();
   Q_INVOKABLE void moreMessages();
   Q_INVOKABLE QString stateLabel(const QString &state) const;
 signals:
   void changed();
+  void answerDraftsChanged();
 
 private:
   void setProjectSelection(const QString &id);
@@ -141,5 +146,6 @@ private:
   qint64 m_seenSequence = -1;
   qint64 m_version = 0, m_historyCursor = 0;
   QVariantList m_history;
-  bool m_archived = false, m_historyMore = false, m_adopted = false;
+  bool m_archived = false, m_historyMore = false, m_adopted = false,
+       m_wasOnline = false;
 };

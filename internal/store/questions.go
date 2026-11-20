@@ -332,24 +332,32 @@ func questionPageLimit(limit int) int {
 	return limit
 }
 
+// OwnerQuestionPage reports continuation from the cursor query's lookahead.
+// An ID refresh never has a continuation.
+type OwnerQuestionPage struct {
+	Questions []OwnerQuestion `json:"questions"`
+	NextAfter int64           `json:"next_after"`
+	HasMore   bool            `json:"has_more"`
+}
+
 // ListOwnerQuestions pins the database identity in the same read transaction.
 // It supports the thin selected-task page and refresh of already loaded IDs.
-func (s *Store) ListOwnerQuestions(ctx context.Context, taskID, instanceID string, after int64, limit int, ids []string) ([]OwnerQuestion, int64, error) {
+func (s *Store) ListOwnerQuestions(ctx context.Context, taskID, instanceID string, after int64, limit int, ids []string) (OwnerQuestionPage, error) {
 	if err := validateOwnerQuestionList(taskID, instanceID, after, ids); err != nil {
-		return nil, 0, err
+		return OwnerQuestionPage{}, err
 	}
 	limit = questionPageLimit(limit)
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return nil, 0, err
+		return OwnerQuestionPage{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	instance, err := observerDatabase(ctx, tx)
 	if err != nil {
-		return nil, 0, err
+		return OwnerQuestionPage{}, err
 	}
 	if instance != instanceID {
-		return nil, 0, observerError("instance_mismatch")
+		return OwnerQuestionPage{}, observerError("instance_mismatch")
 	}
 	query := `SELECT q.seq,q.record,coalesce(m.record,''),coalesce(m.blocked,0),coalesce(m.block_reason,''),
 		coalesce((SELECT a.state FROM delivery_attempts a WHERE a.message_seq=m.seq),'')
@@ -364,7 +372,7 @@ func (s *Store) ListOwnerQuestions(ctx context.Context, taskID, instanceID strin
 	}
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, 0, err
+		return OwnerQuestionPage{}, err
 	}
 	defer func() { _ = rows.Close() }()
 	questions := []OwnerQuestion{}
@@ -374,16 +382,16 @@ func (s *Store) ListOwnerQuestions(ctx context.Context, taskID, instanceID strin
 		var data, messageData, blockReason, attemptState string
 		var blocked int
 		if err := rows.Scan(&seq, &data, &messageData, &blocked, &blockReason, &attemptState); err != nil {
-			return nil, 0, err
+			return OwnerQuestionPage{}, err
 		}
 		var question OwnerQuestion
 		if err := json.Unmarshal([]byte(data), &question); err != nil {
-			return nil, 0, err
+			return OwnerQuestionPage{}, err
 		}
 		if messageData != "" {
 			var message DeliveryMessage
 			if err := json.Unmarshal([]byte(messageData), &message); err != nil {
-				return nil, 0, err
+				return OwnerQuestionPage{}, err
 			}
 			question.AnswerStatus = deliveryStatus(message.Status, blocked != 0, attemptState)
 			if message.Status != "observed" {
@@ -394,17 +402,18 @@ func (s *Store) ListOwnerQuestions(ctx context.Context, taskID, instanceID strin
 		seqs = append(seqs, seq)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, err
+		return OwnerQuestionPage{}, err
 	}
 	next := after
-	if len(ids) == 0 && len(questions) > limit {
+	more := len(ids) == 0 && len(questions) > limit
+	if more {
 		questions = questions[:limit]
 		seqs = seqs[:limit]
 	}
 	if len(seqs) != 0 {
 		next = seqs[len(seqs)-1]
 	}
-	return questions, next, tx.Commit()
+	return OwnerQuestionPage{Questions: questions, NextAfter: next, HasMore: more}, tx.Commit()
 }
 
 // deliveryBlockOwnerQuestions is shared by explicit and stale-assignment

@@ -11,6 +11,8 @@ WorkspaceController::WorkspaceController(Panel *panel, QObject *parent)
     m_editor = editor;
     emit changed();
   });
+  connect(panel, &Panel::answerDraftsChanged, this,
+          &WorkspaceController::changed);
   connect(&m_team, &TeamOverviewModel::changed, this, [this] {
     if (selectedObserver().isEmpty()) {
       m_observer.clear();
@@ -36,7 +38,8 @@ bool WorkspaceController::openTask(const QString &id) {
   return true;
 }
 bool WorkspaceController::closeAllowed() const {
-  return !m_panel->dirty() && !m_panel->busy() && !m_panel->uncertain();
+  return !m_panel->dirty() && !m_panel->hasAnswerDrafts() && !m_panel->busy() &&
+         !m_panel->uncertain();
 }
 void WorkspaceController::updateActivation() {
   const bool visible = m_visible && !m_minimized;

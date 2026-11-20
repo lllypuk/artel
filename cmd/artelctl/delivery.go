@@ -117,6 +117,15 @@ func delivery(args []string, out, errOut io.Writer) int {
 	if flags.Parse(args[1:]) != nil || flags.NArg() != 0 || local.Endpoint(*endpoint) != nil {
 		return fail(2, "invalid arguments")
 	}
+	if command == "enable" && *resume != "" {
+		var changesOptIn bool
+		flags.Visit(func(f *flag.Flag) {
+			changesOptIn = changesOptIn || f.Name == "allow-owner-questions"
+		})
+		if changesOptIn {
+			return fail(1, "resume cannot change enable arguments")
+		}
+	}
 	paths, err := local.Resolve("", *tokenPath)
 	if err != nil {
 		return fail(1, "local paths unavailable")
@@ -233,7 +242,7 @@ func printDelivery(out io.Writer, p deliveryPending, status string) int {
 func deliveryPrepare(client ownerClient, a deliveryEnableArgs) (deliveryPending, error) {
 	var p deliveryPending
 	if a.resume != "" {
-		if a.id != "" || a.runtime != "" || a.project != "" || a.piSession != "" || a.socket != "" || a.output != "" || a.version >= 0 || a.key != "" || a.allowOwnerQuestions {
+		if a.id != "" || a.runtime != "" || a.project != "" || a.piSession != "" || a.socket != "" || a.output != "" || a.version >= 0 || a.key != "" {
 			return p, errors.New("resume cannot change enable arguments")
 		}
 		loaded, err := readDeliveryPending(a.resume)

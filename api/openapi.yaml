@@ -474,10 +474,13 @@ components:
     OwnerQuestionPage:
       type: object
       additionalProperties: false
-      required: [questions, next_after]
+      required: [questions, next_after, has_more]
       properties:
         questions: {type: array, maxItems: 5, items: {$ref: '#/components/schemas/OwnerQuestion'}}
         next_after: {type: integer, minimum: 0}
+        has_more:
+          type: boolean
+          description: True when another row exists after this cursor page; false for an ID refresh.
     DeliveryError:
       type: object
       additionalProperties: false

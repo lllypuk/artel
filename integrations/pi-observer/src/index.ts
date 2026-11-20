@@ -76,8 +76,9 @@ export default function observer(pi: ExtensionAPI) {
   let ownerQuestionsRegistered = false;
   const activateOwnerQuestions = (active: boolean) => {
     if (!ownerQuestionsRegistered) return;
-    const currentTools = pi.getActiveTools().filter(name => name !== "artel_ask_owner");
-    pi.setActiveTools(active ? [...currentTools, "artel_ask_owner"] : currentTools);
+    const currentTools = pi.getActiveTools();
+    if (currentTools.includes("artel_ask_owner") === active) return;
+    pi.setActiveTools(active ? [...currentTools, "artel_ask_owner"] : currentTools.filter(name => name !== "artel_ask_owner"));
   };
   const startDeliveryLoop = (deliveryPath: string, registration: Registration, ctx: ExtensionContext) => {
     stopDeliveryTimer();
@@ -126,7 +127,7 @@ export default function observer(pi: ExtensionAPI) {
           const answer = attempt.kind === "answer";
           pi.sendMessage({
             customType: answer ? "artel-owner-answer" : "artel-delivery",
-            content: answer ? `Artel owner answer\nQuestion: ${attempt.questionText ?? ""}\nAnswer: ${attempt.text}` : attempt.text,
+            content: answer ? `Artel owner answer\n${JSON.stringify({ question: attempt.questionText, answer: attempt.text })}` : attempt.text,
             display: true,
             details: { message_id: attempt.messageId, attempt_id: attempt.attemptId,
               ...(answer ? { custom_type: "artel-owner-answer", question_id: attempt.questionId } : {}) },
@@ -140,6 +141,10 @@ export default function observer(pi: ExtensionAPI) {
     if (deliveryTimer) clearInterval(deliveryTimer);
     deliveryTimer = undefined;
   };
+  pi.on("session_tree", () => {
+    // Pi has restored this branch's tool list. Only the live writer owns this tool's availability.
+    activateOwnerQuestions(writer?.canAskOwner() === true);
+  });
   pi.on("before_agent_start", (event, ctx) => {
     if (!writer) return;
     const session = ctx.sessionManager.getSessionId();

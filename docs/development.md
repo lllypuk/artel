@@ -216,7 +216,8 @@ The owner answers once in the selected task. The immutable answer and its row in
 the existing delivery queue commit atomically. Writer readiness is not required
 to save an answer while the question, task/project and original grant remain
 eligible. The answer later enters the **same Pi session** as custom message
-`artel-owner-answer`, with the question and answer as conversation context, only
+`artel-owner-answer`, with separate JSON `question` and `answer` fields in the
+conversation context, only
 when that session is idle. It does not replace manual input or follow a changed
 assignment. Question state `open` / `answered` / `closed` is separate from answer
 delivery state `stored` / `unknown` / `observed` and its block reason. An answer
@@ -248,7 +249,11 @@ ordinary capabilities and risks of its own runtime.
 
 Each question and answer is non-empty valid UTF-8 without NUL and at most 4 KiB;
 question/answer POST bodies are at most 32 KiB. Owner question pages contain at
-most five rows and 320 KiB. The delivery `next` response remains bounded to
+most five rows and 320 KiB. Qt polls for new questions when caught up and
+refreshes loaded status rows in batches of five. When a page has a real backlog,
+use **Load more questions** rather than loading the rest in the background.
+Unsent answer drafts are window-local and guarded on close, not written to disk.
+The delivery `next` response remains bounded to
 64 KiB. Text is absent from observer telemetry, domain events/SSE and logs.
 There is no editing, TTL, broadcast, remote access, blocking wait in Pi or
 automatic task transition.

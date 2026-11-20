@@ -84,12 +84,12 @@ func listTaskQuestions(w http.ResponseWriter, r *http.Request, s *store.Store) {
 		Error(w, 400, "invalid_request", "invalid question query")
 		return
 	}
-	questions, next, err := s.ListOwnerQuestions(r.Context(), taskID, parsed.instance, parsed.after, parsed.limit, parsed.ids)
+	page, err := s.ListOwnerQuestions(r.Context(), taskID, parsed.instance, parsed.after, parsed.limit, parsed.ids)
 	if err != nil {
 		deliveryError(w, err)
 		return
 	}
-	data, err := json.Marshal(map[string]any{"questions": questions, "next_after": next})
+	data, err := json.Marshal(page)
 	if err != nil || len(data) > 320*1024 {
 		Error(w, 500, "internal_error", "local API operation failed")
 		return

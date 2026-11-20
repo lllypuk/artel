@@ -150,7 +150,8 @@ func TestDeliveryQuestionExactJSONUnicode(t *testing.T) {
 	if replay := post(`"pair=😀 replacement=\ufffd slash=\\ud800"`, 200); replay != ack {
 		t.Fatal("equivalent valid Unicode did not replay")
 	}
-	rows, _, err := d.s.ListOwnerQuestions(t.Context(), d.taskID, instance, 0, 5, nil)
+	page, err := d.s.ListOwnerQuestions(t.Context(), d.taskID, instance, 0, 5, nil)
+	rows := page.Questions
 	if err != nil || len(rows) != 1 || rows[0].Text != `pair=😀 replacement=� slash=\ud800` {
 		t.Fatalf("question text changed: %+v %v", rows, err)
 	}
@@ -299,7 +300,8 @@ func TestDeliveryQuestionRealUDSWireLimitsAndNext(t *testing.T) {
 	if status, _ := post(oversize, d.token, uuid.NewString()); status != 401 {
 		t.Fatalf("oversize unauthenticated body: %d", status)
 	}
-	questions, _, err := d.s.ListOwnerQuestions(t.Context(), d.taskID, instance, 0, 5, nil)
+	page, err := d.s.ListOwnerQuestions(t.Context(), d.taskID, instance, 0, 5, nil)
+	questions := page.Questions
 	if err != nil || len(questions) != 1 {
 		t.Fatalf("oversize request wrote question: %+v %v", questions, err)
 	}
@@ -372,7 +374,8 @@ func TestDeliveryQuestionSwappedDatabaseDoesNotWriteOrReplay(t *testing.T) {
 	if w.Code != 409 || !strings.Contains(w.Body.String(), "instance_mismatch") {
 		t.Fatalf("replacement accepted old instance: %d %s", w.Code, w.Body.String())
 	}
-	questions, _, err := replacementStore.ListOwnerQuestions(t.Context(), original.taskID, replacementSnapshot.InstanceID, 0, 5, nil)
+	page, err := replacementStore.ListOwnerQuestions(t.Context(), original.taskID, replacementSnapshot.InstanceID, 0, 5, nil)
+	questions := page.Questions
 	if err != nil || len(questions) != 0 {
 		t.Fatalf("replacement wrote or replayed question: %+v %v", questions, err)
 	}

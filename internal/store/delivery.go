@@ -34,7 +34,7 @@ type DeliveryBinding struct {
 	CreatedAt                string `json:"created_at"`
 }
 
-// DeliveryMessage is one owner commission. The stored record keeps the
+// DeliveryMessage is one owner commission or answer queue entry. The stored record keeps the
 // server transition (stored/observed); list reads derive the owner-visible
 // status, mapping an unconfirmed terminal state (blocked, or a spent/verified
 // attempt without a receipt) to unknown.
@@ -755,7 +755,7 @@ func (s *Store) DeliveryReady(ctx context.Context, bindingID, instanceID, writer
 	return nil
 }
 
-// DeliveryNext returns the oldest unspent, unblocked commission with its receipt key.
+// DeliveryNext returns the oldest eligible unspent, unblocked queue entry with its receipt key.
 func (s *Store) DeliveryNext(ctx context.Context, bindingID, instanceID, writerID string) (DeliveryMessage, string, error) {
 	var result DeliveryMessage
 	var receiptKey string

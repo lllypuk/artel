@@ -83,19 +83,16 @@ func (e *deliveryOwnerEnv) answerQuestion(t *testing.T, taskID, questionID, key,
 	return result
 }
 
-func (e *deliveryOwnerEnv) listQuestions(t *testing.T, taskID, query string, status int) ([]store.OwnerQuestion, int64) {
+func (e *deliveryOwnerEnv) listQuestions(t *testing.T, taskID, query string, status int) store.OwnerQuestionPage {
 	t.Helper()
 	data := e.ownerQuestionRequest(t, http.MethodGet, "/v1/tasks/"+taskID+"/questions"+query, "", "", status)
-	var page struct {
-		Questions []store.OwnerQuestion `json:"questions"`
-		Next      int64                 `json:"next_after"`
-	}
+	var page store.OwnerQuestionPage
 	if status == 200 {
 		if err := json.Unmarshal(data, &page); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return page.Questions, page.Next
+	return page
 }
 
 func (e *deliveryOwnerEnv) createQuestion(t *testing.T, key, taskID, writer, instance, text string, status int) store.OwnerQuestionCreateResult {
@@ -143,33 +140,47 @@ func TestOwnerQuestionHTTPReplayPaginationAndNoReadyAnswer(t *testing.T) {
 	e.answerQuestion(t, uuid.NewString(), question.ID, answerKey, e.instance, "answer without ready", 404)
 	e.answerQuestion(t, e.task.ID, uuid.NewString(), uuid.NewString(), e.instance, "missing", 404)
 	e.answerQuestion(t, e.task.ID, question.ID, uuid.NewString(), uuid.NewString(), "foreign DB", 409)
-	questions, _ := e.listQuestions(t, e.task.ID, "?instance_id="+e.instance, 200)
+	questions := e.listQuestions(t, e.task.ID, "?instance_id="+e.instance, 200).Questions
 	if len(questions) != 1 || questions[0].ID != question.ID || questions[0].AnswerText != "answer without ready" || questions[0].AnswerStatus != "stored" {
 		t.Fatalf("questions: %+v", questions)
 	}
 	e.listQuestions(t, e.task.ID, "?instance_id="+uuid.NewString(), 409)
+	assertOwnerQuestionPagination(t, e, question.ID)
+}
+
+func assertOwnerQuestionPagination(t *testing.T, e *deliveryOwnerEnv, questionID string) {
+	t.Helper()
 	for i := range 4 {
 		e.createQuestion(t, uuid.NewString(), e.task.ID, e.writerID, e.instance, fmt.Sprintf("page-%d", i), 200)
 	}
+	full := e.listQuestions(t, e.task.ID, "?instance_id="+e.instance+"&limit=5", 200)
+	if len(full.Questions) != 5 || full.HasMore || full.NextAfter == 0 {
+		t.Fatalf("full final page: %+v", full)
+	}
 	var walked []store.OwnerQuestion
 	after := int64(0)
-	for {
-		page, next := e.listQuestions(t, e.task.ID, fmt.Sprintf("?instance_id=%s&after=%d&limit=2", e.instance, after), 200)
-		walked = append(walked, page...)
-		if len(page) < 2 {
-			break
+	for i := range 3 {
+		page := e.listQuestions(t, e.task.ID, fmt.Sprintf("?instance_id=%s&after=%d&limit=2", e.instance, after), 200)
+		if page.HasMore != (i < 2) || page.NextAfter <= after {
+			t.Fatalf("invalid continuation: %+v after %d", page, after)
 		}
-		after = next
+		walked = append(walked, page.Questions...)
+		after = page.NextAfter
+	}
+	empty := e.listQuestions(t, e.task.ID, fmt.Sprintf("?instance_id=%s&after=%d&limit=5", e.instance, full.NextAfter), 200)
+	if len(empty.Questions) != 0 || empty.HasMore || empty.NextAfter != full.NextAfter {
+		t.Fatalf("empty tail: %+v", empty)
 	}
 	if len(walked) != 5 {
 		t.Fatalf("pages: %d", len(walked))
 	}
-	refreshed, _ := e.listQuestions(t, e.task.ID, "?instance_id="+e.instance+"&ids="+question.ID+","+walked[4].ID, 200)
-	if len(refreshed) != 2 || refreshed[0].ID != question.ID || refreshed[1].ID != walked[4].ID {
+	refresh := e.listQuestions(t, e.task.ID, "?instance_id="+e.instance+"&ids="+questionID+","+walked[4].ID, 200)
+	refreshed := refresh.Questions
+	if refresh.HasMore || len(refreshed) != 2 || refreshed[0].ID != questionID || refreshed[1].ID != walked[4].ID {
 		t.Fatalf("refresh: %+v", refreshed)
 	}
 	for _, query := range []string{
-		"?instance_id=" + e.instance + "&ids=" + question.ID + "&after=0",
+		"?instance_id=" + e.instance + "&ids=" + questionID + "&after=0",
 		"?instance_id=" + e.instance + "&limit=0",
 		"?instance_id=" + e.instance + "&limit=6",
 		"?instance_id=" + e.instance + "&ids=",
@@ -241,7 +252,7 @@ func TestOwnerQuestionHTTPStrictJSONAndTextLimits(t *testing.T) {
 	other := e.createQuestion(t, uuid.NewString(), e.task.ID, e.writerID, e.instance, "body limit", 200)
 	tooLarge := fmt.Sprintf(`{"instance_id":%q,"text":%q,"padding":%q}`, e.instance, "x", strings.Repeat("x", maxQuestionBody))
 	e.ownerQuestionRequest(t, http.MethodPost, "/v1/tasks/"+e.task.ID+"/questions/"+other.ID+"/answer", uuid.NewString(), tooLarge, 413)
-	questions, _ := e.listQuestions(t, e.task.ID, "?instance_id="+e.instance+"&ids="+other.ID, 200)
+	questions := e.listQuestions(t, e.task.ID, "?instance_id="+e.instance+"&ids="+other.ID, 200).Questions
 	if len(questions) != 1 || questions[0].Status != "open" {
 		t.Fatalf("oversize body wrote answer: %+v", questions)
 	}
@@ -263,7 +274,7 @@ func TestOwnerAnswerExactJSONUnicode(t *testing.T) {
 	if string(ack) != string(replay) {
 		t.Fatal("equivalent valid Unicode did not replay")
 	}
-	rows, _ := e.listQuestions(t, e.task.ID, "?instance_id="+e.instance+"&ids="+question.ID, 200)
+	rows := e.listQuestions(t, e.task.ID, "?instance_id="+e.instance+"&ids="+question.ID, 200).Questions
 	if len(rows) != 1 || rows[0].AnswerText != `pair=😀 replacement=� slash=\ud800` {
 		t.Fatalf("answer text changed: %+v", rows)
 	}
@@ -345,7 +356,7 @@ func TestOwnerQuestionHTTPSwappedDatabaseDoesNotWriteOrReplay(t *testing.T) {
 	// Replaying the old owner payload against the replacement is fenced before
 	// receipt lookup and cannot expose or create an answer.
 	replacement.answerQuestion(t, replacement.task.ID, question.ID, key, original.instance, "original answer", 409)
-	rows, _ := replacement.listQuestions(t, replacement.task.ID, "?instance_id="+replacement.instance, 200)
+	rows := replacement.listQuestions(t, replacement.task.ID, "?instance_id="+replacement.instance, 200).Questions
 	if len(rows) != 0 {
 		t.Fatalf("replacement exposed or created question history: %+v", rows)
 	}
@@ -400,7 +411,7 @@ func TestOwnerQuestionListResponseLimit(t *testing.T) {
 		q := e.createQuestion(t, uuid.NewString(), e.task.ID, e.writerID, e.instance, strings.Repeat("\x01", 4096), 200)
 		e.answerQuestion(t, e.task.ID, q.ID, uuid.NewString(), e.instance, strings.Repeat("\x01", 4096), 200)
 	}
-	rows, _ := e.listQuestions(t, e.task.ID, "?instance_id="+e.instance, 200)
+	rows := e.listQuestions(t, e.task.ID, "?instance_id="+e.instance, 200).Questions
 	if len(rows) != 5 {
 		t.Fatalf("maximum list rows: %d", len(rows))
 	}

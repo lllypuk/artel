@@ -73,6 +73,7 @@ public:
   // the original instance/task/binding/body/key for an explicit same retry.
   Q_INVOKABLE bool sendMessage(const QString &task, const QString &text,
                                const QString &binding);
+  QString answerTextError(const QString &text) const;
   Q_INVOKABLE bool answerQuestion(const QString &task, const QString &question,
                                   const QString &text);
   ObjectModel *projects() { return &m_projects; }

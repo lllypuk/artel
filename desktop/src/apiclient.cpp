@@ -770,6 +770,7 @@ void bufferQuestionResponse(QNetworkReply *reply, QObject *context) {
 struct QuestionResponse {
   QJsonArray rows;
   qint64 next;
+  bool more;
 };
 
 std::optional<QuestionResponse> readQuestionResponse(QNetworkReply *reply,
@@ -784,9 +785,12 @@ std::optional<QuestionResponse> readQuestionResponse(QNetworkReply *reply,
     return std::nullopt;
   const auto obj =
       QJsonDocument::fromJson(reply->property("bytes").toByteArray()).object();
-  const auto rows = obj.value("questions").toArray();
+  const auto questions = obj.value("questions");
+  const auto rows = questions.toArray();
   const auto next = obj.value("next_after");
-  if (rows.size() > 5 || !integer(next))
+  const auto more = obj.value("has_more");
+  if (!questions.isArray() || rows.size() > 5 || !integer(next) ||
+      !more.isBool() || (more.toBool() && rows.size() != 5))
     return std::nullopt;
   for (const auto &row : rows) {
     const auto question = row.toObject();
@@ -794,7 +798,7 @@ std::optional<QuestionResponse> readQuestionResponse(QNetworkReply *reply,
         question.value("task_id").toString() != task)
       return std::nullopt;
   }
-  return QuestionResponse{rows, next.toInteger()};
+  return QuestionResponse{rows, next.toInteger(), more.toBool()};
 }
 } // namespace
 
@@ -817,10 +821,11 @@ void ApiClient::loadQuestions(const QString &task, qint64 after) {
             m_questionsReply = nullptr;
             if (instance == m_instance && task == m_questionsTask) {
               const auto response = readQuestionResponse(reply, task);
-              if (response && response->next >= after) {
+              if (response &&
+                  (response->rows.isEmpty() ? response->next == after
+                                            : response->next > after)) {
                 emit questionsReceived(response->rows.toVariantList(), after,
-                                       response->next,
-                                       response->rows.size() == 5);
+                                       response->next, response->more);
               }
             }
             emit changed();
@@ -847,7 +852,7 @@ void ApiClient::refreshQuestionStatuses(const QString &task,
     m_questionStatusReply = nullptr;
     if (instance == m_instance && task == m_questionStatusTask) {
       const auto response = readQuestionResponse(reply, task);
-      if (response)
+      if (response && !response->more)
         emit questionStatusesReceived(response->rows.toVariantList());
     }
     emit changed();
@@ -858,13 +863,19 @@ bool ApiClient::validAnswerResult(const QJsonObject &obj) const {
          uuid(obj.value("message_id").toString()) &&
          obj.value("status").toString() == "stored";
 }
+QString ApiClient::answerTextError(const QString &text) const {
+  if (!text.isValidUtf16() || text.contains(QChar::Null))
+    return tr("Answer must be valid text without NUL characters");
+  if (text.toUtf8().size() > 4096)
+    return tr("Answer exceeds the 4,096 UTF-8 byte limit");
+  if (text.trimmed().isEmpty())
+    return tr("Enter an answer");
+  return {};
+}
 bool ApiClient::answerQuestion(const QString &task, const QString &question,
                                const QString &text) {
   if (!m_online || m_stopped || pending() || m_uncertain || !uuid(task) ||
-      !uuid(question) || !text.isValidUtf16())
-    return false;
-  const QByteArray body = text.toUtf8();
-  if (text.trimmed().isEmpty() || body.size() > 4096 || body.contains('\0'))
+      !uuid(question) || !answerTextError(text).isEmpty())
     return false;
   m_method = "POST";
   m_path = "/v1/tasks/" + task + "/questions/" + question + "/answer";
@@ -1032,7 +1043,7 @@ void ApiClient::sendMutation() {
       // before returning closed. Other rejections may not even come from that
       // route (e.g. a v3 replacement), so keep the original request locked.
       const bool answerClosed =
-          answerRoute && m_uncertain && !staleInstance && code == 409 &&
+          answerRoute && !staleInstance && code == 409 &&
           reply->error() == QNetworkReply::ContentConflictError &&
           !reply->property("oversized").toBool() &&
           reply->header(QNetworkRequest::ContentTypeHeader)
@@ -1050,6 +1061,8 @@ void ApiClient::sendMutation() {
       if (answerClosed) {
         m_error =
             tr("Question is closed; answer not recorded, draft preserved");
+      } else if (answerRoute && !m_uncertain && !answerMismatch) {
+        m_error = tr("Answer rejected; draft preserved");
       } else if (deliveryMutation) {
         m_error =
             m_uncertain ? tr("Send outcome unknown; retry the same request "

@@ -110,11 +110,15 @@ export class DeliveryWriter {
     return this.config.delivery_binding_id;
   }
 
+  canAskOwner(): boolean {
+    return this.config.allow_owner_questions === true && !this.closed && !this.stopped && this.attached;
+  }
+
   // One explicit tool call performs one bounded store request. It never waits
   // for the owner and never retries automatically after an uncertain outcome.
   async askOwner(taskId: string, text: string, signal: AbortSignal,
     idempotencyKey = randomUUID()): Promise<{ id: string; status: string }> {
-    if (this.config.allow_owner_questions !== true || this.closed || this.stopped || !this.attached)
+    if (!this.canAskOwner())
       throw new ObserverFailure("capability_required");
     if (!UUID.test(taskId) || !text.trim() || /[\uD800-\uDFFF]/u.test(text) || Buffer.byteLength(text) > 4096 || text.includes("\0") || !UUID.test(idempotencyKey))
       throw new ObserverFailure("invalid_request");

@@ -810,6 +810,7 @@ for (const stage of ["before-spend", "after-spend", "after-verify", "mode-before
 test("busy after spend and a lost verify ACK never retransmit", async () => {
   for (const failure of ["busy", "lost-verify"] as const) {
     const env = makeEnv();
+    let w: DeliveryWriter | undefined;
     try {
       const message = commission(failure);
       let idle = true;
@@ -824,13 +825,25 @@ test("busy after spend and a lost verify ACK never retransmit", async () => {
           throw new ObserverFailure("offline");
         },
       }, {});
-      const w = writer(env, transport, () => idle);
+      w = writer(env, transport, () => idle);
       await w.start();
       await until(() => calls.some(c => c.path === "/delivery/v1/verify"), failure);
-      await sleep(100);
+      // A subsequent cycle proves the busy/failed verify cycle finished.
+      const contextPolls = () => calls.filter(c => c.path === "/delivery/v1/context").length;
+      const before = contextPolls();
+      await until(() => contextPolls() > before, "writer polled again after verify");
+      if (failure === "busy") {
+        assert.equal(w.activeAttempt(message.id)?.right, false);
+      }
+      const pickups = () => calls.filter(c => c.path.startsWith("/delivery/v1/next?")).length;
+      const beforeIdle = pickups();
+      idle = true;
+      await until(() => pickups() > beforeIdle + 1, "idle writer resumed pickup");
       assert.equal(env.hooks.sends, 0);
       assert.equal(calls.filter(c => c.path === "/delivery/v1/spend").length, 1);
-      await w.stop();
-    } finally { delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true }); }
+    } finally {
+      await w?.stop();
+      delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true });
+    }
   }
 });

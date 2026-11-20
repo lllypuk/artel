@@ -35,6 +35,8 @@ Panel::Panel(ApiClient *client, QObject *parent)
       m_questions.update(i, questionRow(m_questions.get(i)));
   });
   connect(client, &ApiClient::changed, this, [this] {
+    const bool reconnected = m_client->online() && !m_wasOnline;
+    m_wasOnline = m_client->online();
     if (m_seenSequence != m_client->sequence() ||
         m_historyInstance != m_client->instance()) {
       const bool sameInstance = m_historyInstance == m_client->instance();
@@ -51,6 +53,11 @@ Panel::Panel(ApiClient *client, QObject *parent)
         moreHistory();
         loadCommissionPage();
       }
+    } else if (reconnected && !m_task.isEmpty() && !m_deliveryPoll.isActive()) {
+      // A selection made offline still needs its first reads on a same-snapshot
+      // reconnect.
+      moreHistory();
+      loadCommissionPage();
     }
     if (!m_client->dirty() && !m_client->pending() && !m_client->uncertain())
       m_kind.clear();
@@ -153,7 +160,7 @@ Panel::Panel(ApiClient *client, QObject *parent)
               break;
             }
             if (sent == m_answers.value(key))
-              m_answers.remove(key);
+              setAnswerText(question, {});
             m_sentAnswers.remove(key);
             emit changed();
           });
@@ -216,7 +223,13 @@ void Panel::setAnswerText(const QString &question, const QString &text) {
   const auto key = answerKey(question);
   if (m_answers.value(key).toString() == text)
     return;
-  m_answers.insert(key, text);
+  const bool hadDrafts = hasAnswerDrafts();
+  if (text.isEmpty())
+    m_answers.remove(key);
+  else
+    m_answers.insert(key, text);
+  if (hadDrafts != hasAnswerDrafts())
+    emit answerDraftsChanged();
 }
 void Panel::armStatusPoll() {
   if (m_task.isEmpty())
@@ -271,6 +284,9 @@ QVariantMap Panel::questionRow(QVariantMap row) const {
   const bool openTask = !selected.isEmpty() &&
                         !project().value("archived").toBool() &&
                         state != "done" && state != "cancelled";
+  const bool openQuestion = row.value("status").toString() == "open";
+  row.insert("answerDraft",
+             openQuestion ? QString() : answerText(row.value("id").toString()));
   const auto answerStatus = row.value("answer_status").toString();
   row.insert("answerStatusLabel",
              answerStatus == "observed"
@@ -285,8 +301,7 @@ QVariantMap Panel::questionRow(QVariantMap row) const {
              : blockReason == "delivery_revoked"
                  ? tr("The Pi assignment is not active")
                  : QString());
-  row.insert("canAnswer", row.value("status").toString() == "open" &&
-                              openTask &&
+  row.insert("canAnswer", openQuestion && openTask &&
                               binding.value("allow_owner_questions").toBool() &&
                               binding.value("status").toString() == "active" &&
                               binding.value("delivery_binding_id").toString() ==
@@ -421,8 +436,7 @@ bool Panel::answerQuestion(const QString &question) {
     if (row.value("id").toString() == question &&
         questionRow(row).value("canAnswer").toBool()) {
       const auto answer = answerText(question);
-      if (answer.trimmed().isEmpty() ||
-          !m_client->answerQuestion(m_task, question, answer))
+      if (!m_client->answerQuestion(m_task, question, answer))
         return false;
       m_sentAnswers.insert(answerKey(question), answer);
       return true;

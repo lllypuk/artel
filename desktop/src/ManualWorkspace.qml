@@ -742,12 +742,21 @@ Item {
                                         onActiveFocusChanged: manual.revealField(this, cursorRectangle.y)
                                         onCursorRectangleChanged: manual.revealField(this, cursorRectangle.y)
                                     }
+                                    UI.StatusLabel {
+                                        id: answerValidation
+                                        theme: manual.theme
+                                        objectName: "answerValidation_" + questionRow.questionId
+                                        text: manual.panel.answerTextError(answerField.text)
+                                        visible: answerField.visible && answerField.text.length > 0 && text.length > 0
+                                        severity: "warning"
+                                        Layout.fillWidth: true
+                                    }
                                     PanelButton {
                                         objectName: "answerButton_" + questionRow.questionId
                                         visible: questionRow.record.status === "open"
                                         text: qsTr("Save answer for Pi")
                                         kind: "primary"
-                                        enabled: questionRow.record.canAnswer && answerField.text.trim().length > 0
+                                        enabled: questionRow.record.canAnswer && answerValidation.text.length === 0
                                         onClicked: manual.panel.answerQuestion(questionRow.questionId)
                                     }
                                     Caption {
@@ -760,7 +769,7 @@ Item {
                                     CopyText {
                                         id: answerDraft
                                         objectName: "answerDraft_" + questionRow.questionId
-                                        text: questionRow.record.status === "closed" ? manual.panel.answerText(questionRow.questionId) : ""
+                                        text: questionRow.record.answerDraft || ""
                                         visible: text.length > 0
                                         activeFocusOnTab: true
                                         Accessible.name: answerDraftLabel.text

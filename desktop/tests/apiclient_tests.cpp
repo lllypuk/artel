@@ -628,7 +628,8 @@ private slots:
         return;
       }
       if (request.startsWith("GET") && request.contains("/questions?")) {
-        respond(socket, 200, "{\"questions\":[],\"next_after\":0}");
+        respond(socket, 200,
+                "{\"questions\":[],\"next_after\":0,\"has_more\":false}");
         return;
       }
       fixture.normal(socket, request);

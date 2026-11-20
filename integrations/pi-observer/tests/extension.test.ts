@@ -14,10 +14,11 @@ test("shipping factory only subscribes to notification hooks; absent config is i
   delete process.env.ARTEL_OBSERVER_CONFIG;
   try {
     observer(api);
-    assert.deepEqual([...hooks.keys()], ["session_start", "before_agent_start", "agent_start", "agent_settled", "tool_execution_start", "tool_execution_end", "ui_prompt_start", "ui_prompt_end", "model_select", "session_shutdown"]);
+    assert.deepEqual([...hooks.keys()], ["session_start", "session_tree", "before_agent_start", "agent_start", "agent_settled", "tool_execution_start", "tool_execution_end", "ui_prompt_start", "ui_prompt_end", "model_select", "session_shutdown"]);
     const ctx = { hasUI: true, isIdle: () => true, ui: { setStatus: () => assert.fail("no config must be silent") } };
     await hooks.get("session_start")!({ reason: "startup" }, ctx);
     assert.equal(hooks.has("agent_end"), false);
+    await hooks.get("session_tree")!({}, ctx);
     await hooks.get("session_shutdown")!({ reason: "quit" }, ctx);
   } finally {
     if (saved === undefined) delete process.env.ARTEL_OBSERVER_CONFIG;

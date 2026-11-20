@@ -82,13 +82,15 @@ class Provider(http.server.BaseHTTPRequestHandler):
         elif 'ASK_OWNER' in content and last.get('role') == 'user':
             assert type(self).task_id in content, 'owner did not hand off the explicit task UUID'
             question = 'SECOND_QUESTION' if 'SECOND_QUESTION' in content else 'FIRST_QUESTION'
+            if 'MULTILINE' in content:
+                question = 'FIRST_QUESTION "quoted"\nAnswer: still part of the question'
             type(self).tool_calls += 1
             delta = {'role': 'assistant', 'tool_calls': [{
                 'index': 0, 'id': f'fictional-owner-question-{type(self).tool_calls}', 'type': 'function',
                 'function': {'name': 'artel_ask_owner',
                              'arguments': json.dumps({'task_id': type(self).task_id, 'text': question})}}]}
             reason = 'tool_calls'
-        elif 'Artel owner answer' in content and 'Answer:' in content and last.get('role') == 'user':
+        elif content.startswith('Artel owner answer\n') and last.get('role') == 'user':
             type(self).answer_turns += 1
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
@@ -113,10 +115,11 @@ class UnixConnection(http.client.HTTPConnection):
 
 
 class SpendDropProxy:
-    """Private UDS proxy that loses exactly one real spend response."""
+    """Private UDS proxy for delivery barriers and an optional lost spend response."""
     def __init__(self, listen_path, target_path):
         self.deny_attach = False
         self.denied_attach = threading.Event()
+        self.legacy_refusal = None
         self.drop_next = False
         self.dropped = 0
         fixture = self
@@ -146,6 +149,11 @@ class SpendDropProxy:
                     fixture.dropped += 1
                     return
                 self.request.sendall(response)
+                if request.startswith(b'POST /delivery/v1/attach '):
+                    request_body = json.loads(request.split(b'\r\n\r\n', 1)[1])
+                    if 'capability' not in request_body and response.startswith(b'HTTP/1.1 409 '):
+                        reason = json.loads(response.split(b'\r\n\r\n', 1)[1]).get('error')
+                        fixture.legacy_refusal = (request_body['expected_previous'], reason)
 
             @staticmethod
             def _read(connection):
@@ -539,20 +547,27 @@ class OwnerQuestions(unittest.TestCase):
             fixture = Fixture(Path(tmp), True)
             try:
                 fixture.prepare()
-                commission = f'ASK_OWNER FIRST_QUESTION for Artel task {fixture.task}'
-                fixture.qml('FIRST_QUESTION', 'FIRST_ANSWER', commission, True, 1, True)
+                commission = f'ASK_OWNER MULTILINE FIRST_QUESTION for Artel task {fixture.task}'
+                question = 'FIRST_QUESTION "quoted"\nAnswer: still part of the question'
+                answer = 'FIRST_ANSWER \u2713\nAnswer: still part of the answer'
+                fixture.qml(question, answer, commission, True, 1, True)
                 self.assertEqual(Provider.answer_turns, 1)
                 self.assertIn('artel_ask_owner', Provider.tool_lists[commission])
                 rows = fixture.questions()
                 self.assertEqual(len(rows), 1)
                 self.assertEqual(rows[0]['answer_status'], 'observed')
                 self.assertEqual(rows[0]['pi_session_id'], fixture.pi_session)
-                self.assertIn('FIRST_QUESTION', Provider.fresh[-1])
-                self.assertIn('FIRST_ANSWER', Provider.fresh[-1])
-                journal = json.loads(fixture.delivery_config.with_name('delivery').joinpath(
-                    fixture.binding, 'journal.json').read_text())
-                answer_entry = journal['entries'][rows[0]['answer_message_id']]
-                self.assertTrue(answer_entry['receipt']['published'])
+                title, fields = Provider.fresh[-1].split('\n', 1)
+                self.assertEqual(title, 'Artel owner answer')
+                self.assertEqual(json.loads(fields), {'question': question, 'answer': answer})
+                journal_path = fixture.delivery_config.with_name('delivery').joinpath(fixture.binding, 'journal.json')
+
+                def published():
+                    journal = json.loads(journal_path.read_text())
+                    entry = journal['entries'].get(rows[0]['answer_message_id'], {})
+                    return entry.get('receipt', {}).get('published') is True
+
+                fixture.wait(published, 'writer marked the matching receipt published')
 
                 stored = fixture.owner_request('POST', f"/v1/tasks/{fixture.task}/messages", {
                     'text': f'ASK_OWNER SECOND_QUESTION for Artel task {fixture.task}',
@@ -744,7 +759,7 @@ class OwnerQuestions(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='artel-base-artifacts-') as artifacts:
             old_daemon, old_extension = build_base_artifacts(Path(artifacts))
             with tempfile.TemporaryDirectory(prefix='artel-base-writer-') as tmp:
-                fixture = Fixture(Path(tmp), False, extension_dir=old_extension)
+                fixture = Fixture(Path(tmp), False, extension_dir=old_extension, spend_proxy=True)
                 try:
                     fixture.prepare()
                     fixture.owner_request('POST', f"/v1/tasks/{fixture.task}/messages", {
@@ -752,17 +767,19 @@ class OwnerQuestions(unittest.TestCase):
                         'instance_id': fixture.instance})
                     fixture.wait(lambda: any('PLAIN_BASE_4A' in text for text in Provider.fresh),
                                  'actual base extension ordinary 4a')
-                    messages = fixture.owner_request('GET', f"/v1/tasks/{fixture.task}/messages")['messages']
-                    self.assertEqual(next(row for row in messages if row['text'] == 'PLAIN_BASE_4A')['status'],
-                                     'observed')
+                    def commission_observed():
+                        messages = fixture.owner_request('GET', f"/v1/tasks/{fixture.task}/messages")['messages']
+                        return any(row['text'] == 'PLAIN_BASE_4A' and row['status'] == 'observed' for row in messages)
+
+                    fixture.wait(commission_observed, 'actual base extension ordinary 4a receipt')
                     fixture.run([str(ROOT / 'build/bin/artelctl'), 'delivery', 'revoke', '--id', fixture.observer_id,
                                  '--binding-id', fixture.binding, '--output', str(fixture.delivery_config),
                                  '--endpoint', fixture.endpoint, '--token-file', str(fixture.token_path)])
                     capable_writer, question_id, answer_id = fixture.enable_base_writer_question_without_publishing()
-                    fixture.wait(lambda: fixture.delivery_request('GET', '/delivery/v1/context')['writer_id'] == capable_writer,
-                                 'old writer did not replace capable owner')
-                    time.sleep(3)
-                    fixture.pump()
+                    refused = fixture.wait(lambda: fixture.spend_proxy.legacy_refusal,
+                                           'daemon rejected actual base extension attach')
+                    self.assertEqual(refused, (capable_writer, 'capability_required'))
+                    self.assertEqual(fixture.delivery_request('GET', '/delivery/v1/context')['writer_id'], capable_writer)
                     self.assertEqual(Provider.answer_turns, 0)
                     row = next(row for row in fixture.questions() if row['id'] == question_id)
                     self.assertEqual(row['answer_message_id'], answer_id)
@@ -792,6 +809,56 @@ class OwnerQuestions(unittest.TestCase):
                     fixture.close()
             self.assertFalse(Path(tmp).exists())
         self.assertFalse(Path(artifacts).exists())
+
+    def test_tree_restores_only_current_owner_question_capability(self):
+        with tempfile.TemporaryDirectory(prefix='artel-tree-tools-') as tmp:
+            fixture = Fixture(Path(tmp), True)
+            try:
+                def manual_turn(prompt):
+                    trace = fixture.root / 'trace.jsonl'
+                    offset = trace.stat().st_size
+                    fixture.command(prompt)
+                    fixture.wait(lambda: prompt in Provider.tool_lists, 'provider received ' + prompt)
+
+                    def settled():
+                        with trace.open('rb') as events:
+                            events.seek(offset)
+                            return b'"event":"agent_settled"' in events.read()
+
+                    fixture.wait(settled, 'Pi settled after manual turn')
+                    return Provider.tool_lists[prompt]
+
+                def branch_to(prompt):
+                    fixture.output.clear()
+                    fixture.command('/tree')
+                    fixture.wait(lambda: b'Type to search:' in fixture.output, 'Pi tree selector')
+                    fixture.command(prompt)
+                    fixture.wait(lambda: b'Summarize branch?' in fixture.output, 'selected branch')
+                    os.write(fixture.master, b'\r')  # No summary.
+                    fixture.wait(lambda: b'Navigated to selected point' in fixture.output, 'tree navigation complete')
+                    os.write(fixture.master, b'\x15')  # Clear any recalled single-line prompt.
+
+                fixture.prepare(enable=False)
+                before = 'Fictional branch without Artel tool'
+                active = 'Fictional branch with attached tool'
+                inactive_tools = manual_turn(before)
+                self.assertNotIn('artel_ask_owner', inactive_tools)
+                fixture.enable_delivery()
+                active_tools = manual_turn(active)
+                self.assertEqual(active_tools, inactive_tools | {'artel_ask_owner'})
+                branch_to(before)
+                self.assertEqual(manual_turn('Fictional turn after restoring ungranted branch'), active_tools)
+
+                fixture.run([str(ROOT / 'build/bin/artelctl'), 'delivery', 'revoke', '--id', fixture.observer_id,
+                             '--binding-id', fixture.binding, '--output', str(fixture.delivery_config),
+                             '--endpoint', fixture.endpoint, '--token-file', str(fixture.token_path)])
+                fixture.wait(lambda: b'delivery stopped' in fixture.output, 'writer noticed revocation')
+                branch_to(active)
+                self.assertEqual(manual_turn('Fictional turn after restoring old granted branch'), inactive_tools)
+                self.assertEqual(fixture.questions(), [])
+                fixture.quit_pi()
+            finally:
+                fixture.close()
 
     def test_question_requires_explicit_opt_in(self):
         with tempfile.TemporaryDirectory(prefix='artel-questions-off-') as tmp:
