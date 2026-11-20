@@ -73,6 +73,7 @@ export default function observer(pi: ExtensionAPI) {
   // A binding that terminated terminally is not restarted for the same grant:
   // the memory clears only when the config starts naming another binding.
   let terminalBinding: string | undefined;
+  let ownerQuestionsRegistered = false;
   const startDeliveryLoop = (deliveryPath: string, registration: Registration, ctx: ExtensionContext) => {
     stopDeliveryTimer();
     deliveryTimer = setInterval(() => {
@@ -89,13 +90,40 @@ export default function observer(pi: ExtensionAPI) {
         if (client?.boundRuntime() !== registration.runtime_id) return;
         const { config, token } = readDeliveryConfig(deliveryPath);
         if (config.delivery_binding_id === terminalBinding) return;
+        if (config.allow_owner_questions === true && !ownerQuestionsRegistered) {
+          pi.registerTool({
+            name: "artel_ask_owner",
+            label: "Ask Artel owner",
+            description: "Store one explicit question for the owner of an open Artel task. Returns after storage; the answer arrives later as a separate custom message.",
+            promptSnippet: "Ask the Artel owner about a specific open task UUID",
+            promptGuidelines: ["Use artel_ask_owner only with the exact Artel task UUID explicitly supplied by the owner."],
+            parameters: { type: "object", additionalProperties: false,
+              properties: { task_id: { type: "string", description: "Exact Artel task UUID supplied by the owner" },
+                text: { type: "string", description: "Question for the owner" } }, required: ["task_id", "text"] },
+            async execute(_toolCallId, params: { task_id?: unknown; text?: unknown }, signal) {
+              try {
+                if (!writer || writer.bindingId() !== config.delivery_binding_id ||
+                    typeof params.task_id !== "string" || typeof params.text !== "string") throw new Error("unavailable");
+                const result = await writer.askOwner(params.task_id, params.text, signal ?? new AbortController().signal);
+                return { content: [{ type: "text", text: `Question ${result.id} stored; do not wait for the answer in this tool call.` }],
+                  details: { question_id: result.id, status: result.status } };
+              } catch {
+                return { content: [{ type: "text", text: "Artel owner question was not confirmed as stored." }],
+                  details: { question_id: "", status: "unconfirmed" }, isError: true };
+              }
+            },
+          });
+          ownerQuestionsRegistered = true;
+        }
         writer = new DeliveryWriter(config, token, ctx, registration.pi_session_id, registration.runtime_id, status, attempt => {
           if (deliveryShutdown) return;
+          const answer = attempt.kind === "answer";
           pi.sendMessage({
-            customType: "artel-delivery",
-            content: attempt.text,
+            customType: answer ? "artel-owner-answer" : "artel-delivery",
+            content: answer ? `Artel owner answer\nQuestion: ${attempt.questionText ?? ""}\nAnswer: ${attempt.text}` : attempt.text,
             display: true,
-            details: { message_id: attempt.messageId, attempt_id: attempt.attemptId },
+            details: { message_id: attempt.messageId, attempt_id: attempt.attemptId,
+              ...(answer ? { custom_type: "artel-owner-answer", question_id: attempt.questionId } : {}) },
           }, { triggerTurn: true });
         });
         void writer.start();

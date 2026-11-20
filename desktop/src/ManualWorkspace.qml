@@ -526,6 +526,11 @@ Item {
                             text: manual.panel.stateLabel(manual.panel.task.state || "")
                         }
                         CopyText {
+                            objectName: "taskUuid"
+                            text: manual.panel.task.id || ""
+                            Accessible.name: qsTr("Selected task UUID")
+                        }
+                        CopyText {
                             objectName: "taskDescription"
                             text: manual.panel.task.description || ""
                         }
@@ -686,6 +691,68 @@ Item {
                                 visible: manual.panel.messagesMore
                                 enabled: manual.panel.messagesMore && !manual.panel.messagesLoading
                                 onClicked: manual.panel.moreMessages()
+                            }
+                            Caption {
+                                text: qsTr("Owner questions")
+                                font.bold: true
+                                visible: manual.panel.questions.length > 0
+                            }
+                            Repeater {
+                                model: manual.panel.questions
+                                delegate: ColumnLayout {
+                                    id: questionRow
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    Caption {
+                                        text: qsTr("Question from Pi session %1").arg(questionRow.modelData.pi_session_id)
+                                        color: theme.muted
+                                        wrapMode: Text.Wrap
+                                        Layout.fillWidth: true
+                                    }
+                                    CopyText {
+                                        objectName: "questionText_" + questionRow.modelData.id
+                                        text: questionRow.modelData.text
+                                        Layout.fillWidth: true
+                                    }
+                                    UI.LongText {
+                                        id: answerField
+                                        theme: manual.theme
+                                        objectName: "answerField_" + questionRow.modelData.id
+                                        visible: questionRow.modelData.status === "open"
+                                        enabled: manual.panel.writable && !manual.panel.busy
+                                        text: manual.panel.answerText
+                                        placeholderText: qsTr("Answer for Pi")
+                                        Accessible.name: placeholderText
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: Math.max(100, implicitHeight)
+                                        onTextChanged: {
+                                            if (activeFocus)
+                                                manual.panel.answerText = text;
+                                        }
+                                        onActiveFocusChanged: manual.revealField(this, cursorRectangle.y)
+                                    }
+                                    PanelButton {
+                                        objectName: "answerButton_" + questionRow.modelData.id
+                                        visible: questionRow.modelData.status === "open"
+                                        text: qsTr("Save answer for Pi")
+                                        kind: "primary"
+                                        enabled: questionRow.modelData.canAnswer && !manual.panel.busy
+                                        onClicked: manual.panel.answerQuestion(questionRow.modelData.id)
+                                    }
+                                    CopyText {
+                                        objectName: "answerText_" + questionRow.modelData.id
+                                        visible: questionRow.modelData.status === "answered"
+                                        text: questionRow.modelData.answer_text || ""
+                                        Layout.fillWidth: true
+                                    }
+                                    UI.StatusLabel {
+                                        theme: manual.theme
+                                        objectName: "answerStatus_" + questionRow.modelData.id
+                                        visible: questionRow.modelData.status === "answered"
+                                        text: questionRow.modelData.answerStatusLabel
+                                        Layout.fillWidth: true
+                                    }
+                                }
                             }
                         }
                         Rectangle {

@@ -216,5 +216,14 @@
   "Owner authorization failed; text preserved": "Ошибка авторизации владельца; текст сохранён",
   "Commissions unavailable or invalid": "Поручения недоступны или повреждены",
   "Commission status unavailable or invalid": "Статус поручения недоступен или повреждён",
-  "Assignment unavailable or invalid": "Назначение недоступно или повреждено"
+  "Assignment unavailable or invalid": "Назначение недоступно или повреждено",
+  "Selected task UUID": "UUID выбранной задачи",
+  "Owner questions": "Вопросы владельцу",
+  "Question from Pi session %1": "Вопрос от Pi-сессии %1",
+  "Answer for Pi": "Ответ для Pi",
+  "Save answer for Pi": "Сохранить ответ для Pi",
+  "Pi started preparing the answer turn": "Pi начал подготовку хода с ответом",
+  "Answer outcome unknown": "Исход доставки ответа неизвестен",
+  "Answer saved": "Ответ сохранён",
+  "Owner questions unavailable or invalid": "Вопросы владельцу недоступны или повреждены"
 }

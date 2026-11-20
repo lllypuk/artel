@@ -97,7 +97,7 @@ func (e deliveryEnv) freshEnable(t *testing.T, s *Store) DeliveryOwnerMutation {
 
 func (e deliveryEnv) mustAttachReady(t *testing.T, s *Store, writerID, expectedPrevious string) {
 	t.Helper()
-	if err := s.DeliveryAttach(t.Context(), e.binding.ID, writerID, expectedPrevious, e.binding.JournalID, e.runtime.RuntimeID, e.runtime.PiSessionID); err != nil {
+	if err := s.DeliveryAttach(t.Context(), e.binding.ID, writerID, expectedPrevious, e.binding.JournalID, e.runtime.RuntimeID, e.runtime.PiSessionID, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeliveryReady(t.Context(), e.binding.ID, writerID); err != nil {
@@ -364,7 +364,7 @@ func TestDeliveryV2UpgradePreservesDomainObserverAndReceipts(t *testing.T) {
 		if err := s.db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil {
 			t.Fatal(err)
 		}
-		if version != 3 {
+		if version != 4 {
 			t.Fatal(version)
 		}
 		for table, want := range map[string]int{"delivery_bindings": 0, "delivery_messages": 0, "delivery_attempts": 0} {

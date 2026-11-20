@@ -46,3 +46,6 @@ printf '%s\n' 'E2E negative assertion/owned-process cleanup: PASS'
 node "$ROOT/integrations/pi-observer/tests/preflight.mjs"
 timeout --signal=TERM --kill-after=10s 240s python3 -B "$ROOT/tests/e2e/observer_acceptance.py"
 timeout --signal=TERM --kill-after=10s 70s python3 -B "$ROOT/tests/e2e/observer_acceptance.py" --negative-probe
+# Stage-4b thin vertical slice: real tool, daemon, production QML and the
+# original Pi's correlated custom answer, plus opt-out and revoke controls.
+timeout --signal=TERM --kill-after=10s 240s python3 -B "$ROOT/integrations/pi-observer/tests/questions_pty.py"

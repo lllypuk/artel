@@ -61,6 +61,7 @@ export interface DeliveryConfig {
   token_file: string;
   journal_file: string;
   journal_id: string;
+  allow_owner_questions?: boolean;
 }
 
 export function readDeliveryConfig(path: string): { config: DeliveryConfig; token: string } {
@@ -68,7 +69,8 @@ export function readDeliveryConfig(path: string): { config: DeliveryConfig; toke
     const id = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
     if (config.status !== "confirmed" || !id.test(config.delivery_binding_id) || !id.test(config.database_instance_id) ||
         !id.test(config.journal_id) || !isAbsolute(config.observer_socket) || !isAbsolute(config.journal_file) ||
-        Buffer.byteLength(config.observer_socket) > 107)
+        Buffer.byteLength(config.observer_socket) > 107 ||
+        (config.allow_owner_questions !== undefined && typeof config.allow_owner_questions !== "boolean"))
       throw new Error("invalid config");
     return { config, token };
   }, () => "");

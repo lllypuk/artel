@@ -62,11 +62,14 @@ public:
   void loadMessages(const QString &task, qint64 after);
   void refreshMessageStatuses(const QString &task, const QStringList &ids);
   void loadDelivery(const QString &task);
+  void loadQuestions(const QString &task);
   void cancelMessages();
   // One owner commission. An unknown outcome (timeout/5xx/lost reply) keeps
   // the original instance/task/binding/body/key for an explicit same retry.
   Q_INVOKABLE bool sendMessage(const QString &task, const QString &text,
                                const QString &binding);
+  Q_INVOKABLE bool answerQuestion(const QString &task, const QString &question,
+                                  const QString &text);
   ObjectModel *projects() { return &m_projects; }
   ObjectModel *tasks() { return &m_tasks; }
   ObjectModel *queues() { return &m_queues; }
@@ -109,6 +112,8 @@ signals:
   void messageStatusesReceived(const QVariantList &messages);
   void deliveryReceived(const QVariantMap &projection);
   void commissionAccepted(const QVariantMap &message);
+  void questionsReceived(const QVariantList &questions);
+  void answerAccepted(const QVariantMap &answer);
 
 private:
   QNetworkReply *request(const QByteArray &method, const QString &path,
@@ -121,6 +126,8 @@ private:
   void sendMutation();
   void cancel(QNetworkReply *&reply);
   bool validMessage(const QJsonObject &obj) const;
+  bool validQuestion(const QJsonObject &obj) const;
+  bool validAnswerResult(const QJsonObject &obj) const;
   QNetworkAccessManager m_network;
   ObjectModel m_projects, m_tasks, m_queues;
   QUrl m_endpoint;
@@ -128,12 +135,12 @@ private:
   QNetworkReply *m_snapshot = nullptr, *m_stream = nullptr,
                 *m_mutation = nullptr, *m_historyReply = nullptr,
                 *m_messagesReply = nullptr, *m_statusReply = nullptr,
-                *m_deliveryReply = nullptr;
+                *m_deliveryReply = nullptr, *m_questionsReply = nullptr;
   QTimer m_reconnect, m_coalesce;
   quint64 m_generation = 0, m_draftRevision = 0, m_sentRevision = 0;
   QString m_instance, m_status = QStringLiteral("disconnected"), m_error,
                       m_historyError, m_messagesError;
-  QString m_messagesTask, m_statusTask, m_deliveryTask;
+  QString m_messagesTask, m_statusTask, m_deliveryTask, m_questionsTask;
   bool m_messagesPageLoaded = false;
   qint64 m_sequence = 0, m_cursor = 0;
   bool m_online = false, m_uncertain = false, m_conflict = false,

@@ -518,6 +518,7 @@ void ApiClient::cancelMessages() {
   cancel(m_messagesReply);
   cancel(m_statusReply);
   cancel(m_deliveryReply);
+  cancel(m_questionsReply);
   m_messagesPageLoaded = false;
 }
 void ApiClient::loadMessages(const QString &task, qint64 after) {
@@ -701,6 +702,8 @@ void ApiClient::loadDelivery(const QString &task) {
                  QStringLiteral("revoked")}) &&
           binding.toObject().value("created_at").isString() &&
           binding.toObject().value("writer_id").toString().isEmpty() &&
+          (!binding.toObject().contains("allow_owner_questions") ||
+           binding.toObject().value("allow_owner_questions").isBool()) &&
           obj.value("ready").isBool()));
     if (valid) {
       m_messagesError.clear();
@@ -711,6 +714,99 @@ void ApiClient::loadDelivery(const QString &task) {
     emit changed();
   });
   emit changed();
+}
+bool ApiClient::validQuestion(const QJsonObject &obj) const {
+  if (!uuid(obj.value("id").toString()) ||
+      !uuid(obj.value("task_id").toString()) ||
+      !uuid(obj.value("delivery_binding_id").toString()) ||
+      !uuid(obj.value("pi_session_id").toString()) ||
+      !obj.value("text").isString() ||
+      !oneOf(obj.value("status").toString(),
+             {QStringLiteral("open"), QStringLiteral("answered"),
+              QStringLiteral("closed")}) ||
+      !obj.value("created_at").isString())
+    return false;
+  if (obj.value("status").toString() != "answered")
+    return true;
+  return uuid(obj.value("answer_message_id").toString()) &&
+         obj.value("answer_text").isString() &&
+         oneOf(obj.value("answer_status").toString(),
+               {QStringLiteral("stored"), QStringLiteral("unknown"),
+                QStringLiteral("observed")}) &&
+         obj.value("answered_at").isString();
+}
+void ApiClient::loadQuestions(const QString &task) {
+  cancel(m_questionsReply);
+  if (!m_online || m_stopped || !uuid(task))
+    return;
+  const auto instance = m_instance;
+  auto *reply = request("GET", "/v1/tasks/" + task + "/questions?instance_id=" +
+                                   instance + "&after=0&limit=5");
+  m_questionsReply = reply;
+  m_questionsTask = task;
+  connect(reply, &QIODevice::readyRead, this, [reply] {
+    auto bytes = reply->property("bytes").toByteArray() + reply->readAll();
+    if (bytes.size() > 320 * 1024) {
+      reply->setProperty("oversized", true);
+      reply->abort();
+      return;
+    }
+    reply->setProperty("bytes", bytes);
+  });
+  connect(reply, &QNetworkReply::finished, this, [this, reply, task, instance] {
+    reply->deleteLater();
+    if (reply != m_questionsReply)
+      return;
+    m_questionsReply = nullptr;
+    const auto obj =
+        QJsonDocument::fromJson(reply->property("bytes").toByteArray())
+            .object();
+    const auto rows = obj.value("questions").toArray();
+    bool valid =
+        reply->error() == QNetworkReply::NoError &&
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() ==
+            200 &&
+        reply->header(QNetworkRequest::ContentTypeHeader)
+            .toString()
+            .startsWith("application/json") &&
+        !reply->property("oversized").toBool() && instance == m_instance &&
+        task == m_questionsTask && rows.size() <= 5 &&
+        integer(obj.value("next_after"));
+    for (const auto &row : rows)
+      valid = valid && validQuestion(row.toObject()) &&
+              row.toObject().value("task_id").toString() == task;
+    if (valid) {
+      m_messagesError.clear();
+      emit questionsReceived(rows.toVariantList());
+    } else {
+      m_messagesError = tr("Owner questions unavailable or invalid");
+    }
+    emit changed();
+  });
+}
+bool ApiClient::validAnswerResult(const QJsonObject &obj) const {
+  return uuid(obj.value("question_id").toString()) &&
+         uuid(obj.value("message_id").toString()) &&
+         obj.value("status").toString() == "stored";
+}
+bool ApiClient::answerQuestion(const QString &task, const QString &question,
+                               const QString &text) {
+  if (!m_online || m_stopped || pending() || m_uncertain || !uuid(task) ||
+      !uuid(question))
+    return false;
+  const QByteArray body = text.toUtf8();
+  if (body.isEmpty() || body.size() > 4096 || body.contains('\0'))
+    return false;
+  m_method = "POST";
+  m_path = "/v1/tasks/" + task + "/questions/" + question + "/answer";
+  m_body = QJsonDocument(QJsonObject{{"instance_id", m_instance},
+                                     {"text", QString::fromUtf8(body)}})
+               .toJson(QJsonDocument::Compact);
+  m_key = QUuid::createUuid().toString(QUuid::WithoutBraces).toLatin1();
+  m_mutationInstance = m_instance;
+  m_conflict = false;
+  sendMutation();
+  return true;
 }
 bool ApiClient::sendMessage(const QString &task, const QString &text,
                             const QString &binding) {
@@ -813,10 +909,14 @@ void ApiClient::sendMutation() {
     const auto obj = doc.object();
     const bool messageRoute =
         m_method == "POST" && m_path.endsWith("/messages");
-    // A reply for an older database must not confirm or clear the commission.
-    const bool staleInstance = messageRoute && m_mutationInstance != m_instance;
+    const bool answerRoute = m_method == "POST" && m_path.endsWith("/answer");
+    const bool deliveryMutation = messageRoute || answerRoute;
+    // A reply for an older database must not confirm or clear delivery text.
+    const bool staleInstance =
+        deliveryMutation && m_mutationInstance != m_instance;
     const bool validResult =
-        messageRoute ? validMessage(obj)
+        answerRoute    ? validAnswerResult(obj)
+        : messageRoute ? validMessage(obj)
         : m_path.endsWith("/queue")
             ? uuid(obj.value("project_id").toString()) &&
                   integer(obj.value("queue_version")) &&
@@ -830,26 +930,30 @@ void ApiClient::sendMutation() {
         !reply->property("oversized").toBool() && validResult) {
       m_uncertain = false;
       m_conflict = false;
-      if (!messageRoute && m_draftRevision == m_sentRevision)
+      if (!deliveryMutation && m_draftRevision == m_sentRevision)
         m_draft.clear();
       m_error.clear();
-      if (messageRoute) {
+      if (answerRoute) {
+        emit answerAccepted(obj.toVariantMap());
+        loadQuestions(m_path.section('/', 3, 3));
+      } else if (messageRoute) {
         emit commissionAccepted(obj.toVariantMap());
         const auto task =
             m_path.section('/', 3, 3); // /v1/tasks/{task}/messages
         loadMessages(task, 0);
         loadDelivery(task);
+        reload();
       } else {
         emit mutationSucceeded(obj.toVariantMap(), m_mutationInstance);
+        reload();
       }
-      reload();
     } else {
       // A transport error, 5xx, redirect or unusable success can follow commit.
       m_uncertain = staleInstance || code == 0 || code >= 500 ||
                     (code >= 200 && code < 400) ||
                     reply->error() == QNetworkReply::OperationCanceledError;
       m_conflict = code == 409;
-      if (messageRoute) {
+      if (deliveryMutation) {
         const auto detail =
             QJsonDocument::fromJson(reply->property("bytes").toByteArray())
                 .object()
@@ -878,8 +982,9 @@ void ApiClient::sendMutation() {
                 : tr("Save rejected; draft preserved");
       }
       if (code == 401) {
-        fail(messageRoute ? tr("Owner authorization failed; text preserved")
-                          : tr("Owner authorization failed; draft preserved"));
+        fail(deliveryMutation
+                 ? tr("Owner authorization failed; text preserved")
+                 : tr("Owner authorization failed; draft preserved"));
         m_reconnect.start();
       }
     }

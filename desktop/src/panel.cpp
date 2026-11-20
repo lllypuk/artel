@@ -86,8 +86,25 @@ Panel::Panel(ApiClient *client, QObject *parent)
           });
   connect(client, &ApiClient::deliveryReceived, this,
           [this](const QVariantMap &projection) {
-            if (!m_deliveryTask.isEmpty())
+            if (!m_deliveryTask.isEmpty()) {
               m_delivery = projection;
+              const auto binding = projection.value("binding").toMap();
+              if (binding.value("allow_owner_questions").toBool()) {
+                m_questionsTask = m_deliveryTask;
+                m_client->loadQuestions(m_questionsTask);
+              }
+            }
+            emit changed();
+          });
+  connect(client, &ApiClient::questionsReceived, this,
+          [this](const QVariantList &rows) {
+            if (!m_questionsTask.isEmpty())
+              m_questions = rows;
+            emit changed();
+          });
+  connect(client, &ApiClient::answerAccepted, this,
+          [this](const QVariantMap &) {
+            m_answer.clear();
             emit changed();
           });
   connect(client, &ApiClient::commissionAccepted, this,
@@ -129,6 +146,13 @@ Panel::Panel(ApiClient *client, QObject *parent)
       return;
     m_deliveryTask = m_task;
     m_client->loadDelivery(m_task);
+    if (m_delivery.value("binding")
+            .toMap()
+            .value("allow_owner_questions")
+            .toBool()) {
+      m_questionsTask = m_task;
+      m_client->loadQuestions(m_task);
+    }
     m_deliveryPoll.start(); // Bounded: only while this task stays selected.
   });
 }
@@ -136,6 +160,12 @@ void Panel::setCommissionText(const QString &text) {
   if (m_commission == text)
     return;
   m_commission = text;
+  emit changed();
+}
+void Panel::setAnswerText(const QString &text) {
+  if (m_answer == text)
+    return;
+  m_answer = text;
   emit changed();
 }
 void Panel::armStatusPoll() {
@@ -176,6 +206,29 @@ QVariantList Panel::messages() const {
   QVariantList result;
   for (const auto &value : m_messages)
     result.append(messageRow(value.toMap()));
+  return result;
+}
+QVariantList Panel::questions() const {
+  QVariantList result;
+  const auto binding = m_delivery.value("binding").toMap();
+  const auto state = task().value("state").toString();
+  const bool openTask = !project().value("archived").toBool() &&
+                        state != "done" && state != "cancelled";
+  for (const auto &value : m_questions) {
+    auto row = value.toMap();
+    const auto answerStatus = row.value("answer_status").toString();
+    row.insert("answerStatusLabel",
+               answerStatus == "observed"
+                   ? tr("Pi started preparing the answer turn")
+               : answerStatus == "unknown" ? tr("Answer outcome unknown")
+               : answerStatus == "stored"  ? tr("Answer saved")
+                                           : QString());
+    row.insert("canAnswer",
+               row.value("status").toString() == "open" && openTask &&
+                   binding.value("status").toString() == "active" &&
+                   writable() && !m_answer.trimmed().isEmpty());
+    result.append(row);
+  }
   return result;
 }
 QVariantMap Panel::assignment() const {
@@ -225,6 +278,8 @@ void Panel::resetCommissions() {
   m_messagesTask.clear();
   m_deliveryTask.clear();
   m_messages.clear();
+  m_questions.clear();
+  m_questionsTask.clear();
   m_messagesCursor = 0;
   m_messagesMore = false;
   m_delivery = {};
@@ -237,6 +292,7 @@ void Panel::resetCommissions() {
 void Panel::resetCommissionView() {
   resetCommissions();
   m_commission.clear();
+  m_answer.clear();
 }
 void Panel::loadCommissionPage() {
   if (m_task.isEmpty() || !m_client->online())
@@ -253,6 +309,15 @@ bool Panel::sendCommission() {
     return false;
   return m_client->sendMessage(m_task, m_commission,
                                target.value("bindingId").toString());
+}
+bool Panel::answerQuestion(const QString &question) {
+  for (const auto &value : questions()) {
+    const auto row = value.toMap();
+    if (row.value("id").toString() == question)
+      return row.value("canAnswer").toBool() &&
+             m_client->answerQuestion(m_task, question, m_answer);
+  }
+  return false;
 }
 void Panel::moreMessages() {
   if (!m_task.isEmpty() && m_messagesMore && !messagesLoading())

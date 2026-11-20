@@ -10,6 +10,7 @@ const UUID = /^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-
 
 export interface DeliveryMessage {
   id: string; task_id: string; delivery_binding_id: string; text: string;
+  kind?: "answer"; question_id?: string; question_text?: string;
   status: string; blocked: boolean; created_at: string;
 }
 
@@ -24,6 +25,8 @@ interface DeliveryContext {
   generation: number;
   writer_id: string;
   ready: boolean;
+  allow_owner_questions?: boolean;
+  owner_questions_capability?: string;
 }
 
 // Test-only seam, driven by the PTY fixture over the control socket. The
@@ -43,6 +46,9 @@ export interface ActiveAttempt {
   receiptKey: string;
   text: string;
   right: boolean;
+  kind?: "answer";
+  questionId?: string;
+  questionText?: string;
 }
 
 // DeliveryWriter owns one binding: kernel lock by exclusive unix bind, CAS
@@ -102,9 +108,24 @@ export class DeliveryWriter {
     return this.config.delivery_binding_id;
   }
 
+  // One explicit tool call performs one bounded store request. It never waits
+  // for the owner and never retries automatically after an uncertain outcome.
+  async askOwner(taskId: string, text: string, signal: AbortSignal): Promise<{ id: string; status: string }> {
+    if (this.config.allow_owner_questions !== true || this.closed || this.stopped || !this.attached)
+      throw new ObserverFailure("capability_required");
+    if (!UUID.test(taskId) || !text || Buffer.byteLength(text) > 4096 || text.includes("\0"))
+      throw new ObserverFailure("invalid_request");
+    const result = await this.transport("POST", "/delivery/v1/questions", {
+      instance_id: this.config.database_instance_id, task_id: taskId, writer_id: this.writerId, text,
+    }, signal, randomUUID()) as { id?: unknown; status?: unknown };
+    if (typeof result.id !== "string" || !UUID.test(result.id) || result.status !== "stored")
+      throw new ObserverFailure("protocol_error");
+    return { id: result.id, status: result.status };
+  }
+
   // before_agent_start observation: only the exact custom start of a spent
   // attempt becomes a receipt; provider and completion events cannot.
-  observeStart(event: { messageType?: string; message?: { details?: unknown } },
+  observeStart(event: { messageType?: string; message?: { customType?: string; details?: unknown } },
     sessionId: string, publish: (attempt: ActiveAttempt) => Promise<void>): void {
     if (event.messageType !== "custom" || !event.message?.details || typeof event.message.details !== "object")
       return;
@@ -113,6 +134,8 @@ export class DeliveryWriter {
     const attemptId = details.attempt_id;
     const attempt = typeof messageId === "string" ? this.attempts.get(messageId) : undefined;
     if (!attempt || attempt.attemptId !== attemptId || sessionId !== this.sessionId) return;
+    if (attempt.kind === "answer" && (event.message?.customType !== "artel-owner-answer" ||
+        details.custom_type !== "artel-owner-answer" || details.question_id !== attempt.questionId)) return;
     // A receipt already confirmed published is never queued again: a duplicated
     // callback of one writer must not multiply republication.
     if (this.journal?.entry(attempt.messageId)?.receipt?.published) return;
@@ -203,6 +226,7 @@ export class DeliveryWriter {
           journal_id: this.config.journal_id,
           runtime_id: this.runtimeId,
           pi_session_id: this.sessionId,
+          ...(this.config.allow_owner_questions === true ? { capability: "owner_questions_v1" } : {}),
         }, signal);
         this.attached = true;
         this.status("Artel: delivery attached");
@@ -224,7 +248,8 @@ export class DeliveryWriter {
       const next = await this.transport("GET", `/delivery/v1/next?writer_id=${this.writerId}`, undefined, signal) as { message?: DeliveryMessage; receipt_key?: string };
       if (this.closed || this.stopped || !next.message) return;
       const message = next.message;
-      if (!UUID.test(message.id) || typeof message.text !== "string" || typeof next.receipt_key !== "string" || !UUID.test(next.receipt_key))
+      if (!UUID.test(message.id) || typeof message.text !== "string" || typeof next.receipt_key !== "string" || !UUID.test(next.receipt_key) ||
+          (message.kind === "answer" && (!UUID.test(message.question_id ?? "") || typeof message.question_text !== "string")))
         throw new ObserverFailure("protocol_error");
       // Recheck idle immediately before spending: a manual turn that started
       // while next was in flight must not consume the delivery right.
@@ -236,6 +261,7 @@ export class DeliveryWriter {
         messageId: message.id, attemptId: spend.attempt_id,
         receiptKey: next.receipt_key,
         text: message.text, right: spend.right === true,
+        ...(message.kind === "answer" ? { kind: "answer" as const, questionId: message.question_id, questionText: message.question_text } : {}),
       };
       if (!attempt.right || !attempt.receiptKey) {
         // Already spent elsewhere or a replayed state: never call Pi again,
@@ -290,6 +316,9 @@ export class DeliveryWriter {
         value.journal_id !== this.config.journal_id)
       throw new ObserverFailure("database_mismatch");
     if (value.status === "revoked") throw new ObserverFailure("revoked");
+    if ((this.config.allow_owner_questions === true) !== (value.allow_owner_questions === true) ||
+        (this.attached && this.config.allow_owner_questions === true && value.owner_questions_capability !== "owner_questions_v1"))
+      throw new ObserverFailure("capability_required");
     if (this.attached && value.writer_id !== this.writerId) throw new ObserverFailure("owner_conflict");
     return value;
   }
@@ -338,7 +367,8 @@ export class DeliveryWriter {
         type: "before_agent_start",
         message_type: "custom",
         pi_session_id: this.sessionId,
-        details: { message_id: attempt.messageId, attempt_id: attempt.attemptId },
+        details: { message_id: attempt.messageId, attempt_id: attempt.attemptId,
+          ...(attempt.kind === "answer" ? { custom_type: "artel-owner-answer", question_id: attempt.questionId } : {}) },
       }, this.receiptController.signal);
       if (this.closed || this.stopped) return;
       this.journal?.recordReceipt(attempt.messageId, { type: "before_agent_start", message_type: "custom", published: true });

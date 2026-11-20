@@ -60,7 +60,11 @@ func failure(w http.ResponseWriter, code string) { reply(w, nil, &store.Observer
 
 // Reject duplicate keys at every depth, null root, unknown and missing fields.
 func decode(w http.ResponseWriter, r *http.Request, target any, allowed []string, required ...string) bool {
-	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBody))
+	return decodeLimit(w, r, target, MaxBody, allowed, required...)
+}
+
+func decodeLimit(w http.ResponseWriter, r *http.Request, target any, limit int64, allowed []string, required ...string) bool {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if err != nil {
 		failure(w, "body_too_large")
 		return false
@@ -185,6 +189,7 @@ func New(s *store.Store) http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { failure(w, "not_found") })
 	rate := &limiter{times: map[string][]time.Time{}}
 	mountDelivery(mux, s)
+	mountDeliveryQuestions(mux, s)
 	mux.HandleFunc("GET /observer/v1/context", func(w http.ResponseWriter, r *http.Request) {
 		query, err := url.ParseQuery(r.URL.RawQuery)
 		if err != nil || len(query) != 1 || len(query["runtime_id"]) != 1 {
@@ -242,7 +247,11 @@ func protect(s *store.Store, mux http.Handler) http.Handler {
 			reply(w, nil, e)
 			return
 		}
-		data, e := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBody))
+		bodyLimit := int64(MaxBody)
+		if r.URL.Path == "/delivery/v1/questions" {
+			bodyLimit = maxQuestionBody
+		}
+		data, e := io.ReadAll(http.MaxBytesReader(w, r.Body, bodyLimit))
 		if e != nil {
 			failure(w, "body_too_large")
 			return
@@ -260,7 +269,7 @@ func protect(s *store.Store, mux http.Handler) http.Handler {
 		case "GET /observer/v1/context", "POST /observer/v1/register", "PUT /observer/v1/report",
 			"GET /delivery/v1/context", "GET /delivery/v1/next",
 			"POST /delivery/v1/attach", "POST /delivery/v1/ready", "POST /delivery/v1/spend",
-			"POST /delivery/v1/verify", "POST /delivery/v1/receipt":
+			"POST /delivery/v1/verify", "POST /delivery/v1/receipt", "POST /delivery/v1/questions":
 			mux.ServeHTTP(w, r)
 		default:
 			failure(w, "not_found")

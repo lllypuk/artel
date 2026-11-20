@@ -34,11 +34,12 @@ func mountDelivery(mux *http.ServeMux, s *store.Store) {
 			JournalID        string `json:"journal_id"`
 			RuntimeID        string `json:"runtime_id"`
 			PiSessionID      string `json:"pi_session_id"`
+			Capability       string `json:"capability"`
 		}
-		if !decode(w, r, &body, []string{"writer_id", "expected_previous", "journal_id", "runtime_id", "pi_session_id"}, "writer_id", "journal_id", "runtime_id", "pi_session_id") {
+		if !decode(w, r, &body, []string{"writer_id", "expected_previous", "journal_id", "runtime_id", "pi_session_id", "capability"}, "writer_id", "journal_id", "runtime_id", "pi_session_id") {
 			return
 		}
-		e := s.DeliveryAttach(r.Context(), deliveryBinding(r), body.WriterID, body.ExpectedPrevious, body.JournalID, body.RuntimeID, body.PiSessionID)
+		e := s.DeliveryAttach(r.Context(), deliveryBinding(r), body.WriterID, body.ExpectedPrevious, body.JournalID, body.RuntimeID, body.PiSessionID, body.Capability)
 		reply(w, map[string]string{"status": "attached"}, e)
 	})
 	mux.HandleFunc("POST /delivery/v1/ready", func(w http.ResponseWriter, r *http.Request) {

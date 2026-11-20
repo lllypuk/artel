@@ -38,6 +38,9 @@ class Panel : public QObject {
                  NOTIFY changed)
   Q_PROPERTY(QVariant assignment READ assignment NOTIFY changed)
   Q_PROPERTY(QVariant messages READ messages NOTIFY changed)
+  Q_PROPERTY(QVariant questions READ questions NOTIFY changed)
+  Q_PROPERTY(
+      QString answerText READ answerText WRITE setAnswerText NOTIFY changed)
   Q_PROPERTY(bool messagesMore READ messagesMore NOTIFY changed)
   Q_PROPERTY(bool messagesLoading READ messagesLoading NOTIFY changed)
   Q_PROPERTY(
@@ -76,6 +79,9 @@ public:
   // Exact assignment, binding state, writer readiness and the blocking reason.
   QVariantMap assignment() const;
   QVariantList messages() const;
+  QVariantList questions() const;
+  QString answerText() const { return m_answer; }
+  void setAnswerText(const QString &text);
   bool messagesMore() const { return m_messagesMore; }
   bool messagesLoading() const { return m_client->messagesLoading(); }
   bool showArchived() const { return m_archived; }
@@ -97,6 +103,7 @@ public:
   Q_INVOKABLE bool allowed(const QString &state) const;
   Q_INVOKABLE void moreHistory();
   Q_INVOKABLE bool sendCommission();
+  Q_INVOKABLE bool answerQuestion(const QString &question);
   Q_INVOKABLE void moreMessages();
   Q_INVOKABLE QString stateLabel(const QString &state) const;
 signals:
@@ -115,8 +122,9 @@ private:
   ObserverClient m_observers;
   QTimer m_statusPoll, m_deliveryPoll;
   QString m_commission, m_messagesTask, m_deliveryTask;
-  QVariantList m_messages;
+  QVariantList m_messages, m_questions;
   QVariantMap m_delivery;
+  QString m_answer, m_questionsTask;
   qint64 m_messagesCursor = 0;
   qsizetype m_statusOffset = 0;
   bool m_messagesMore = false;

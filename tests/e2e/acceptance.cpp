@@ -363,6 +363,117 @@ private slots:
     QVERIFY(!ui.panel.dirty());
     QVERIFY(!ui.panel.uncertain());
   }
+  // Invoked by questions_pty.py against the same real daemon and original Pi.
+  void ownerQuestionRoundTrip() {
+    const auto endpoint = qEnvironmentVariable("ARTEL_QUESTION_ENDPOINT");
+    const auto token = qEnvironmentVariable("ARTEL_QUESTION_OWNER_TOKEN");
+    const auto project = qEnvironmentVariable("ARTEL_QUESTION_PROJECT");
+    const auto task = qEnvironmentVariable("ARTEL_QUESTION_TASK");
+    const auto questionText = qEnvironmentVariable("ARTEL_QUESTION_TEXT");
+    const auto answerText = qEnvironmentVariable("ARTEL_QUESTION_ANSWER");
+    const auto commission = qEnvironmentVariable("ARTEL_QUESTION_COMMISSION");
+    QVERIFY2(!endpoint.isEmpty() && !token.isEmpty() && !project.isEmpty() &&
+                 !task.isEmpty() && !questionText.isEmpty() &&
+                 !answerText.isEmpty(),
+             "Run ownerQuestionRoundTrip through questions_pty.py");
+    QVERIFY((!commission.isEmpty() && commission.contains(task)) ||
+            commission.isEmpty());
+    Daemon daemon;
+    daemon.endpoint = QUrl(endpoint);
+    const auto privateDir = daemon.dir.filePath("private");
+    QVERIFY(QDir().mkpath(privateDir));
+    QVERIFY(QFile::setPermissions(
+        privateDir, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    QVERIFY(QFile::copy(token, daemon.tokenPath()));
+    Oracle oracle(daemon.endpoint, daemon.tokenPath());
+    const auto baseline = oracle.get("/v1/snapshot");
+    const auto baselineTask =
+        find(baseline.value("tasks").toArray(), task).value("state").toString();
+    QVERIFY(!baselineTask.isEmpty());
+    Window ui(daemon);
+    QVERIFY(ui.window);
+    QTRY_VERIFY_WITH_TIMEOUT(ui.panel.writable(), 5000);
+    QVERIFY(click(ui.window, "projectsNavButton"));
+    QVERIFY(ui.panel.selectProject(project));
+    QVERIFY(ui.panel.selectTask(task));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        item(ui.window, "taskUuid")->property("text").toString(), task, 5000);
+    if (!commission.isEmpty()) {
+      QTRY_VERIFY_WITH_TIMEOUT(
+          ui.panel.assignment().value("canSend").toBool() ||
+              ui.panel.assignment().value("available").toBool(),
+          15000);
+      QVERIFY(enter(ui.window, "commissionField", commission));
+      QVERIFY(click(ui.window, "sendCommissionButton"));
+      QTRY_COMPARE_WITH_TIMEOUT(ui.panel.messages().size(), 1, 10000);
+    }
+    auto question = [&]() -> QVariantMap {
+      for (const auto &value : ui.panel.questions()) {
+        const auto row = value.toMap();
+        if (row.value("text").toString() == questionText)
+          return row;
+      }
+      return {};
+    };
+    // The selected, initially empty task polls in the new question without a
+    // task reselection. The original tool turn must settle before answering.
+    QTRY_VERIFY_WITH_TIMEOUT(!question().isEmpty(), 20000);
+    const auto tracePath = qEnvironmentVariable("ARTEL_QUESTION_TRACE");
+    if (!tracePath.isEmpty()) {
+      auto toolTurnSettled = [&] {
+        QFile trace(tracePath);
+        if (!trace.open(QIODevice::ReadOnly))
+          return false;
+        const auto bytes = trace.readAll();
+        const auto tool = bytes.lastIndexOf("\"event\":\"tool_execution_end\"");
+        const auto settled = bytes.lastIndexOf("\"event\":\"agent_settled\"");
+        return tool >= 0 && settled > tool;
+      };
+      QTRY_VERIFY_WITH_TIMEOUT(toolTurnSettled(), 15000);
+    }
+    QCOMPARE(question().value("status").toString(), QString("open"));
+    const auto questionID = question().value("id").toString();
+    QVERIFY(enter(ui.window, "answerField_" + questionID, answerText));
+    auto *answerButton = item(ui.window, "answerButton_" + questionID);
+    QVERIFY(answerButton && answerButton->isEnabled());
+    answerButton->forceActiveFocus();
+    QTest::keyClick(ui.window, Qt::Key_Space);
+    QTRY_COMPARE_WITH_TIMEOUT(question().value("status").toString(),
+                              QString("answered"), 10000);
+    QTRY_COMPARE_WITH_TIMEOUT(question().value("answer_text").toString(),
+                              answerText, 5000);
+    const bool expectObserved =
+        qEnvironmentVariable("ARTEL_QUESTION_EXPECT_OBSERVED") == "1";
+    QTRY_COMPARE_WITH_TIMEOUT(
+        question().value("answer_status").toString(),
+        expectObserved ? QString("observed") : QString("stored"), 20000);
+    QVERIFY(item(ui.window, "answerStatus_" + questionID)->isVisible());
+    const auto instance = baseline.value("instance_id").toString();
+    const auto wire =
+        oracle.get("/v1/tasks/" + task + "/questions?instance_id=" + instance +
+                   "&after=0&limit=5");
+    const auto expectedTotal =
+        qEnvironmentVariableIntValue("ARTEL_QUESTION_TOTAL") <= 0
+            ? 1
+            : qEnvironmentVariableIntValue("ARTEL_QUESTION_TOTAL");
+    QCOMPARE(wire.value("questions").toArray().size(), expectedTotal);
+    int pairs = 0;
+    for (const auto &value : wire.value("questions").toArray()) {
+      const auto row = value.toObject();
+      if (row.value("text").toString() == questionText) {
+        ++pairs;
+        QCOMPARE(row.value("answer_text").toString(), answerText);
+        QCOMPARE(row.value("answer_status").toString(),
+                 expectObserved ? QString("observed") : QString("stored"));
+      }
+    }
+    QCOMPARE(pairs, 1);
+    const auto after = oracle.get("/v1/snapshot");
+    QCOMPARE(
+        find(after.value("tasks").toArray(), task).value("state").toString(),
+        baselineTask);
+    QVERIFY(!ui.panel.uncertain());
+  }
   void restartConcurrencyAndRecovery() {
     Daemon daemon;
     QVERIFY(daemon.dir.isValid());
