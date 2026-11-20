@@ -248,12 +248,16 @@ through the card's existing manual actions: they use the current result ID from
 the loaded view, and a conflict requires rereading rather than automatic retry.
 The contract is in the [owner API](../api/openapi.yaml).
 
-`make test-e2e` explicitly invokes the Qt slot `reviewedTaskResult`. Its Git
-commits are created by the **test runner**, and its manifest/findings pair is
-synthetic. It uses a real temporary daemon/CLI and production QML, but launches
-no Pi, revmux or agterm. This proves the UI/SSE/CAS/history contract only; it is
-separate from, and not evidence for, a real demonstration where Pi makes a
-commit and the owner runs actual revmux.
+`make test-e2e` explicitly invokes the Qt slot `reviewedTaskResult` in two
+isolated modes. The standalone mode proves the UI/SSE/CAS/restart/history
+contract without Pi. `integrations/pi-observer/tests/result_pty.py` then runs
+the same slot against one shared temporary daemon/task with a real bound Pi
+PTY and deterministic local 4a provider. Production QML sends the commission
+and observes its receipt before the **test runner** creates Git commits and
+imports a synthetic manifest/findings pair; Pi answers `Fictional answer`.
+The runner owns and cleans up daemon/Pi/Qt, uses a private environment without
+agterm, and never launches revmux. This proves delivery plus the exact-result
+contract, not creation of a commit by an agent or a real revmux demonstration.
 
 ## Owner questions and asynchronous answers (stage 4b)
 

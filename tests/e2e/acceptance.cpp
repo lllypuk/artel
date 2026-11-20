@@ -701,22 +701,100 @@ private slots:
         baselineTask);
     QVERIFY(!ui.panel.uncertain());
   }
-  // Synthetic Git/report fixture only: no Pi, revmux or agterm is launched.
-  // The runner, not an agent, creates the commits used by this UI contract
-  // test.
+  // The runner, not an agent, creates the commits and synthetic report. The
+  // standalone slot owns its daemon; result_pty.py instead supplies one live
+  // daemon/task with an already-bound Pi PTY for the shared 4a/result chain.
   void reviewedTaskResult() {
     Daemon daemon;
     QVERIFY(daemon.dir.isValid());
-    QVERIFY(daemon.start());
+    const bool sharedDelivery =
+        !qEnvironmentVariable("ARTEL_RESULT_ENDPOINT").isEmpty();
+    QString project = qEnvironmentVariable("ARTEL_RESULT_PROJECT");
+    QString task = qEnvironmentVariable("ARTEL_RESULT_TASK");
+    QString otherTask;
+    QString repo = qEnvironmentVariable("ARTEL_RESULT_REPO");
+    ProcessResult result;
+    if (sharedDelivery) {
+      const auto token = qEnvironmentVariable("ARTEL_RESULT_OWNER_TOKEN");
+      QVERIFY2(!project.isEmpty() && !task.isEmpty() && !repo.isEmpty() &&
+                   !token.isEmpty(),
+               "Run the shared reviewedTaskResult through result_pty.py");
+      daemon.endpoint = QUrl(qEnvironmentVariable("ARTEL_RESULT_ENDPOINT"));
+      const auto privateDir = daemon.dir.filePath("private");
+      QVERIFY(QDir().mkpath(privateDir));
+      QVERIFY(QFile::setPermissions(
+          privateDir, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+      QVERIFY(QFile::copy(token, daemon.tokenPath()));
+    } else {
+      QVERIFY(daemon.start());
+      repo = daemon.dir.filePath("review-repository");
+      result = runProcess("git", {"init", "-q", repo});
+      QVERIFY2(result.code == 0, result.error.constData());
+    }
     Oracle oracle(daemon.endpoint, daemon.tokenPath());
     ResultDelayProxy proxy(oracle);
     QVERIFY(proxy.listen(QHostAddress::LocalHost, 0));
     const QUrl proxyEndpoint(
         QString("http://127.0.0.1:%1").arg(proxy.serverPort()));
+    if (!sharedDelivery) {
+      project = oracle
+                    .request("POST", "/v1/projects",
+                             {{"name", "Fictional reviewed result"},
+                              {"root_path", repo}})
+                    .value("id")
+                    .toString();
+      task = oracle
+                 .request("POST", "/v1/projects/" + project + "/tasks",
+                          {{"title", "Review exact candidate"},
+                           {"description", "Original task description"}})
+                 .value("id")
+                 .toString();
+      otherTask = oracle
+                      .request("POST", "/v1/projects/" + project + "/tasks",
+                               {{"title", "Other task during loading"}})
+                      .value("id")
+                      .toString();
+      QVERIFY(!task.isEmpty() && !otherTask.isEmpty());
+      QVERIFY(!oracle
+                   .request("PUT", "/v1/projects/" + project + "/queue",
+                            {{"expected_queue_version", 1},
+                             {"task_ids", QJsonArray{task}}})
+                   .isEmpty());
+    }
 
-    const auto repo = daemon.dir.filePath("review-repository");
-    auto result = runProcess("git", {"init", "-q", repo});
-    QVERIFY2(result.code == 0, result.error.constData());
+    auto ui = std::make_unique<Window>(daemon, proxyEndpoint);
+    QVERIFY(ui->window);
+    QTRY_VERIFY(ui->panel.writable());
+    QVERIFY(click(ui->window, "projectsNavButton"));
+    QVERIFY(ui->panel.selectProject(project));
+    QVERIFY(ui->panel.selectTask(task));
+    QTRY_VERIFY_WITH_TIMEOUT(ui->panel.resultsLoaded(), 5000);
+    QVERIFY(item(ui->window, "noTaskResult")->isVisible());
+    QVERIFY(!item(ui->window, "resultError")->isVisible());
+    QVERIFY(item(ui->window, "commissionField"));
+    if (sharedDelivery) {
+      const auto commission = "Fictional result commission for " + task;
+      QTRY_VERIFY_WITH_TIMEOUT(
+          ui->panel.assignment().value("available").toBool(), 15000);
+      QVERIFY(enter(ui->window, "commissionField", commission));
+      QVERIFY(click(ui->window, "sendCommissionButton"));
+      QTRY_COMPARE_WITH_TIMEOUT(ui->panel.messages().size(), 1, 10000);
+      QTRY_COMPARE_WITH_TIMEOUT(
+          ui->panel.messages().first().toMap().value("status").toString(),
+          QString("observed"), 20000);
+      const auto message =
+          ui->panel.messages().first().toMap().value("id").toString();
+      QVERIFY(item(ui->window, "messageStatus_" + message)->isVisible());
+      QCOMPARE(ui->panel.task().value("state").toString(), QString("queued"));
+    } else {
+      ui->panel.setCommissionText("Fictional commission text");
+      QTRY_COMPARE(
+          item(ui->window, "commissionField")->property("text").toString(),
+          QString("Fictional commission text"));
+    }
+
+    // In the shared chain these commits follow the observed commission. They
+    // remain runner-created test input, never a claim that Pi made a commit.
     QCOMPARE(git(repo, {"config", "user.name", "Fictional Runner"}), QString());
     QCOMPARE(git(repo, {"config", "user.email", "runner@example.invalid"}),
              QString());
@@ -743,47 +821,6 @@ private slots:
     const auto secondHead = git(repo, {"rev-parse", "HEAD"});
     QVERIFY(firstHead != secondHead && secondHead.size() == 40);
 
-    const auto project = oracle
-                             .request("POST", "/v1/projects",
-                                      {{"name", "Fictional reviewed result"},
-                                       {"root_path", repo}})
-                             .value("id")
-                             .toString();
-    QVERIFY(!project.isEmpty());
-    const auto task =
-        oracle
-            .request("POST", "/v1/projects/" + project + "/tasks",
-                     {{"title", "Review exact candidate"},
-                      {"description", "Original task description"}})
-            .value("id")
-            .toString();
-    const auto otherTask =
-        oracle
-            .request("POST", "/v1/projects/" + project + "/tasks",
-                     {{"title", "Other task during loading"}})
-            .value("id")
-            .toString();
-    QVERIFY(!task.isEmpty() && !otherTask.isEmpty());
-    QVERIFY(!oracle
-                 .request("PUT", "/v1/projects/" + project + "/queue",
-                          {{"expected_queue_version", 1},
-                           {"task_ids", QJsonArray{task}}})
-                 .isEmpty());
-
-    auto ui = std::make_unique<Window>(daemon, proxyEndpoint);
-    QVERIFY(ui->window);
-    QTRY_VERIFY(ui->panel.writable());
-    QVERIFY(click(ui->window, "projectsNavButton"));
-    QVERIFY(ui->panel.selectProject(project));
-    QVERIFY(ui->panel.selectTask(task));
-    QTRY_VERIFY_WITH_TIMEOUT(ui->panel.resultsLoaded(), 5000);
-    QVERIFY(item(ui->window, "noTaskResult")->isVisible());
-    QVERIFY(!item(ui->window, "resultError")->isVisible());
-    QVERIFY(item(ui->window, "commissionField"));
-    ui->panel.setCommissionText("Fictional commission text");
-    QTRY_COMPARE(
-        item(ui->window, "commissionField")->property("text").toString(),
-        QString("Fictional commission text"));
     QTRY_VERIFY(ui->panel.allowed("in_progress"));
     QVERIFY(click(ui->window, "startButton"));
     QTRY_COMPARE(ui->panel.task().value("state").toString(),
@@ -896,18 +933,21 @@ private slots:
     QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
                  firstID);
 
-    // Switching selection cancels a held read; its late response cannot leak.
-    proxy.holdNext = true;
-    QVERIFY(ui->panel.selectTask(otherTask));
-    QTRY_COMPARE(proxy.delayed, 1);
-    QVERIFY(ui->panel.resultsLoading());
-    QVERIFY(ui->panel.currentResult().toMap().isEmpty());
-    QVERIFY(ui->panel.selectTask(task));
-    QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
-                 firstID);
-    proxy.release();
-    QTest::qWait(50);
-    QCOMPARE(ui->panel.currentResult().toMap().value("id").toString(), firstID);
+    if (!sharedDelivery) {
+      // Switching selection cancels a held read; its late response cannot leak.
+      proxy.holdNext = true;
+      QVERIFY(ui->panel.selectTask(otherTask));
+      QTRY_COMPARE(proxy.delayed, 1);
+      QVERIFY(ui->panel.resultsLoading());
+      QVERIFY(ui->panel.currentResult().toMap().isEmpty());
+      QVERIFY(ui->panel.selectTask(task));
+      QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
+                   firstID);
+      proxy.release();
+      QTest::qWait(50);
+      QCOMPARE(ui->panel.currentResult().toMap().value("id").toString(),
+               firstID);
+    }
 
     // SSE invalidates the result, not either kind of local draft. While the
     // replacement read is held, the old view cannot accept the new candidate.
@@ -948,7 +988,7 @@ private slots:
     const auto second = QJsonDocument::fromJson(result.output).object();
     const auto secondID = second.value("id").toString();
     QVERIFY(!secondID.isEmpty() && secondID != firstID);
-    QTRY_COMPARE(proxy.delayed, 2);
+    QTRY_COMPARE(proxy.delayed, sharedDelivery ? 1 : 2);
     QVERIFY(!ui->panel.resultsLoaded());
     QCOMPARE(ui->panel.editor().value("description").toString(),
              QString("Unsaved result-test draft"));
@@ -980,23 +1020,8 @@ private slots:
     QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
                  secondID);
 
-    // Restart both daemon and production QML; immutable old review history and
-    // the second current candidate remain visible after reconstruction.
-    QVERIFY(ui->window->close());
-    ui.reset();
-    daemon.stop();
-    QVERIFY(daemon.start());
-    oracle.endpoint = daemon.endpoint;
-    ui = std::make_unique<Window>(daemon, proxyEndpoint);
-    QVERIFY(ui->window);
-    QTRY_VERIFY(ui->panel.writable());
-    QVERIFY(click(ui->window, "projectsNavButton"));
-    QVERIFY(ui->panel.selectProject(project));
-    QVERIFY(ui->panel.selectTask(task));
-    QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
-                 secondID);
-    QTRY_COMPARE(ui->panel.resultHistory().toList().size(), 2);
-    QCOMPARE(ui->panel.task().value("state").toString(), QString("backlog"));
+    // Both modes prove the old review remains visible only as history. The
+    // standalone slot also restarts its owned daemon and production QML.
     QVERIFY(item(ui->window, "resultHistory_" + firstID));
     QVERIFY(item(ui->window, "historyReviewRun_" + reviewID));
     QCOMPARE(item(ui->window, "historyResultHead_" + firstID)
@@ -1005,6 +1030,31 @@ private slots:
              QString("Head: %1").arg(firstHead));
     QCOMPARE(item(ui->window, "resultHead")->property("text").toString(),
              QString("Head: %1").arg(secondHead));
+    if (!sharedDelivery) {
+      QVERIFY(ui->window->close());
+      ui.reset();
+      daemon.stop();
+      QVERIFY(daemon.start());
+      oracle.endpoint = daemon.endpoint;
+      ui = std::make_unique<Window>(daemon, proxyEndpoint);
+      QVERIFY(ui->window);
+      QTRY_VERIFY(ui->panel.writable());
+      QVERIFY(click(ui->window, "projectsNavButton"));
+      QVERIFY(ui->panel.selectProject(project));
+      QVERIFY(ui->panel.selectTask(task));
+      QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
+                   secondID);
+      QTRY_COMPARE(ui->panel.resultHistory().toList().size(), 2);
+      QCOMPARE(ui->panel.task().value("state").toString(), QString("backlog"));
+      QVERIFY(item(ui->window, "resultHistory_" + firstID));
+      QVERIFY(item(ui->window, "historyReviewRun_" + reviewID));
+      QCOMPARE(item(ui->window, "historyResultHead_" + firstID)
+                   ->property("text")
+                   .toString(),
+               QString("Head: %1").arg(firstHead));
+      QCOMPARE(item(ui->window, "resultHead")->property("text").toString(),
+               QString("Head: %1").arg(secondHead));
+    }
     const auto wire =
         oracle.get("/v1/tasks/" + task + "/results?after=0&limit=50");
     QCOMPARE(wire.value("current_result_id").toString(), secondID);

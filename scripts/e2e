@@ -29,6 +29,13 @@ timeout --signal=TERM --kill-after=15s 120s env -i PATH="$PATH" LANG=C.UTF-8 \
     QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_FORCE_STDERR_LOGGING=1 \
     "$ROOT/desktop/build/e2e/acceptance" -maxwarnings 0 reviewedTaskResult "$@"
 
+# One shared daemon/task: real bound Pi PTY and deterministic provider deliver
+# the commission, then the same production-QML slot submits/imports the exact
+# runner-created Git candidates. The fixture owns all processes and no agterm
+# or real revmux environment is inherited.
+timeout --signal=TERM --kill-after=10s 180s env -i PATH="$PATH" LANG=C.UTF-8 \
+    TMPDIR=/tmp python3 -B "$ROOT/integrations/pi-observer/tests/result_pty.py"
+
 # Prove a failing assertion exits nonzero and still destroys its daemon/data.
 status=0
 timeout --signal=TERM --kill-after=15s 30s env -i PATH="$PATH" LANG=C.UTF-8 \
