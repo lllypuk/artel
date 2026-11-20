@@ -750,6 +750,23 @@ Item {
                                         enabled: questionRow.record.canAnswer && answerField.text.trim().length > 0
                                         onClicked: manual.panel.answerQuestion(questionRow.questionId)
                                     }
+                                    Caption {
+                                        id: answerDraftLabel
+                                        objectName: "answerDraftLabel_" + questionRow.questionId
+                                        text: qsTr("Unsent answer draft")
+                                        color: theme.muted
+                                        visible: answerDraft.visible
+                                    }
+                                    CopyText {
+                                        id: answerDraft
+                                        objectName: "answerDraft_" + questionRow.questionId
+                                        text: questionRow.record.status === "closed" ? manual.panel.answerText(questionRow.questionId) : ""
+                                        visible: text.length > 0
+                                        activeFocusOnTab: true
+                                        Accessible.name: answerDraftLabel.text
+                                        onActiveFocusChanged: manual.revealField(this, cursorRectangle.y)
+                                        onCursorRectangleChanged: manual.revealField(this, cursorRectangle.y)
+                                    }
                                     CopyText {
                                         objectName: "answerText_" + questionRow.questionId
                                         visible: questionRow.record.status === "answered"

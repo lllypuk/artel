@@ -222,6 +222,7 @@
   "Question from Pi session %1": "Вопрос от Pi-сессии %1",
   "Answer for Pi": "Ответ для Pi",
   "Save answer for Pi": "Сохранить ответ для Pi",
+  "Unsent answer draft": "Неотправленный черновик ответа",
   "Pi started preparing the answer turn": "Pi начал подготовку хода с ответом",
   "Answer outcome unknown": "Исход доставки ответа неизвестен",
   "Answer saved": "Ответ сохранён",

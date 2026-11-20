@@ -6,6 +6,7 @@
 #include "uifixture.h"
 #include "workspacecontroller.h"
 #include <QAccessible>
+#include <QClipboard>
 #include <QFile>
 #include <QFileInfo>
 #include <QInputMethodEvent>
@@ -3367,10 +3368,22 @@ private slots:
     UiFixture fixture;
     const QString question = "44444444-4444-4444-8444-444444444444";
     const QString binding = "55555555-5555-4555-8555-555555555555";
-    const QString draft = "Answer to keep after closure";
+    const QString otherTask = "66666666-6666-4666-8666-666666666666";
+    const QString replacement = "77777777-7777-4777-8777-777777777777";
+    const QString draft = "Answer to keep after closure\nLiteral <b>text</b>";
     const auto answerPath = ("POST /v1/tasks/" + fixture.task + "/questions/" +
                              question + "/answer ")
                                 .toUtf8();
+    const auto otherTaskPath = ("GET /v1/tasks/" + otherTask + "/").toUtf8();
+    auto snapshot = QJsonDocument::fromJson(fixture.state).object();
+    auto tasks = snapshot.value("tasks").toArray();
+    auto other = tasks.first().toObject();
+    other.insert("id", otherTask);
+    other.insert("title", "Unrelated task");
+    tasks.append(other);
+    snapshot.insert("tasks", tasks);
+    fixture.state = QJsonDocument(snapshot).toJson();
+    const auto originalState = fixture.state;
     const QString time = "2026-11-17T12:00:00Z";
     QJsonObject row{{"id", question},
                     {"task_id", fixture.task},
@@ -3402,21 +3415,25 @@ private slots:
                              "\"message\":\"delivery operation rejected\"}");
         }
       } else if (request.contains("/questions?")) {
+        const auto rows =
+            request.startsWith(otherTaskPath) || request.contains("after=1&")
+                ? QJsonArray{}
+                : QJsonArray{row};
         UiFixture::respond(
             socket, 200,
-            QJsonDocument(QJsonObject{{"next_after", 1},
-                                      {"questions", request.contains("after=1&")
-                                                        ? QJsonArray{}
-                                                        : QJsonArray{row}}})
+            QJsonDocument(QJsonObject{{"next_after", 1}, {"questions", rows}})
                 .toJson());
       } else if (request.contains("/delivery ")) {
         UiFixture::respond(
             socket, 200,
-            QJsonDocument(QJsonObject{{"task_id", fixture.task},
-                                      {"project_id", fixture.project},
-                                      {"ready", false},
-                                      {"binding", revoked ? QJsonValue::Null
-                                                          : QJsonValue(grant)}})
+            QJsonDocument(
+                QJsonObject{{"task_id", request.startsWith(otherTaskPath)
+                                            ? otherTask
+                                            : fixture.task},
+                            {"project_id", fixture.project},
+                            {"ready", false},
+                            {"binding",
+                             revoked ? QJsonValue::Null : QJsonValue(grant)}})
                 .toJson());
       } else if (request.startsWith("GET") && request.contains("/messages?")) {
         UiFixture::respond(socket, 200, "{\"messages\":[],\"next_after\":0}");
@@ -3433,13 +3450,19 @@ private slots:
     Panel panel(&client);
     QSignalSpy accepted(&client, &ApiClient::answerAccepted);
     QSignalSpy saved(&client, &ApiClient::mutationSucceeded);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance);
+    QVERIFY(window);
     client.reload();
     QTRY_VERIFY(panel.writable());
     QVERIFY(panel.selectProject(fixture.project));
     QVERIFY(panel.selectTask(fixture.task));
     QTRY_COMPARE(panel.questions().size(), 1);
     QTRY_VERIFY(panel.questions().first().toMap().value("canAnswer").toBool());
-    panel.setAnswerText(question, draft);
+    QTRY_VERIFY(item(window, "answerField_" + question));
+    QVERIFY(enter(window, "answerField_" + question, draft));
     QVERIFY(panel.answerQuestion(question));
     QTRY_VERIFY(panel.uncertain() && !client.pending());
     QCOMPARE(fixture.mutations.size(), 1);
@@ -3468,11 +3491,62 @@ private slots:
     QVERIFY(panel.writable());
     QCOMPARE(panel.answerText(question), draft);
 
+    const auto visible = [&](const QString &name) {
+      const auto *control = item(window, name + "_" + question);
+      return control && control->isVisible();
+    };
+    const auto verifyClosedDraft = [&] {
+      QTRY_VERIFY(visible("answerDraft"));
+      QVERIFY(visible("answerDraftLabel"));
+      QVERIFY(!visible("answerField"));
+      QVERIFY(!visible("answerButton"));
+      QVERIFY(!visible("answerText"));
+      QVERIFY(!item(window, "answerButton_" + question)->isEnabled());
+      QVERIFY(!panel.answerQuestion(question));
+      auto *copy = item(window, "answerDraft_" + question);
+      QVERIFY(copy->property("readOnly").toBool());
+      QCOMPARE(copy->property("textFormat").toInt(), int(Qt::PlainText));
+      QGuiApplication::clipboard()->clear();
+      copy->forceActiveFocus();
+      QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+      QTest::keyClick(window, Qt::Key_C, Qt::ControlModifier);
+      QCOMPARE(QGuiApplication::clipboard()->text(), draft);
+    };
+    QTRY_VERIFY(!visible("answerField")); // Polled closed, not reselected.
+    verifyClosedDraft();
+
+    QVERIFY(panel.selectTask(otherTask));
+    QTRY_VERIFY(!panel.questionsLoading());
+    QVERIFY(panel.questions().isEmpty());
+    QVERIFY(!visible("answerDraft"));
+    QVERIFY(panel.answerText(question).isEmpty());
+    QVERIFY(!panel.answerQuestion(question));
     QVERIFY(panel.selectTask(fixture.task));
+    QCOMPARE(panel.answerText(question), draft);
+    verifyClosedDraft();
+
+    // Even matching task/question IDs cannot show the old draft in another DB.
+    snapshot.insert("instance_id", replacement);
+    fixture.state = QJsonDocument(snapshot).toJson();
+    client.reload();
+    QTRY_COMPARE(client.instance(), replacement);
+    QTRY_VERIFY(visible("questionText"));
+    QVERIFY(!visible("answerDraft"));
+    QVERIFY(!visible("answerDraftLabel"));
+    QVERIFY(panel.answerText(question).isEmpty());
+    QVERIFY(!panel.answerQuestion(question));
+    fixture.state = originalState;
+    client.reload();
+    QTRY_COMPARE(client.instance(), fixture.instance);
+    verifyClosedDraft();
+    QCOMPARE(fixture.mutations.size(), 3);
+
     QVERIFY(panel.editProject(false));
     panel.field("description", "Unrelated project edit");
     QVERIFY(panel.save());
     QTRY_COMPARE(saved.count(), 1);
+    QCOMPARE(fixture.mutations.size(), 4);
+    QVERIFY(fixture.mutations.last().startsWith("PATCH /v1/projects/"));
     QCOMPARE(panel.answerText(question), draft);
     client.stop();
   }

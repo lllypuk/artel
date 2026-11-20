@@ -395,7 +395,7 @@ void Panel::resetCommissionView() {
   resetCommissions();
   resetQuestions();
   m_commission.clear();
-  m_answers.clear();
+  // Answer drafts stay keyed to their instance/task/question across navigation.
   m_sentAnswers.clear();
 }
 void Panel::loadCommissionPage() {
