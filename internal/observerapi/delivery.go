@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/lllypuk/artel/internal/store"
@@ -51,7 +52,12 @@ func mountDelivery(mux *http.ServeMux, s *store.Store) {
 		reply(w, map[string]string{"status": "ready"}, e)
 	})
 	mux.HandleFunc("GET /delivery/v1/next", func(w http.ResponseWriter, r *http.Request) {
-		message, receiptKey, e := s.DeliveryNext(r.Context(), deliveryBinding(r))
+		query, err := url.ParseQuery(r.URL.RawQuery)
+		if err != nil || len(query) != 1 || len(query["writer_id"]) != 1 {
+			failure(w, "invalid_request")
+			return
+		}
+		message, receiptKey, e := s.DeliveryNext(r.Context(), deliveryBinding(r), query.Get("writer_id"))
 		if e != nil {
 			reply(w, nil, e)
 			return

@@ -1,13 +1,14 @@
 # Продуктовый срез 4a — поручение владельца в одну Pi-сессию
 
-Срез реализован по плану `docs/plans/20261119-artel-owner-pi-task-message.md`
+Срез реализован по плану `docs/plans/completed/20261119-artel-owner-pi-task-message.md`
 (ветка `feature/artel-pi-delivery-02`, база `origin/main` `4bb9869`).
 Это **не** обновление работающего экземпляра и не пилот: реальная установка,
 обновление существующих сессий и пилот на рабочем проекте — отдельные решения.
 
 ## Проверенная связка
 
-Production Qt (экран задачи, предупреждение до отправки) → owner HTTP
+Связка подтверждена в двух согласованных звеньях: production Qt (экран задачи,
+предупреждение до отправки) → owner HTTP
 (`POST /v1/tasks/{id}/messages` с `instance_id` и `Idempotency-Key`) → SQLite
 (транзакционная запись, проверка назначения и готовности) → delivery UDS
 (общий Unix listener, отдельный delivery-токен) → привязанный writer в Pi

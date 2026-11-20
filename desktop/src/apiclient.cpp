@@ -630,6 +630,8 @@ void ApiClient::refreshMessageStatuses(const QString &task,
       emit messageStatusesReceived(rows.toVariantList());
     } else {
       m_messagesError = tr("Commission status unavailable or invalid");
+      // Keep the polling loop alive: one failed read must not freeze statuses.
+      emit messageStatusesReceived({});
     }
     emit changed();
   });

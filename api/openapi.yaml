@@ -487,6 +487,7 @@ components:
         task_id: {$ref: '#/components/schemas/UUID'}
         project_id: {$ref: '#/components/schemas/UUID'}
         binding:
+          type: object
           nullable: true
           allOf: [{$ref: '#/components/schemas/DeliveryBinding'}]
         ready: {type: boolean}

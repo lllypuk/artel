@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { createServer, type Server } from "node:net";
+import { existsSync, rmSync } from "node:fs";
+import { createConnection, createServer, type Server } from "node:net";
 import { dirname, join } from "node:path";
 import type { DeliveryConfig } from "./config.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
@@ -91,6 +91,12 @@ export class DeliveryWriter {
     return this.attempts.get(messageId);
   }
 
+  // Terminal writers (revoked, conflicting or stale assignment) never restart
+  // on their own; the host drops the reference so a fresh grant can activate.
+  terminated(): boolean {
+    return this.stopped;
+  }
+
   // before_agent_start observation: only the exact custom start of a spent
   // attempt becomes a receipt; provider and completion events cannot.
   observeStart(event: { messageType?: string; message?: { details?: unknown } },
@@ -122,30 +128,45 @@ export class DeliveryWriter {
   }
 
   // Kernel-exclusive writer lock: a second bind fails while this process owns
-  // the stable path, and the kernel releases ownership on process death.
+  // the stable path, and the kernel releases ownership on process death. A
+  // leftover socket file from a killed writer is probed: if nothing listens,
+  // the stale path is removed once and the bind retried.
   private async acquireLock(): Promise<void> {
     const lockPath = join(dirname(this.config.journal_file), "writer.lock");
-    const server = createServer();
-    this.lock = server;
-    try {
-      await new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.once("listening", resolve);
-        server.listen(lockPath);
-      });
-    } catch {
-      this.lock = undefined;
-      server.close();
-      throw new Error("another writer owns this assignment");
+    for (let attempt = 0; ; attempt++) {
+      const server = createServer();
+      this.lock = server;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          server.once("error", reject);
+          server.once("listening", resolve);
+          server.listen(lockPath);
+        });
+        return;
+      } catch (error) {
+        this.lock = undefined;
+        server.close();
+        if (attempt > 0 || !(await this.lockPathIsStale(lockPath))) throw new Error("another writer owns this assignment");
+        rmSync(lockPath, { force: true });
+      }
     }
   }
 
+  // A stale path refuses connections; a live writer accepts or holds them.
+  private lockPathIsStale(lockPath: string): Promise<boolean> {
+    return new Promise(resolve => {
+      const probe = createConnection(lockPath, () => { probe.destroy(); resolve(false); });
+      probe.once("error", () => resolve(true));
+    });
+  }
+
   private openJournal(): DeliveryJournal {
-    if (existsSync(this.config.journal_file)) {
-      return DeliveryJournal.open(this.config.journal_file, this.config.journal_id);
-    }
+    // The journal is created exactly once, by the owner bootstrap. A missing
+    // journal under a confirmed config is never recreated silently: the grant
+    // may be stale and re-creating would fabricate recovery evidence.
+    if (!existsSync(this.config.journal_file)) throw new Error("journal is missing");
     try {
-      return DeliveryJournal.create(this.config.journal_file, this.config.journal_id);
+      return DeliveryJournal.open(this.config.journal_file, this.config.journal_id);
     } catch {
       throw new Error("journal exists but cannot be opened safely");
     }
@@ -190,7 +211,7 @@ export class DeliveryWriter {
       // the receipt key is replayed idempotently.
       void this.flushReceipts();
       if (this.closed || this.stopped || !this.ctx.isIdle()) return;
-      const next = await this.transport("GET", "/delivery/v1/next", undefined, signal) as { message?: DeliveryMessage; receipt_key?: string };
+      const next = await this.transport("GET", `/delivery/v1/next?writer_id=${this.writerId}`, undefined, signal) as { message?: DeliveryMessage; receipt_key?: string };
       if (this.closed || this.stopped || !next.message) return;
       const message = next.message;
       if (!UUID.test(message.id) || typeof message.text !== "string" || typeof next.receipt_key !== "string" || !UUID.test(next.receipt_key))
@@ -221,7 +242,7 @@ export class DeliveryWriter {
     } catch (error) {
       if (this.closed || this.stopped) return;
       const code = error instanceof ObserverFailure ? error.code : "offline";
-      if (!["offline", "unavailable", "rate_limited", "not_ready", "owner_conflict", "closed", "revoked", "assignment_mismatch"].includes(code)) {
+      if (!["offline", "unavailable", "rate_limited", "not_ready", "closed"].includes(code)) {
         this.stopped = true;
         this.status(`Artel: delivery stopped — ${code}`);
         return;

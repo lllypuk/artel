@@ -148,18 +148,20 @@ Select the exact observer/runtime/project/session UUIDs from
 ```sh
 "$ARTELCTL" delivery enable --id OBSERVER_UUID --runtime-id RUNTIME_UUID \
   --project-id PROJECT_UUID --pi-session-id SESSION_UUID \
-  --observer-socket "$ARTEL_SOCKET" --output "$ARTEL_TMP/delivery.json" \
+  --observer-socket "$ARTEL_SOCKET" \
+  --output "$(dirname "$ARTEL_CONFIG")/delivery.json" \
   --expected-version N --endpoint "$ARTEL_ENDPOINT" --token-file "$ARTEL_TOKEN"
 "$ARTELCTL" delivery revoke --id OBSERVER_UUID --binding-id BINDING_UUID \
-  --output "$ARTEL_TMP/delivery.json" \
+  --output "$(dirname "$ARTEL_CONFIG")/delivery.json" \
   --endpoint "$ARTEL_ENDPOINT" --token-file "$ARTEL_TOKEN"
 ```
 
 Enable persists a private pending record (original request, retry key, secret
 references) before the first HTTP request; a lost response is recovered with
 `delivery enable --resume PENDING_PATH` using the original key — never regenerate
-a credential to retry. The confirmed writer config and delivery token land next
-to the observer config only after server confirmation; the extension picks them
+a credential to retry. The confirmed writer config and delivery token land in the same private
+directory as the observer config (the writer discovers `delivery.json` next to
+its `ARTEL_OBSERVER_CONFIG`) only after server confirmation; the extension picks them
 up without restarting the bound runtime. JSON output is public IDs/paths only.
 
 In the desktop task screen the owner types a commission, sees the exact

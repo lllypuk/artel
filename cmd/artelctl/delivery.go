@@ -187,7 +187,7 @@ func deliveryEnable(client ownerClient, a deliveryEnableArgs, out io.Writer, fai
 	if err = deliveryCheckBinding(p, confirmed); err != nil {
 		return fail(1, err.Error())
 	}
-	if err = deliveryEnsureJournal(p); err != nil {
+	if err = deliveryEnsureJournal(p, true); err != nil {
 		return fail(1, err.Error())
 	}
 	writer := deliveryWriterConfig{Status: "confirmed", DeliveryBindingID: p.DeliveryBindingID, DatabaseInstanceID: p.DatabaseInstanceID,
@@ -339,10 +339,13 @@ func deliveryCheckBinding(p deliveryPending, b store.DeliveryBinding) error {
 
 // deliveryEnsureJournal creates the journal exactly once with exclusive
 // creation; an existing journal is checked, never overwritten.
-func deliveryEnsureJournal(p deliveryPending) error {
+func deliveryEnsureJournal(p deliveryPending, allowCreate bool) error {
 	doc, _ := json.Marshal(map[string]any{"journal_id": p.JournalID, "entries": map[string]any{}})
 	doc = append(doc, '\n')
 	if _, err := os.Lstat(p.JournalFile); errors.Is(err, os.ErrNotExist) {
+		if !allowCreate {
+			return errors.New("journal missing; a confirmed resume never recreates it, require a new explicit grant")
+		}
 		if err := local.WritePrivateFile(p.JournalFile, doc, false); err != nil {
 			return errors.New("cannot create delivery journal; require a new explicit grant")
 		}
@@ -408,7 +411,7 @@ func deliveryVerifyConfirmed(client ownerClient, p deliveryPending) error {
 	if err != nil || local.TokenVerifier(token) != p.Verifier {
 		return errors.New("delivery credential unavailable or unsafe")
 	}
-	if err = deliveryEnsureJournal(p); err != nil {
+	if err = deliveryEnsureJournal(p, false); err != nil {
 		return err
 	}
 	raw, err := local.ReadPrivateFile(p.Output)
@@ -469,6 +472,9 @@ func deliveryRevoke(client ownerClient, id, binding, output, key string, out io.
 	if !validCanonicalID(id) || !validCanonicalID(binding) {
 		return fail(2, "id and binding-id required")
 	}
+	if output != "" && (!filepath.IsAbs(output) || filepath.Clean(output) != output) {
+		return fail(2, "absolute output path required")
+	}
 	if key == "" {
 		key = uuid.NewString()
 	}
@@ -483,9 +489,6 @@ func deliveryRevoke(client ownerClient, id, binding, output, key string, out io.
 		return fail(1, "revoke response identity mismatch")
 	}
 	if output != "" {
-		if !filepath.IsAbs(output) || filepath.Clean(output) != output {
-			return fail(2, "absolute output path required")
-		}
 		if err := clearDeliveryArtifacts(output, binding); err != nil {
 			return fail(1, err.Error())
 		}

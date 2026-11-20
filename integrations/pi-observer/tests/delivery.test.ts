@@ -22,9 +22,17 @@ function stub(routes: Record<string, Handler>, state: Record<string, unknown>) {
   const calls: Call[] = [];
   const transport: Transport = async (method, path, body) => {
     calls.push({ method, path, body: body as Record<string, unknown> });
-    const handler = routes[`${method} ${path}`];
+    const [plain, query] = path.split("?");
+    const handler = routes[`${method} ${plain}`];
     if (!handler) throw new ObserverFailure("protocol_error");
-    return JSON.parse(JSON.stringify(handler(body as Record<string, unknown>, state) ?? {}));
+    const merged = { ...(body as Record<string, unknown>) };
+    if (query) {
+      for (const pair of query.split("&")) {
+        const [key, value] = pair.split("=");
+        merged[decodeURIComponent(key)] = decodeURIComponent(value);
+      }
+    }
+    return JSON.parse(JSON.stringify(handler(merged, state) ?? {}));
   };
   return { transport, calls, state };
 }
@@ -47,6 +55,8 @@ function makeEnv(options: { pollMs?: number; readyMs?: number } = {}): Env {
     hooks: { holdReadyMs: 0, sends: 0, pollMs: options.pollMs ?? 15, readyMs: options.readyMs ?? 60 },
   };
   (globalThis as Record<symbol, unknown>)[TEST_HOOK] = env.hooks;
+  // The owner bootstrap creates the journal exactly once; writers only open it.
+  DeliveryJournal.create(config.journal_file, config.journal_id);
   return env;
 }
 
@@ -80,7 +90,7 @@ async function until(cond: () => boolean, label: string, timeoutMs = 4000): Prom
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (cond()) return;
-    if (Date.now() > deadline) throw new Error(`timeout waiting for ${label}; statuses=${JSON.stringify(env.statuses)}`);
+    if (Date.now() > deadline) throw new Error(`timeout waiting for ${label}`);
     await new Promise(resolve => setTimeout(resolve, 10));
   }
 }
@@ -240,18 +250,15 @@ test("replaced or corrupt journal is refused before any bridge call; missing one
     assert.equal(corrupt.calls.length, 0);
     await w2.stop();
 
-    // Missing at first bootstrap: created under the lock and attached.
+    // Missing under a confirmed config: never recreated silently; the writer
+    // stops before any bridge call and the owner bootstrap must recreate it.
     rmSync(env.config.journal_file);
-    const fresh = stub({
-      ...contextRoute(env),
-      "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
-      "POST /delivery/v1/ready": () => ({}),
-    }, {});
-    const w3 = writer(env, fresh.transport);
+    const missing = stub({ ...contextRoute(env) }, {});
+    const w3 = writer(env, missing.transport);
     await w3.start();
-    await until(() => fresh.state.writer !== undefined, "attach after bootstrap");
-    const journal = DeliveryJournal.open(env.config.journal_file, env.config.journal_id);
-    assert.equal(journal.journalId, env.config.journal_id);
+    await until(() => env.statuses.filter(s => s.includes("unavailable")).length >= 3, "missing journal refused");
+    assert.equal(missing.calls.length, 0, "no bridge call without the original journal");
+    assert.ok(!existsSync(env.config.journal_file), "missing journal was not recreated");
     await w3.stop();
   } finally { delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true }); }
 });
@@ -564,4 +571,23 @@ test("journal pins the ID at create and refuses a changed one at open", () => {
     assert.ok(existsSync(path));
     assert.ok(readFileSync(path, "utf8").endsWith("\n"));
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a stale lock path from a killed writer is probed, removed and rebound", async () => {
+  const env = makeEnv();
+  try {
+    // A leftover regular file at the lock path: nothing listens, so the
+    // writer must treat it as stale, remove it once and take ownership.
+    writeFileSync(join(env.dir, "writer.lock"), "stale", { mode: 0o600 });
+    const { transport, calls } = stub({
+      ...contextRoute(env),
+      "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
+      "POST /delivery/v1/ready": () => ({}),
+      "GET /delivery/v1/next": () => ({ message: null }),
+    }, {});
+    const w = writer(env, transport);
+    await w.start();
+    await until(() => calls.some(c => c.path === "/delivery/v1/attach"), "rebound after stale probe");
+    await w.stop();
+  } finally { delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true }); }
 });

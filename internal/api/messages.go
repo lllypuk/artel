@@ -165,7 +165,11 @@ func enableDelivery(w http.ResponseWriter, r *http.Request, s *store.Store) {
 		PiSessionID     string `json:"pi_session_id"`
 		InstanceID      string `json:"instance_id"`
 	}
-	if !decodeDeliveryJSON(w, r, &body, []string{"expected_version", "delivery_binding_id", "journal_id", "verifier", "runtime_id", "project_id", "pi_session_id", "instance_id"}) || body.ExpectedVersion == nil {
+	if !decodeDeliveryJSON(w, r, &body, []string{"expected_version", "delivery_binding_id", "journal_id", "verifier", "runtime_id", "project_id", "pi_session_id", "instance_id"}) {
+		return
+	}
+	if body.ExpectedVersion == nil {
+		Error(w, 400, "invalid_request", "expected_version required")
 		return
 	}
 	result, err := s.MutateDeliveryBinding(r.Context(), store.DeliveryOwnerMutation{

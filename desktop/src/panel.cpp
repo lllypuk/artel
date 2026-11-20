@@ -91,10 +91,12 @@ Panel::Panel(ApiClient *client, QObject *parent)
             emit changed();
           });
   connect(client, &ApiClient::commissionAccepted, this,
-          [this](const QVariantMap &) {
-            // One explicit send records exactly one commission; clear only the
-            // commission text, never the domain editor draft.
-            m_commission.clear();
+          [this](const QVariantMap &message) {
+            // One explicit send records exactly one commission; clear the
+            // commission text only when it still holds the sent text, so a
+            // retry confirmation never discards newer typing.
+            if (m_commission == message.value("text").toString())
+              m_commission.clear();
             m_messagesCursor = 0;
             m_messages.clear();
             m_messagesMore = true;
@@ -211,6 +213,9 @@ QVariantMap Panel::assignment() const {
 void Panel::resetCommissions() {
   m_statusPoll.stop();
   m_deliveryPoll.stop();
+  // The commission draft belongs to one task only; it never follows a task or
+  // project switch to a different recipient.
+  m_commission.clear();
   m_messagesTask.clear();
   m_deliveryTask.clear();
   m_messages.clear();

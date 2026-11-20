@@ -258,6 +258,14 @@ func (s *Store) deliveryEnableApply(ctx context.Context, tx *sql.Tx, o observerR
 	if existing != 0 {
 		return result, observerError("idempotency_conflict")
 	}
+	// One credential, one channel: an observer verifier must never double as
+	// a delivery credential, or the same token would pass both auths.
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM observers WHERE verifier=?", m.Verifier).Scan(&existing); err != nil {
+		return result, err
+	}
+	if existing != 0 {
+		return result, observerError("idempotency_conflict")
+	}
 	if err := deliveryObserverAssignment(ctx, tx, o.ID, m.RuntimeID, m.ProjectID, m.PiSessionID, o.Generation); err != nil {
 		return result, err
 	}
@@ -656,10 +664,10 @@ func (s *Store) DeliveryReady(ctx context.Context, bindingID, writerID string) e
 }
 
 // DeliveryNext returns the oldest unspent, unblocked commission with its receipt key.
-func (s *Store) DeliveryNext(ctx context.Context, bindingID string) (DeliveryMessage, string, error) {
+func (s *Store) DeliveryNext(ctx context.Context, bindingID, writerID string) (DeliveryMessage, string, error) {
 	var result DeliveryMessage
 	var receiptKey string
-	if !observerUUID(bindingID) {
+	if !observerUUID(bindingID) || !observerUUID(writerID) {
 		return result, "", observerError("invalid_request")
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -671,10 +679,11 @@ func (s *Store) DeliveryNext(ctx context.Context, bindingID string) (DeliveryMes
 	if err != nil {
 		return result, "", err
 	}
-	// A stale assignment (rebind, generation or runtime change, revoke) must not
-	// hand out text even though this read grants no right.
 	if err := deliveryAssignmentCheck(ctx, tx, b); err != nil {
 		return result, "", err
+	}
+	if b.WriterID != writerID {
+		return result, "", observerError("owner_conflict")
 	}
 	row := tx.QueryRowContext(ctx, `SELECT m.seq,m.blocked,m.receipt_key,m.record FROM delivery_messages m
 		WHERE m.binding_id=? AND m.blocked=0 AND NOT EXISTS (SELECT 1 FROM delivery_attempts a WHERE a.message_seq=m.seq)
@@ -927,6 +936,11 @@ func (s *Store) deliveryReceiptGate(ctx context.Context, tx *sql.Tx, bindingID, 
 		// Closing before the call was confirmed forbids publication; an
 		// already verified turn of an unchanged assignment may still publish.
 		return 0, "", "", observerError("closed")
+	}
+	if attemptState == "spent" {
+		// A receipt can only follow a confirmed call; a merely spent attempt
+		// was never cleared to transmit.
+		return 0, "", "", observerError("invalid_request")
 	}
 	return seq, attemptState, messageData, nil
 }

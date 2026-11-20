@@ -69,14 +69,18 @@ export default function observer(pi: ExtensionAPI) {
   // confirmed private config next to the observer config. The pickup polls so
   // an owner enable after binding activates without restarting the runtime.
   let deliveryTimer: ReturnType<typeof setInterval> | undefined;
+  let deliveryShutdown = false;
   const startDeliveryLoop = (deliveryPath: string, registration: Registration, ctx: ExtensionContext) => {
     stopDeliveryTimer();
     deliveryTimer = setInterval(() => {
       try {
+        if (deliveryShutdown) return;
+        if (writer?.terminated()) writer = undefined;
         if (writer || !existsSync(deliveryPath)) return;
         if (client?.boundRuntime() !== registration.runtime_id) return;
         const { config, token } = readDeliveryConfig(deliveryPath);
         writer = new DeliveryWriter(config, token, ctx, registration.pi_session_id, registration.runtime_id, status, attempt => {
+          if (deliveryShutdown) return;
           pi.sendMessage({
             customType: "artel-delivery",
             content: attempt.text,
@@ -112,9 +116,11 @@ export default function observer(pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     const old = client; client = undefined;
     const oldWriter = writer; writer = undefined;
+    deliveryShutdown = true;
     stopDeliveryTimer();
     await old?.stop();
     await oldWriter?.stop();
+    deliveryShutdown = false;
     if (old) status("");
     current = undefined; tools.clear(); waiting = false;
   });

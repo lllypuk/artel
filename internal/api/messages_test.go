@@ -284,7 +284,7 @@ func TestOwnerPendingBindingRejectsPostAndRevokes(t *testing.T) {
 func TestBridgeSpendReplayGrantsNoRight(t *testing.T) {
 	e := newDeliveryOwnerEnv(t, true)
 	e.post(t, e.task.ID, uuid.NewString(), "deliver me", e.binding.ID, e.instance, 200)
-	next := e.bridgeRequest(t, "GET", "/delivery/v1/next", "", 200)
+	next := e.bridgeRequest(t, "GET", "/delivery/v1/next?writer_id="+e.writerID, "", 200)
 	var envelope struct {
 		Message *struct {
 			ID   string `json:"id"`
@@ -340,4 +340,40 @@ func setTaskState(t *testing.T, s *store.Store, taskID string, state domain.Stat
 	// Queued -> in_progress -> done exercises the real manual transition path.
 	transition(domain.InProgress, 1, 1)
 	transition(state, 2, 2)
+}
+
+func TestOwnerEnableMissingVersionAndBridgeNextWriterFence(t *testing.T) {
+	e := newDeliveryOwnerEnv(t, false)
+	// Missing expected_version is a 400 with a public error, never an empty 200.
+	body := fmt.Sprintf(`{"delivery_binding_id":%q,"journal_id":%q,"verifier":%q,"runtime_id":%q,"project_id":%q,"pi_session_id":%q,"instance_id":%q}`,
+		e.binding.ID, e.binding.JournalID, uuid.NewString(), e.runtime.RuntimeID, e.project.ID, e.runtime.PiSessionID, e.instance)
+	r := httptest.NewRequest("PUT", "/v1/observers/"+e.observer+"/delivery", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Idempotency-Key", uuid.NewString())
+	w := httptest.NewRecorder()
+	e.owner.ServeHTTP(w, r)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "invalid_request") {
+		t.Fatalf("missing version: %d %s", w.Code, w.Body.String())
+	}
+	// The projection without any binding validates against the contract.
+	s2, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "plain.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s2.Close() })
+	p2, task2 := seedTask(t, s2)
+	owner2 := New(t.Context(), s2)
+	r = httptest.NewRequest("GET", "/v1/tasks/"+task2.ID+"/delivery", nil)
+	w = httptest.NewRecorder()
+	owner2.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("projection: %d %s", w.Code, w.Body.String())
+	}
+	checkContract(t, r, w)
+	if !strings.Contains(w.Body.String(), `"binding":null`) {
+		t.Fatalf("disabled projection: %s", w.Body.String())
+	}
+	_ = p2
+	// next under a foreign writer id is fenced even before any activation.
+	e.bridgeRequest(t, "GET", "/delivery/v1/next?writer_id="+uuid.NewString(), "", 409)
 }

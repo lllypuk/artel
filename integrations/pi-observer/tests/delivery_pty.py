@@ -296,7 +296,11 @@ class DeliverySlice(unittest.TestCase):
             case.assertEqual(message_statuses(), [])
 
             # Writer pickup: hold readiness first, then publish the config.
+            # The journal is created by the owner bootstrap exactly once; the
+            # writer only opens it and never recreates a missing one.
             control.command(type='hold-ready', ms=8000)
+            (private / 'journal.json').write_text(json.dumps({'journal_id': journal_id, 'entries': {}}) + '\n')
+            (private / 'journal.json').chmod(0o600)
             delivery_config = {'status': 'confirmed', 'delivery_binding_id': BINDING['id'],
                                'database_instance_id': instance, 'observer_socket': str(root / 'observer.sock'),
                                'token_file': str(private / 'delivery.token'), 'journal_file': str(private / 'journal.json'),
