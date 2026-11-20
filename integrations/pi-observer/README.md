@@ -1,8 +1,10 @@
 # Artel Pi observer
 
 Opt-in observation only. Supported host: Pi 1.5.2, Node >=22.23.2.
-No tools, commands, messages, prompts, model selection or global installation.
-Without ARTEL_OBSERVER_CONFIG the extension is inert. Invalid/pending/private-file
+Observation supplies no tools, commands, messages, prompts, model selection or
+global installation. The separate, explicitly enabled delivery modes below are
+the only exceptions. Without ARTEL_OBSERVER_CONFIG the extension is inert.
+Invalid/pending/private-file
 permissions or unsupported host capabilities disable observation, not Pi.
 
 The delivered package contains index.mjs, package.json and this README under
@@ -73,3 +75,48 @@ transmits synchronously only while idle, and publishes the observed receipt
 idempotently. Busy sessions are never prompted, manual input is never replaced,
 and an unknown outcome never auto-resends. Without confirmed config the
 extension stays inert.
+
+Owner questions (stage 4b) require another explicit choice when creating a new
+delivery grant: add `--allow-owner-questions` to the full `artelctl delivery
+enable` command documented in docs/development.md. Resume keeps that original
+choice; an existing grant cannot be changed in place. Observation config alone
+does not opt in. The confirmed delivery config carries the bit and the writer
+must attach with `owner_questions_v1`; without that grant/capability the tool is
+inactive and the daemon rejects question creation.
+
+The owner copies the selected Artel task UUID from Qt and explicitly hands it to
+Pi in a commission or manually. Only then `artel_ask_owner` accepts that exact
+`task_id` plus question `text`; it cannot search tasks and never receives the
+owner credential. The tool finishes after storing the question, returning its ID
+and `stored`, not an answer. An unconfirmed ACK is not success, and no restart or
+text match automatically creates another question.
+
+The owner can save one immutable answer without writer readiness while the
+question/task/project and original grant remain eligible. Answer and queue row
+commit together. When the original Pi session is idle, the writer sends a new
+`artel-owner-answer` custom message containing the question and answer as
+context. It does not interrupt a busy session, replace manual input or follow a
+new assignment. Question `open`/`answered`/`closed` is independent of answer
+`stored`/`unknown`/`observed`; `observed` is only a matching custom
+`before_agent_start` receipt, not provider delivery or turn completion. Unknown
+outcomes never auto-resend, and saved-receipt recovery makes no new Pi call.
+
+Close/archive/revoke or assignment change closes unanswered questions and blocks
+undelivered answers permanently; saved history and existing `observed` remain.
+Reopen/unarchive or a new grant does not resume old answers. A stopped original
+Pi does not prevent saving, but a replacement runtime with the same Pi-session
+UUID cannot inherit the grant. Revocation denies the old delivery credential
+access to history. Already authorized Pi calls are not promised to be cancelled.
+Both texts go to the provider configured in Pi as conversation context; Artel
+does not execute them, grant permissions or change task state.
+
+Question/answer text is limited to 4 KiB UTF-8 without NUL, POST bodies to
+32 KiB, and owner pages to five rows/320 KiB. Text stays out of observer
+telemetry, domain events/SSE and logs. No global inbox, editing, TTL, broadcast,
+remote access or blocking wait is provided. SQLite upgrades atomically from v3
+to v4; failed migration rolls back, while a successful v4 database is rejected
+by old v3 binaries and has no in-place downgrade. False/absent opt-in preserves
+stage-4a wire/receipt compatibility. The base extension handles ordinary 4a
+commissions only; an old daemon rejects opted-in enable without creating a grant
+or confirmed config. See docs/development.md and the owner-questions evidence
+for the complete contract and acceptance boundary.

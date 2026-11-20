@@ -183,6 +183,92 @@ Reusing a legacy prune key with an exact-set body returns an idempotency conflic
 If a legacy prune outcome is uncertain, inspect the current registry and any
 available prior result rather than blindly submitting another prune.
 
+## Owner questions and asynchronous answers (stage 4b)
+
+This is a local code slice for one owner and one delivery grant, not a global
+inbox, installation or pilot. It is disabled unless the owner creates a **new**
+grant with the explicit option; an existing grant cannot be upgraded in place:
+
+```sh
+"$ARTELCTL" delivery enable --id OBSERVER_UUID --runtime-id RUNTIME_UUID \
+  --project-id PROJECT_UUID --pi-session-id SESSION_UUID \
+  --observer-socket "$ARTEL_SOCKET" --allow-owner-questions \
+  --output "$(dirname "$ARTEL_CONFIG")/delivery.json" \
+  --expected-version N --endpoint "$ARTEL_ENDPOINT" --token-file "$ARTEL_TOKEN"
+```
+
+The confirmed config records `allow_owner_questions: true`, and attach fixes
+capability `owner_questions_v1` to the accepted writer. `delivery enable
+--resume PENDING_PATH` replays the original option and key; it cannot add or
+change the option. Revoke the old grant and explicitly enable a new one to
+change this choice. Observation config alone grants neither questions nor
+delivery, and the owner credential is never given to Pi.
+
+The selected task screen exposes its task UUID for copying. The owner supplies
+that exact UUID to Pi in a stage-4a commission or manually. Only then can the
+opted-in extension's `artel_ask_owner` tool be called with `task_id` and `text`;
+it does not search tasks. The tool waits only for question storage and returns
+its question ID and `stored`, never the owner's answer. An unconfirmed ACK means
+storage is unconfirmed, not successful. A new tool call is a new question; there
+is no text deduplication or automatic retry after restart.
+
+The owner answers once in the selected task. The immutable answer and its row in
+the existing delivery queue commit atomically. Writer readiness is not required
+to save an answer while the question, task/project and original grant remain
+eligible. The answer later enters the **same Pi session** as custom message
+`artel-owner-answer`, with the question and answer as conversation context, only
+when that session is idle. It does not replace manual input or follow a changed
+assignment. Question state `open` / `answered` / `closed` is separate from answer
+delivery state `stored` / `unknown` / `observed` and its block reason. An answer
+POST replay confirms the original stored answer, not current delivery status.
+`observed` means only the matching custom `before_agent_start` receipt for the
+question/message/attempt/session; it does not prove provider receipt, agent
+completion or task completion. An unknown outcome never auto-resends. Restart
+may republish an already saved receipt without another Pi call, but cannot
+recover a missing journal or turn an uncertain spend into a safe retry.
+
+Closing the task, archiving the project, revoking the grant or confirming an
+assignment change closes unanswered questions and permanently blocks affected
+undelivered answers with `task_closed`, `project_archived` or
+`delivery_revoked`. Saved question/answer history and an already recorded
+`observed` remain readable. Reopen/unarchive or a new grant does not reopen the
+old queue. Stopping Pi alone does not close a question: an answer can be saved
+offline, but a replacement runtime cannot inherit the grant even with the same
+Pi-session UUID. Close/archive/revoke before verify prevents a new authorized
+Pi call; after verify it cannot promise to cancel that call. A matching receipt
+can still be accepted after close/archive under the unchanged grant; after
+revoke or assignment change a first receipt is rejected and existing `observed`
+is not downgraded. A revoked delivery credential cannot read old history.
+
+Question and answer text is sent to the provider configured in Pi as part of the
+conversation context. The UI warning is explicit: this does not confirm delivery
+to that provider or completion of the Pi turn. Artel does not execute the text,
+grant permissions, run agents or change task state; the new Pi turn retains the
+ordinary capabilities and risks of its own runtime.
+
+Each question and answer is non-empty valid UTF-8 without NUL and at most 4 KiB;
+question/answer POST bodies are at most 32 KiB. Owner question pages contain at
+most five rows and 320 KiB. The delivery `next` response remains bounded to
+64 KiB. Text is absent from observer telemetry, domain events/SSE and logs.
+There is no editing, TTL, broadcast, remote access, blocking wait in Pi or
+automatic task transition.
+
+Compatibility and SQLite rollback are deliberately one-way. Opening a v3
+database atomically migrates it to v4 and retains existing commissions, attempts
+and receipts; a failed migration rolls back to v3. After a successful migration,
+an old v3 binary refuses the database: in-place downgrade is unsupported.
+Absent/false `allow_owner_questions` preserves the v3 enable/revoke wire and
+receipt hashes and ordinary stage-4a delivery. The base extension can continue
+ordinary commissions but cannot ask questions or receive answer text. A new
+opted-in CLI request to an old daemon is rejected without a server grant or
+confirmed writer config.
+
+Contract: [owner and delivery API](../api/openapi.yaml). The isolated real-Pi /
+daemon / production-QML oracle is
+`python3 -B integrations/pi-observer/tests/questions_pty.py`; current evidence
+and the remaining final-candidate gates are recorded in
+[owner-questions evidence](experiments/pi-bridge-delivery/owner-questions-evidence.md).
+
 Identity separates database UUID, credential-scoped observer UUID, Pi session UUID,
 fresh runtime UUID and server generation. New/reload/resume/fork requires a new
 explicit binding; daemon reconnect retains runtime. Reports never assign writers,
