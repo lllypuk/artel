@@ -10,6 +10,7 @@
 #include <QUuid>
 #include <cmath>
 #include <fcntl.h>
+#include <optional>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -732,7 +733,8 @@ void ApiClient::loadDelivery(const QString &task) {
   });
   emit changed();
 }
-bool ApiClient::validQuestion(const QJsonObject &obj) const {
+namespace {
+bool validQuestion(const QJsonObject &obj) {
   if (!uuid(obj.value("id").toString()) ||
       !uuid(obj.value("task_id").toString()) ||
       !uuid(obj.value("delivery_binding_id").toString()) ||
@@ -752,6 +754,50 @@ bool ApiClient::validQuestion(const QJsonObject &obj) const {
                 QStringLiteral("observed")}) &&
          obj.value("answered_at").isString();
 }
+
+void bufferQuestionResponse(QNetworkReply *reply, QObject *context) {
+  QObject::connect(reply, &QIODevice::readyRead, context, [reply] {
+    auto bytes = reply->property("bytes").toByteArray() + reply->readAll();
+    if (bytes.size() > 320 * 1024) {
+      reply->setProperty("oversized", true);
+      reply->abort();
+      return;
+    }
+    reply->setProperty("bytes", bytes);
+  });
+}
+
+struct QuestionResponse {
+  QJsonArray rows;
+  qint64 next;
+};
+
+std::optional<QuestionResponse> readQuestionResponse(QNetworkReply *reply,
+                                                     const QString &task) {
+  if (reply->error() != QNetworkReply::NoError ||
+      reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() !=
+          200 ||
+      !reply->header(QNetworkRequest::ContentTypeHeader)
+           .toString()
+           .startsWith("application/json") ||
+      reply->property("oversized").toBool())
+    return std::nullopt;
+  const auto obj =
+      QJsonDocument::fromJson(reply->property("bytes").toByteArray()).object();
+  const auto rows = obj.value("questions").toArray();
+  const auto next = obj.value("next_after");
+  if (rows.size() > 5 || !integer(next))
+    return std::nullopt;
+  for (const auto &row : rows) {
+    const auto question = row.toObject();
+    if (!validQuestion(question) ||
+        question.value("task_id").toString() != task)
+      return std::nullopt;
+  }
+  return QuestionResponse{rows, next.toInteger()};
+}
+} // namespace
+
 void ApiClient::loadQuestions(const QString &task, qint64 after) {
   cancel(m_questionsReply);
   if (!m_online || m_stopped || !uuid(task) || after < 0)
@@ -762,43 +808,20 @@ void ApiClient::loadQuestions(const QString &task, qint64 after) {
                  "&after=" + QString::number(after) + "&limit=5");
   m_questionsReply = reply;
   m_questionsTask = task;
-  connect(reply, &QIODevice::readyRead, this, [reply] {
-    auto bytes = reply->property("bytes").toByteArray() + reply->readAll();
-    if (bytes.size() > 320 * 1024) {
-      reply->setProperty("oversized", true);
-      reply->abort();
-      return;
-    }
-    reply->setProperty("bytes", bytes);
-  });
+  bufferQuestionResponse(reply, this);
   connect(reply, &QNetworkReply::finished, this,
           [this, reply, task, after, instance] {
             reply->deleteLater();
             if (reply != m_questionsReply)
               return;
             m_questionsReply = nullptr;
-            const auto obj =
-                QJsonDocument::fromJson(reply->property("bytes").toByteArray())
-                    .object();
-            const auto rows = obj.value("questions").toArray();
-            bool valid =
-                reply->error() == QNetworkReply::NoError &&
-                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
-                        .toInt() == 200 &&
-                reply->header(QNetworkRequest::ContentTypeHeader)
-                    .toString()
-                    .startsWith("application/json") &&
-                !reply->property("oversized").toBool() &&
-                instance == m_instance && task == m_questionsTask &&
-                rows.size() <= 5 && integer(obj.value("next_after")) &&
-                obj.value("next_after").toInteger() >= after;
-            for (const auto &row : rows)
-              valid = valid && validQuestion(row.toObject()) &&
-                      row.toObject().value("task_id").toString() == task;
-            if (valid) {
-              emit questionsReceived(rows.toVariantList(), after,
-                                     obj.value("next_after").toInteger(),
-                                     rows.size() == 5);
+            if (instance == m_instance && task == m_questionsTask) {
+              const auto response = readQuestionResponse(reply, task);
+              if (response && response->next >= after) {
+                emit questionsReceived(response->rows.toVariantList(), after,
+                                       response->next,
+                                       response->rows.size() == 5);
+              }
             }
             emit changed();
           });
@@ -816,39 +839,16 @@ void ApiClient::refreshQuestionStatuses(const QString &task,
                                    instance + "&ids=" + ids.join(','));
   m_questionStatusReply = reply;
   m_questionStatusTask = task;
-  connect(reply, &QIODevice::readyRead, this, [reply] {
-    auto bytes = reply->property("bytes").toByteArray() + reply->readAll();
-    if (bytes.size() > 320 * 1024) {
-      reply->setProperty("oversized", true);
-      reply->abort();
-      return;
-    }
-    reply->setProperty("bytes", bytes);
-  });
+  bufferQuestionResponse(reply, this);
   connect(reply, &QNetworkReply::finished, this, [this, reply, task, instance] {
     reply->deleteLater();
     if (reply != m_questionStatusReply)
       return;
     m_questionStatusReply = nullptr;
-    const auto obj =
-        QJsonDocument::fromJson(reply->property("bytes").toByteArray())
-            .object();
-    const auto rows = obj.value("questions").toArray();
-    bool valid =
-        reply->error() == QNetworkReply::NoError &&
-        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() ==
-            200 &&
-        reply->header(QNetworkRequest::ContentTypeHeader)
-            .toString()
-            .startsWith("application/json") &&
-        !reply->property("oversized").toBool() && instance == m_instance &&
-        task == m_questionStatusTask && rows.size() <= 5 &&
-        integer(obj.value("next_after"));
-    for (const auto &row : rows)
-      valid = valid && validQuestion(row.toObject()) &&
-              row.toObject().value("task_id").toString() == task;
-    if (valid) {
-      emit questionStatusesReceived(rows.toVariantList());
+    if (instance == m_instance && task == m_questionStatusTask) {
+      const auto response = readQuestionResponse(reply, task);
+      if (response)
+        emit questionStatusesReceived(response->rows.toVariantList());
     }
     emit changed();
   });

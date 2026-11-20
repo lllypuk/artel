@@ -518,8 +518,15 @@ func mustJSON(v any) string {
 	return string(data)
 }
 
-// deliveryScan derives the owner-visible status: observed stands; an unobserved
-// commission whose confirmation became impossible reads as unknown.
+// deliveryStatus preserves observed; blocking or an attempt makes any
+// unobserved delivery unknown.
+func deliveryStatus(status string, blocked bool, attemptState string) string {
+	if status != "observed" && (blocked || attemptState != "") {
+		return "unknown"
+	}
+	return status
+}
+
 func deliveryScan(rows *sql.Rows) ([]DeliveryMessage, []int64, error) {
 	messages := []DeliveryMessage{}
 	seqs := []int64{}
@@ -540,9 +547,7 @@ func deliveryScan(rows *sql.Rows) ([]DeliveryMessage, []int64, error) {
 		}
 		m.Blocked = blocked != 0
 		m.BlockReason = reason
-		if m.Status != "observed" && (m.Blocked || attemptState != "") {
-			m.Status = "unknown"
-		}
+		m.Status = deliveryStatus(m.Status, m.Blocked, attemptState)
 		messages = append(messages, m)
 		seqs = append(seqs, seq)
 	}
@@ -981,11 +986,8 @@ func (s *Store) DeliveryReceipt(ctx context.Context, bindingID, instanceID, writ
 	if err != nil || matched {
 		return result, err
 	}
-	seq, attemptState, messageData, err := deliveryReceiptGate(ctx, tx, b, key, receipt)
+	seq, attemptState, result, err := deliveryReceiptGate(ctx, tx, b, key, receipt)
 	if err != nil {
-		return result, err
-	}
-	if err := json.Unmarshal([]byte(messageData), &result); err != nil {
 		return result, err
 	}
 	result.Status = "observed"
@@ -1036,22 +1038,22 @@ func deliveryAnswerReceiptValid(b DeliveryBinding, message DeliveryMessage, deta
 }
 
 // deliveryReceiptGate validates form, identity, attempt and assignment, and
-// returns the message row position, attempt state and record for publishing.
+// returns the message row position, attempt state and validated message for publishing.
 func deliveryReceiptGate(ctx context.Context, tx *sql.Tx, b DeliveryBinding, receiptKey string, receipt struct {
 	MessageID, AttemptID, Type, MessageType, PiSessionID string
 	Details                                              map[string]any
-}) (int64, string, string, error) {
+}) (int64, string, DeliveryMessage, error) {
 	if b.Status == "revoked" {
-		return 0, "", "", observerError("revoked")
+		return 0, "", DeliveryMessage{}, observerError("revoked")
 	}
 	// A first receipt under a stale assignment (observer revoke, rebind,
 	// generation change) is always rejected; only the exact current assignment
 	// may publish, and only the key handed out with the message is accepted.
 	if err := deliveryAssignmentCurrent(ctx, tx, b); err != nil {
-		return 0, "", "", err
+		return 0, "", DeliveryMessage{}, err
 	}
 	if err := deliveryReceiptShapeValid(b, receipt); err != nil {
-		return 0, "", "", err
+		return 0, "", DeliveryMessage{}, err
 	}
 	var seq int64
 	var blocked int
@@ -1059,39 +1061,39 @@ func deliveryReceiptGate(ctx context.Context, tx *sql.Tx, b DeliveryBinding, rec
 	if err := tx.QueryRowContext(ctx, "SELECT seq,blocked,receipt_key,record FROM delivery_messages WHERE id=? AND binding_id=?", receipt.MessageID, b.ID).
 		Scan(&seq, &blocked, &storedKey, &messageData); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return 0, "", "", observerError("not_found")
+			return 0, "", DeliveryMessage{}, observerError("not_found")
 		}
-		return 0, "", "", err
+		return 0, "", DeliveryMessage{}, err
 	}
 	if storedKey != receiptKey {
-		return 0, "", "", observerError("invalid_request")
+		return 0, "", DeliveryMessage{}, observerError("invalid_request")
 	}
 	var message DeliveryMessage
 	if err := json.Unmarshal([]byte(messageData), &message); err != nil {
-		return 0, "", "", err
+		return 0, "", DeliveryMessage{}, err
 	}
 	if err := deliveryAnswerReceiptValid(b, message, receipt.Details); err != nil {
-		return 0, "", "", err
+		return 0, "", DeliveryMessage{}, err
 	}
 	var attemptState string
 	if err := tx.QueryRowContext(ctx, "SELECT state FROM delivery_attempts WHERE attempt_id=? AND message_seq=? AND binding_id=?",
 		receipt.AttemptID, seq, b.ID).Scan(&attemptState); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return 0, "", "", observerError("not_found")
+			return 0, "", DeliveryMessage{}, observerError("not_found")
 		}
-		return 0, "", "", err
+		return 0, "", DeliveryMessage{}, err
 	}
 	if blocked != 0 && attemptState != "verified" {
 		// Closing before the call was confirmed forbids publication; an
 		// already verified turn of an unchanged assignment may still publish.
-		return 0, "", "", observerError("closed")
+		return 0, "", DeliveryMessage{}, observerError("closed")
 	}
 	if attemptState == "spent" {
 		// A receipt can only follow a confirmed call; a merely spent attempt
 		// was never cleared to transmit.
-		return 0, "", "", observerError("invalid_request")
+		return 0, "", DeliveryMessage{}, observerError("invalid_request")
 	}
-	return seq, attemptState, messageData, nil
+	return seq, attemptState, message, nil
 }
 
 func deliveryAttemptState(ctx context.Context, tx *sql.Tx, attemptID, state string) error {

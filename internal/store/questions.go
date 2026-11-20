@@ -385,12 +385,9 @@ func (s *Store) ListOwnerQuestions(ctx context.Context, taskID, instanceID strin
 			if err := json.Unmarshal([]byte(messageData), &message); err != nil {
 				return nil, 0, err
 			}
-			question.AnswerStatus = message.Status
-			if question.AnswerStatus != "observed" {
+			question.AnswerStatus = deliveryStatus(message.Status, blocked != 0, attemptState)
+			if message.Status != "observed" {
 				question.AnswerBlockReason = blockReason
-			}
-			if question.AnswerStatus != "observed" && (blocked != 0 || attemptState != "") {
-				question.AnswerStatus = "unknown"
 			}
 		}
 		questions = append(questions, question)

@@ -53,7 +53,6 @@ def text_content(message):
 
 class Provider(http.server.BaseHTTPRequestHandler):
     task_id = ''
-    calls = 0
     tool_calls = 0
     answer_turns = 0
     fresh = []
@@ -71,7 +70,6 @@ class Provider(http.server.BaseHTTPRequestHandler):
         assert payload['model'] == 'local'
         encoded = json.dumps(payload)
         assert all(secret not in encoded for secret in type(self).forbidden)
-        type(self).calls += 1
         last = payload['messages'][-1]
         content = text_content(last)
         type(self).fresh.append(content)
@@ -210,7 +208,7 @@ class Fixture:
             'QT_QPA_PLATFORM': 'offscreen', 'QT_QUICK_BACKEND': 'software',
         }
         Provider.task_id = ''
-        Provider.calls = Provider.tool_calls = Provider.answer_turns = 0
+        Provider.tool_calls = Provider.answer_turns = 0
         Provider.fresh = []
         Provider.tool_lists = {}
         Provider.forbidden = []
@@ -465,7 +463,7 @@ class Fixture:
             'journal_id': journal_id, 'verifier': hashlib.sha256(self.delivery_token.encode()).hexdigest(),
             'runtime_id': self.runtime, 'project_id': self.project, 'pi_session_id': self.pi_session,
             'instance_id': self.instance, 'allow_owner_questions': True})
-        self.assert_pending = granted['status']
+        assert granted['status'] == 'pending', 'new grant must be pending before attach'
         capable_writer = uid()
         self.delivery_request('POST', '/delivery/v1/attach', {
             'writer_id': capable_writer, 'expected_previous': '', 'journal_id': journal_id,

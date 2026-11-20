@@ -134,7 +134,6 @@ private:
   void sendMutation();
   void cancel(QNetworkReply *&reply);
   bool validMessage(const QJsonObject &obj) const;
-  bool validQuestion(const QJsonObject &obj) const;
   bool validAnswerResult(const QJsonObject &obj) const;
   QNetworkAccessManager m_network;
   ObjectModel m_projects, m_tasks, m_queues;
