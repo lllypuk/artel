@@ -714,22 +714,31 @@ Item {
                                         text: questionRow.modelData.text
                                         Layout.fillWidth: true
                                     }
+                                    UI.StatusLabel {
+                                        theme: manual.theme
+                                        objectName: "answerProviderWarning_" + questionRow.modelData.id
+                                        text: qsTr("The text will be sent to the provider configured in Pi as part of the conversation context. It does not confirm delivery to the provider or that Pi completed the turn.")
+                                        visible: questionRow.modelData.status === "open"
+                                        severity: "warning"
+                                        Layout.fillWidth: true
+                                    }
                                     UI.LongText {
                                         id: answerField
                                         theme: manual.theme
                                         objectName: "answerField_" + questionRow.modelData.id
                                         visible: questionRow.modelData.status === "open"
                                         enabled: manual.panel.writable && !manual.panel.busy
-                                        text: manual.panel.answerText
+                                        text: manual.panel.answerText(questionRow.modelData.id)
                                         placeholderText: qsTr("Answer for Pi")
                                         Accessible.name: placeholderText
                                         Layout.fillWidth: true
                                         Layout.preferredHeight: Math.max(100, implicitHeight)
                                         onTextChanged: {
                                             if (activeFocus)
-                                                manual.panel.answerText = text;
+                                                manual.panel.setAnswerText(questionRow.modelData.id, text);
                                         }
                                         onActiveFocusChanged: manual.revealField(this, cursorRectangle.y)
+                                        onCursorRectangleChanged: manual.revealField(this, cursorRectangle.y)
                                     }
                                     PanelButton {
                                         objectName: "answerButton_" + questionRow.modelData.id
@@ -752,7 +761,22 @@ Item {
                                         text: questionRow.modelData.answerStatusLabel
                                         Layout.fillWidth: true
                                     }
+                                    UI.StatusLabel {
+                                        theme: manual.theme
+                                        objectName: "answerBlockReason_" + questionRow.modelData.id
+                                        visible: questionRow.modelData.status === "answered" && !!questionRow.modelData.answerBlockReason
+                                        text: questionRow.modelData.answerBlockReason || ""
+                                        severity: "warning"
+                                        Layout.fillWidth: true
+                                    }
                                 }
+                            }
+                            PanelButton {
+                                objectName: "questionsMoreButton"
+                                text: qsTr("Load more questions")
+                                visible: manual.panel.questionsMore
+                                enabled: manual.panel.questionsMore && !manual.panel.questionsLoading
+                                onClicked: manual.panel.moreQuestions()
                             }
                         }
                         Rectangle {

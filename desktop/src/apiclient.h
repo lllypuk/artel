@@ -62,7 +62,9 @@ public:
   void loadMessages(const QString &task, qint64 after);
   void refreshMessageStatuses(const QString &task, const QStringList &ids);
   void loadDelivery(const QString &task);
-  void loadQuestions(const QString &task);
+  bool questionsLoading() const { return m_questionsReply; }
+  void loadQuestions(const QString &task, qint64 after = 0);
+  void refreshQuestionStatuses(const QString &task, const QStringList &ids);
   void cancelMessages();
   // One owner commission. An unknown outcome (timeout/5xx/lost reply) keeps
   // the original instance/task/binding/body/key for an explicit same retry.
@@ -112,7 +114,9 @@ signals:
   void messageStatusesReceived(const QVariantList &messages);
   void deliveryReceived(const QVariantMap &projection);
   void commissionAccepted(const QVariantMap &message);
-  void questionsReceived(const QVariantList &questions);
+  void questionsReceived(const QVariantList &questions, qint64 after,
+                         qint64 cursor, bool more);
+  void questionStatusesReceived(const QVariantList &questions);
   void answerAccepted(const QVariantMap &answer);
 
 private:
@@ -135,12 +139,14 @@ private:
   QNetworkReply *m_snapshot = nullptr, *m_stream = nullptr,
                 *m_mutation = nullptr, *m_historyReply = nullptr,
                 *m_messagesReply = nullptr, *m_statusReply = nullptr,
-                *m_deliveryReply = nullptr, *m_questionsReply = nullptr;
+                *m_deliveryReply = nullptr, *m_questionsReply = nullptr,
+                *m_questionStatusReply = nullptr;
   QTimer m_reconnect, m_coalesce;
   quint64 m_generation = 0, m_draftRevision = 0, m_sentRevision = 0;
   QString m_instance, m_status = QStringLiteral("disconnected"), m_error,
                       m_historyError, m_messagesError;
-  QString m_messagesTask, m_statusTask, m_deliveryTask, m_questionsTask;
+  QString m_messagesTask, m_statusTask, m_deliveryTask, m_questionsTask,
+      m_questionStatusTask;
   bool m_messagesPageLoaded = false;
   qint64 m_sequence = 0, m_cursor = 0;
   bool m_online = false, m_uncertain = false, m_conflict = false,

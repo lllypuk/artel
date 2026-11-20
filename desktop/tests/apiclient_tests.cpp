@@ -582,6 +582,46 @@ private slots:
     QVERIFY(!client.uncertain());
     client.stop();
   }
+  void questionAnswerUnknownOutcomeReusesExactRequest() {
+    const QString question = "66666666-6666-4666-8666-666666666666";
+    Fixture fixture;
+    QList<QByteArray> answers;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("POST") && request.contains("/answer ")) {
+        answers.append(request);
+        if (answers.size() == 1) {
+          socket->disconnectFromHost();
+          return;
+        }
+        respond(socket, 200,
+                QJsonDocument(QJsonObject{{"question_id", question},
+                                          {"message_id", messageID},
+                                          {"status", "stored"}})
+                    .toJson(QJsonDocument::Compact));
+        return;
+      }
+      if (request.startsWith("GET") && request.contains("/questions?")) {
+        respond(socket, 200, "{\"questions\":[],\"next_after\":0}");
+        return;
+      }
+      fixture.normal(socket, request);
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(client.answerQuestion(taskID, question, "line one\nline two"));
+    QTRY_VERIFY(client.uncertain());
+    QVERIFY(!client.answerQuestion(taskID, question, "different"));
+    QCOMPARE(answers.size(), 1);
+    QVERIFY(client.retry());
+    QTRY_VERIFY(!client.uncertain());
+    QCOMPARE(answers.size(), 2);
+    QCOMPARE(answers[0], answers[1]);
+    QVERIFY(answers[0].contains("\"text\":\"line one\\nline two\""));
+    QCOMPARE(idempotencyKey(answers[0]), idempotencyKey(answers[1]));
+    client.stop();
+  }
   void realTemporaryDaemon() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());

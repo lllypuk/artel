@@ -39,8 +39,8 @@ class Panel : public QObject {
   Q_PROPERTY(QVariant assignment READ assignment NOTIFY changed)
   Q_PROPERTY(QVariant messages READ messages NOTIFY changed)
   Q_PROPERTY(QVariant questions READ questions NOTIFY changed)
-  Q_PROPERTY(
-      QString answerText READ answerText WRITE setAnswerText NOTIFY changed)
+  Q_PROPERTY(bool questionsMore READ questionsMore NOTIFY changed)
+  Q_PROPERTY(bool questionsLoading READ questionsLoading NOTIFY changed)
   Q_PROPERTY(bool messagesMore READ messagesMore NOTIFY changed)
   Q_PROPERTY(bool messagesLoading READ messagesLoading NOTIFY changed)
   Q_PROPERTY(
@@ -80,8 +80,8 @@ public:
   QVariantMap assignment() const;
   QVariantList messages() const;
   QVariantList questions() const;
-  QString answerText() const { return m_answer; }
-  void setAnswerText(const QString &text);
+  bool questionsMore() const { return m_questionsMore; }
+  bool questionsLoading() const { return m_client->questionsLoading(); }
   bool messagesMore() const { return m_messagesMore; }
   bool messagesLoading() const { return m_client->messagesLoading(); }
   bool showArchived() const { return m_archived; }
@@ -103,7 +103,10 @@ public:
   Q_INVOKABLE bool allowed(const QString &state) const;
   Q_INVOKABLE void moreHistory();
   Q_INVOKABLE bool sendCommission();
+  Q_INVOKABLE QString answerText(const QString &question) const;
+  Q_INVOKABLE void setAnswerText(const QString &question, const QString &text);
   Q_INVOKABLE bool answerQuestion(const QString &question);
+  Q_INVOKABLE void moreQuestions();
   Q_INVOKABLE void moreMessages();
   Q_INVOKABLE QString stateLabel(const QString &state) const;
 signals:
@@ -116,6 +119,7 @@ private:
   void loadCommissionPage();
   void armStatusPoll();
   QVariantMap messageRow(const QVariantMap &row) const;
+  QString answerKey(const QString &question) const;
   QVariantList queueIds() const;
   bool begin(const QString &kind, const QVariantMap &value);
   ApiClient *m_client;
@@ -123,11 +127,11 @@ private:
   QTimer m_statusPoll, m_deliveryPoll;
   QString m_commission, m_messagesTask, m_deliveryTask;
   QVariantList m_messages, m_questions;
-  QVariantMap m_delivery;
-  QString m_answer, m_questionsTask;
-  qint64 m_messagesCursor = 0;
-  qsizetype m_statusOffset = 0;
-  bool m_messagesMore = false;
+  QVariantMap m_delivery, m_answers, m_sentAnswers;
+  QString m_questionsTask;
+  qint64 m_messagesCursor = 0, m_questionsCursor = 0;
+  qsizetype m_statusOffset = 0, m_questionStatusOffset = 0;
+  bool m_messagesMore = false, m_questionsMore = false;
   QString m_project, m_task, m_kind, m_editorId, m_editorProject,
       m_historyInstance, m_editorInstance;
   qint64 m_seenSequence = -1;

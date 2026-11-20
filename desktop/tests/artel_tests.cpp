@@ -19,6 +19,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
+#include <QUrlQuery>
 #include <QtTest>
 #include <cmath>
 
@@ -3349,6 +3350,372 @@ private slots:
                     .toString()
                     .contains("closed"));
     QVERIFY(!panel.sendCommission());
+    client.stop();
+  }
+  void ownerQuestionPaginationAnswerAndStatuses() {
+    UiFixture fixture;
+    const QString binding = "44444444-4444-4444-8444-444444444444";
+    const QString session = "55555555-5555-4555-8555-555555555555";
+    const QString answerMessage = "66666666-6666-4666-8666-666666666666";
+    const QString foreign = "99999999-9999-4999-8999-999999999999";
+    QStringList ids;
+    QJsonArray questions;
+    for (int i = 0; i < 6; ++i) {
+      const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+      ids.append(id);
+      questions.append(
+          QJsonObject{{"id", id},
+                      {"task_id", fixture.task},
+                      {"delivery_binding_id", binding},
+                      {"pi_session_id", session},
+                      {"text", QString("Literal <b>question</b> %1").arg(i)},
+                      {"status", "open"},
+                      {"created_at", "2026-11-17T12:00:00Z"}});
+    }
+    int posts = 0;
+    bool includeForeign = false;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/tasks/") &&
+          request.contains("/delivery ")) {
+        UiFixture::respond(
+            socket, 200,
+            QJsonDocument(
+                QJsonObject{
+                    {"task_id", fixture.task},
+                    {"project_id", fixture.project},
+                    {"ready", false},
+                    {"binding",
+                     QJsonObject{{"delivery_binding_id", binding},
+                                 {"observer_id", fixture.instance},
+                                 {"runtime_id", fixture.instance},
+                                 {"project_id", fixture.project},
+                                 {"pi_session_id", session},
+                                 {"journal_id", fixture.instance},
+                                 {"generation", 1},
+                                 {"status", "active"},
+                                 {"allow_owner_questions", true},
+                                 {"created_at", "2026-11-17T12:00:00Z"}}}})
+                .toJson());
+      } else if (request.startsWith("GET /v1/tasks/") &&
+                 request.contains("/messages?")) {
+        UiFixture::respond(socket, 200, "{\"messages\":[],\"next_after\":0}");
+      } else if (request.startsWith("GET /v1/tasks/") &&
+                 request.contains("/questions?")) {
+        const QUrl url(
+            QString::fromUtf8(request.split('\n').first().split(' ')[1]));
+        const QUrlQuery query(url);
+        QJsonArray result;
+        qint64 next = 0;
+        if (query.hasQueryItem("ids")) {
+          const auto requested =
+              query.queryItemValue("ids").split(',', Qt::SkipEmptyParts);
+          for (const auto &id : requested)
+            for (const auto &value : questions)
+              if (value.toObject().value("id").toString() == id)
+                result.append(value);
+          if (includeForeign) {
+            auto row = questions.first().toObject();
+            row.insert("id", foreign);
+            row.insert("text", "Foreign row must not be appended");
+            result.append(row);
+          }
+        } else {
+          const int after = query.queryItemValue("after").toInt();
+          const int end = static_cast<int>(
+              std::min<qsizetype>(after + 5, questions.size()));
+          for (int i = after; i < end; ++i)
+            result.append(questions.at(i));
+          next = end;
+        }
+        UiFixture::respond(socket, 200,
+                           QJsonDocument(QJsonObject{{"questions", result},
+                                                     {"next_after", next}})
+                               .toJson());
+      } else if (request.startsWith("POST /v1/tasks/") &&
+                 request.contains("/answer ")) {
+        ++posts;
+        if (posts == 1) {
+          socket->disconnectFromHost();
+          return;
+        }
+        auto answered = questions.first().toObject();
+        answered.insert("status", "answered");
+        answered.insert("answer_message_id", answerMessage);
+        answered.insert("answer_text", "Answer <b>plain</b>");
+        answered.insert("answer_status", "stored");
+        answered.insert("answered_at", "2026-11-17T12:01:00Z");
+        questions[0] = answered;
+        UiFixture::respond(
+            socket, 200,
+            QJsonDocument(QJsonObject{{"question_id", ids[0]},
+                                      {"message_id", answerMessage},
+                                      {"status", "stored"}})
+                .toJson());
+      } else {
+        fixture.normal(socket, request);
+      }
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    QTRY_COMPARE(panel.questions().size(), 5);
+    QVERIFY(panel.questionsMore());
+    QVERIFY(item(window, "questionsMoreButton")->isEnabled());
+    auto question = [&](const QString &id) {
+      for (const auto &value : panel.questions())
+        if (value.toMap().value("id").toString() == id)
+          return value.toMap();
+      return QVariantMap{};
+    };
+    QVERIFY(!panel.assignment().value("ready").toBool());
+    QVERIFY(!panel.assignment().value("available").toBool());
+    QCOMPARE(
+        item(window, "questionText_" + ids[0])->property("textFormat").toInt(),
+        static_cast<int>(Qt::PlainText));
+    QVERIFY(item(window, "answerProviderWarning_" + ids[0])->isVisible());
+    panel.moreQuestions();
+    QTRY_COMPARE(panel.questions().size(), 6);
+    QVERIFY(!panel.questionsMore());
+    QVERIFY(enter(window, "answerField_" + ids[1], "Other recipient draft"));
+    QVERIFY(enter(window, "answerField_" + ids[0], "Answer <b>plain</b>"));
+    QCOMPARE(panel.answerText(ids[1]), QString("Other recipient draft"));
+    auto *answerButton = item(window, "answerButton_" + ids[0]);
+    QVERIFY(answerButton
+                ->isEnabled()); // Writer readiness is not answer eligibility.
+    answerButton->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_Space);
+    QTRY_VERIFY(panel.uncertain());
+    QCOMPARE(posts, 1);
+    QVERIFY(!panel.answerQuestion(ids[0]));
+    QTRY_VERIFY(!answerButton->isEnabled());
+    panel.setAnswerText(ids[0], "Newer draft survives the replay");
+    QVERIFY(panel.retry());
+    QTRY_COMPARE(question(ids[0]).value("status").toString(),
+                 QString("answered"));
+    QTRY_COMPARE(question(ids[0]).value("answer_status").toString(),
+                 QString("stored"));
+    QCOMPARE(posts, 2);
+    QCOMPARE(fixture.mutations.size(), 2);
+    QCOMPARE(fixture.mutations[0], fixture.mutations[1]);
+    QCOMPARE(question(ids[0]).value("answer_text").toString(),
+             QString("Answer <b>plain</b>"));
+    QCOMPARE(panel.answerText(ids[0]),
+             QString("Newer draft survives the replay"));
+    QCOMPARE(panel.answerText(ids[1]), QString("Other recipient draft"));
+
+    auto observed = questions.first().toObject();
+    observed.insert("answer_status", "observed");
+    questions[0] = observed;
+    client.refreshQuestionStatuses(fixture.task, {ids[0]});
+    QTRY_COMPARE(question(ids[0]).value("answer_status").toString(),
+                 QString("observed"));
+    auto replayed = observed;
+    replayed.insert("answer_status", "stored");
+    questions[0] = replayed;
+    auto blocked = questions.at(1).toObject();
+    blocked.insert("status", "answered");
+    blocked.insert("answer_message_id", answerMessage);
+    blocked.insert("answer_text", "Blocked answer");
+    blocked.insert("answer_status", "unknown");
+    blocked.insert("answer_block_reason", "delivery_revoked");
+    blocked.insert("answered_at", "2026-11-17T12:02:00Z");
+    questions[1] = blocked;
+    includeForeign = true;
+    client.refreshQuestionStatuses(fixture.task, {ids[0], ids[1]});
+    QTRY_COMPARE(question(ids[1]).value("answer_status").toString(),
+                 QString("unknown"));
+    QCOMPARE(question(ids[0]).value("answer_status").toString(),
+             QString("observed"));
+    QCOMPARE(panel.questions().size(), 6);
+    QVERIFY(question(foreign).isEmpty());
+    QVERIFY(item(window, "answerStatus_" + ids[1])->isVisible());
+    QVERIFY(item(window, "answerBlockReason_" + ids[1])->isVisible());
+    QVERIFY(item(window, "answerBlockReason_" + ids[1])
+                ->property("text")
+                .toString()
+                .contains("not active"));
+    client.loadQuestions(fixture.task, 0);
+    QTRY_COMPARE(panel.questions().size(), 5);
+    QCOMPARE(question(ids[0]).value("answer_status").toString(),
+             QString("observed"));
+    client.stop();
+  }
+  void ownerQuestionReplacementAndReconnectFences_data() {
+    QTest::addColumn<QString>("mode");
+    QTest::newRow("page") << "page";
+    QTest::newRow("ids") << "ids";
+  }
+  void ownerQuestionReplacementAndReconnectFences() {
+    QFETCH(QString, mode);
+    UiFixture fixture;
+    const QString otherTask = "77777777-7777-4777-8777-777777777777";
+    const QString replacement = "88888888-8888-4888-8888-888888888888";
+    const QString binding = "44444444-4444-4444-8444-444444444444";
+    const QString questionID = "66666666-6666-4666-8666-666666666666";
+    const QString answerMessage = "99999999-9999-4999-8999-999999999999";
+    const QJsonObject openQuestion{{"id", questionID},
+                                   {"task_id", fixture.task},
+                                   {"delivery_binding_id", binding},
+                                   {"pi_session_id", fixture.instance},
+                                   {"text", "Original question"},
+                                   {"status", "open"},
+                                   {"created_at", "2026-11-17T12:00:00Z"}};
+    QJsonArray questions{openQuestion};
+    auto snapshot = QJsonDocument::fromJson(fixture.state).object();
+    auto tasks = snapshot.value("tasks").toArray();
+    auto other = tasks.first().toObject();
+    other.insert("id", otherTask);
+    tasks.append(other);
+    snapshot.insert("tasks", tasks);
+    fixture.state = QJsonDocument(snapshot).toJson();
+    const auto originalState = fixture.state;
+    QString delay;
+    QPointer<QTcpSocket> delayedRead, delayedSnapshot, stream;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/snapshot ") && delay == "snapshot") {
+        delay.clear();
+        delayedSnapshot = socket;
+      } else if (request.startsWith("GET /v1/stream?")) {
+        stream = socket;
+        fixture.normal(socket, request);
+      } else if (request.startsWith("GET /v1/tasks/") &&
+                 request.contains("/delivery ")) {
+        UiFixture::respond(
+            socket, 200,
+            QJsonDocument(
+                QJsonObject{
+                    {"task_id", fixture.task},
+                    {"project_id", fixture.project},
+                    {"ready", true},
+                    {"binding",
+                     QJsonObject{{"delivery_binding_id", binding},
+                                 {"observer_id", fixture.instance},
+                                 {"runtime_id", fixture.instance},
+                                 {"project_id", fixture.project},
+                                 {"pi_session_id", fixture.instance},
+                                 {"journal_id", fixture.instance},
+                                 {"generation", 1},
+                                 {"status", "active"},
+                                 {"allow_owner_questions", true},
+                                 {"created_at", "2026-11-17T12:00:00Z"}}}})
+                .toJson());
+      } else if (request.startsWith("GET /v1/tasks/") &&
+                 request.contains("/messages?")) {
+        UiFixture::respond(socket, 200, "{\"messages\":[],\"next_after\":0}");
+      } else if (request.startsWith("GET /v1/tasks/") &&
+                 request.contains("/questions?")) {
+        if (delay == "read") {
+          delay.clear();
+          delayedRead = socket;
+          return;
+        }
+        UiFixture::respond(socket, 200,
+                           QJsonDocument(QJsonObject{{"questions", questions},
+                                                     {"next_after", 1}})
+                               .toJson());
+      } else {
+        fixture.normal(socket, request);
+      }
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    QTRY_COMPARE(panel.questions().size(), 1);
+    auto currentQuestion = [&] {
+      const auto rows = panel.questions();
+      return rows.isEmpty() ? QVariantMap{} : rows.first().toMap();
+    };
+    QVERIFY(enter(window, "answerField_" + questionID,
+                  "Original database answer draft"));
+
+    // A first-page reply delivered as the selection changes cannot repopulate
+    // the newly selected task or carry its answer draft to that recipient.
+    delay = "read";
+    client.loadQuestions(fixture.task, 0);
+    QTRY_VERIFY(delayedRead);
+    UiFixture::respond(
+        delayedRead, 200,
+        QJsonDocument(QJsonObject{{"questions", questions}, {"next_after", 1}})
+            .toJson());
+    QVERIFY(panel.selectTask(otherTask));
+    QTest::qWait(50);
+    QVERIFY(panel.questions().isEmpty());
+    QVERIFY(panel.answerText(questionID).isEmpty());
+    QVERIFY(panel.selectTask(fixture.task));
+    QTRY_COMPARE(panel.questions().size(), 1);
+    QVERIFY(enter(window, "answerField_" + questionID,
+                  "Original database answer draft"));
+
+    QTRY_VERIFY(stream);
+    stream->disconnectFromHost();
+    QTRY_VERIFY(!client.online());
+    QTRY_VERIFY_WITH_TIMEOUT(client.online(), 5000);
+    QTRY_COMPARE(panel.questions().size(), 1);
+    QTRY_COMPARE(
+        item(window, "answerField_" + questionID)->property("text").toString(),
+        QString("Original database answer draft"));
+
+    delay = "read";
+    if (mode == "page")
+      client.loadQuestions(fixture.task, 0);
+    else
+      client.refreshQuestionStatuses(fixture.task, {questionID});
+    QTRY_VERIFY(delayedRead);
+    auto replaced = openQuestion;
+    replaced.insert("status", "answered");
+    replaced.insert("answer_message_id", answerMessage);
+    replaced.insert("answer_text", "Replacement database answer");
+    replaced.insert("answer_status", "observed");
+    replaced.insert("answered_at", "2026-11-17T12:01:00Z");
+    questions = QJsonArray{replaced};
+    snapshot = QJsonDocument::fromJson(fixture.state).object();
+    snapshot.insert("instance_id", replacement);
+    fixture.state = QJsonDocument(snapshot).toJson();
+    delay = "snapshot";
+    client.reload();
+    QTRY_VERIFY(delayedSnapshot);
+    UiFixture::respond(delayedRead, 409, "{\"code\":\"instance_mismatch\"}");
+    QTest::qWait(50);
+    QCOMPARE(currentQuestion().value("status").toString(), QString("open"));
+    QCOMPARE(panel.answerText(questionID),
+             QString("Original database answer draft"));
+    QCOMPARE(
+        item(window, "answerField_" + questionID)->property("text").toString(),
+        QString("Original database answer draft"));
+    UiFixture::respond(delayedSnapshot, 200, fixture.state);
+    QTRY_COMPARE(client.instance(), replacement);
+    QTRY_COMPARE(currentQuestion().value("status").toString(),
+                 QString("answered"));
+    QVERIFY(panel.answerText(questionID).isEmpty());
+
+    questions = QJsonArray{openQuestion};
+    fixture.state = originalState;
+    client.reload();
+    QTRY_COMPARE(client.instance(), fixture.instance);
+    QTRY_COMPARE(currentQuestion().value("status").toString(), QString("open"));
+    QTRY_COMPARE(panel.answerText(questionID),
+                 QString("Original database answer draft"));
+    QTRY_COMPARE(
+        item(window, "answerField_" + questionID)->property("text").toString(),
+        QString("Original database answer draft"));
     client.stop();
   }
   void unknownSaveRetryAndHistoryPagination() {

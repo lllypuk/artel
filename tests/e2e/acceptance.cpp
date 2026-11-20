@@ -434,6 +434,18 @@ private slots:
     QCOMPARE(question().value("status").toString(), QString("open"));
     const auto questionID = question().value("id").toString();
     QVERIFY(enter(ui.window, "answerField_" + questionID, answerText));
+    const auto stopDirectory =
+        qEnvironmentVariable("ARTEL_QUESTION_STOP_DIRECTORY");
+    if (!stopDirectory.isEmpty()) {
+      QFile request(stopDirectory + "/stop-request");
+      QVERIFY(request.open(QIODevice::WriteOnly));
+      request.write(questionID.toUtf8());
+      request.close();
+      QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(stopDirectory + "/writer-stopped"),
+                               20000);
+      QTRY_VERIFY_WITH_TIMEOUT(!ui.panel.assignment().value("ready").toBool(),
+                               10000);
+    }
     auto *answerButton = item(ui.window, "answerButton_" + questionID);
     QVERIFY(answerButton && answerButton->isEnabled());
     answerButton->forceActiveFocus();

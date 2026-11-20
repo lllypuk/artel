@@ -519,6 +519,7 @@ void ApiClient::cancelMessages() {
   cancel(m_statusReply);
   cancel(m_deliveryReply);
   cancel(m_questionsReply);
+  cancel(m_questionStatusReply);
   m_messagesPageLoaded = false;
 }
 void ApiClient::loadMessages(const QString &task, qint64 after) {
@@ -735,13 +736,14 @@ bool ApiClient::validQuestion(const QJsonObject &obj) const {
                 QStringLiteral("observed")}) &&
          obj.value("answered_at").isString();
 }
-void ApiClient::loadQuestions(const QString &task) {
+void ApiClient::loadQuestions(const QString &task, qint64 after) {
   cancel(m_questionsReply);
-  if (!m_online || m_stopped || !uuid(task))
+  if (!m_online || m_stopped || !uuid(task) || after < 0)
     return;
   const auto instance = m_instance;
-  auto *reply = request("GET", "/v1/tasks/" + task + "/questions?instance_id=" +
-                                   instance + "&after=0&limit=5");
+  auto *reply = request(
+      "GET", "/v1/tasks/" + task + "/questions?instance_id=" + instance +
+                 "&after=" + QString::number(after) + "&limit=5");
   m_questionsReply = reply;
   m_questionsTask = task;
   connect(reply, &QIODevice::readyRead, this, [reply] {
@@ -753,11 +755,68 @@ void ApiClient::loadQuestions(const QString &task) {
     }
     reply->setProperty("bytes", bytes);
   });
+  connect(reply, &QNetworkReply::finished, this,
+          [this, reply, task, after, instance] {
+            reply->deleteLater();
+            if (reply != m_questionsReply)
+              return;
+            m_questionsReply = nullptr;
+            const auto obj =
+                QJsonDocument::fromJson(reply->property("bytes").toByteArray())
+                    .object();
+            const auto rows = obj.value("questions").toArray();
+            bool valid =
+                reply->error() == QNetworkReply::NoError &&
+                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                        .toInt() == 200 &&
+                reply->header(QNetworkRequest::ContentTypeHeader)
+                    .toString()
+                    .startsWith("application/json") &&
+                !reply->property("oversized").toBool() &&
+                instance == m_instance && task == m_questionsTask &&
+                rows.size() <= 5 && integer(obj.value("next_after")) &&
+                obj.value("next_after").toInteger() >= after;
+            for (const auto &row : rows)
+              valid = valid && validQuestion(row.toObject()) &&
+                      row.toObject().value("task_id").toString() == task;
+            if (valid) {
+              m_messagesError.clear();
+              emit questionsReceived(rows.toVariantList(), after,
+                                     obj.value("next_after").toInteger(),
+                                     rows.size() == 5);
+            } else {
+              m_messagesError = tr("Owner questions unavailable or invalid");
+            }
+            emit changed();
+          });
+}
+void ApiClient::refreshQuestionStatuses(const QString &task,
+                                        const QStringList &ids) {
+  cancel(m_questionStatusReply);
+  if (!m_online || m_stopped || !uuid(task) || ids.isEmpty() || ids.size() > 5)
+    return;
+  for (const auto &id : ids)
+    if (!uuid(id))
+      return;
+  const auto instance = m_instance;
+  auto *reply = request("GET", "/v1/tasks/" + task + "/questions?instance_id=" +
+                                   instance + "&ids=" + ids.join(','));
+  m_questionStatusReply = reply;
+  m_questionStatusTask = task;
+  connect(reply, &QIODevice::readyRead, this, [reply] {
+    auto bytes = reply->property("bytes").toByteArray() + reply->readAll();
+    if (bytes.size() > 320 * 1024) {
+      reply->setProperty("oversized", true);
+      reply->abort();
+      return;
+    }
+    reply->setProperty("bytes", bytes);
+  });
   connect(reply, &QNetworkReply::finished, this, [this, reply, task, instance] {
     reply->deleteLater();
-    if (reply != m_questionsReply)
+    if (reply != m_questionStatusReply)
       return;
-    m_questionsReply = nullptr;
+    m_questionStatusReply = nullptr;
     const auto obj =
         QJsonDocument::fromJson(reply->property("bytes").toByteArray())
             .object();
@@ -770,16 +829,16 @@ void ApiClient::loadQuestions(const QString &task) {
             .toString()
             .startsWith("application/json") &&
         !reply->property("oversized").toBool() && instance == m_instance &&
-        task == m_questionsTask && rows.size() <= 5 &&
+        task == m_questionStatusTask && rows.size() <= 5 &&
         integer(obj.value("next_after"));
     for (const auto &row : rows)
       valid = valid && validQuestion(row.toObject()) &&
               row.toObject().value("task_id").toString() == task;
     if (valid) {
       m_messagesError.clear();
-      emit questionsReceived(rows.toVariantList());
+      emit questionStatusesReceived(rows.toVariantList());
     } else {
-      m_messagesError = tr("Owner questions unavailable or invalid");
+      m_messagesError = tr("Owner question status unavailable or invalid");
     }
     emit changed();
   });
@@ -927,7 +986,9 @@ void ApiClient::sendMutation() {
         reply->header(QNetworkRequest::ContentTypeHeader)
             .toString()
             .startsWith("application/json") &&
-        !reply->property("oversized").toBool() && validResult) {
+        !reply->property("oversized").toBool() && validResult &&
+        (!answerRoute ||
+         obj.value("question_id").toString() == m_path.section('/', 5, 5))) {
       m_uncertain = false;
       m_conflict = false;
       if (!deliveryMutation && m_draftRevision == m_sentRevision)
@@ -935,7 +996,8 @@ void ApiClient::sendMutation() {
       m_error.clear();
       if (answerRoute) {
         emit answerAccepted(obj.toVariantMap());
-        loadQuestions(m_path.section('/', 3, 3));
+        refreshQuestionStatuses(m_path.section('/', 3, 3),
+                                {m_path.section('/', 5, 5)});
       } else if (messageRoute) {
         emit commissionAccepted(obj.toVariantMap());
         const auto task =

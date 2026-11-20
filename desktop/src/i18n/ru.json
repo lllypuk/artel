@@ -225,5 +225,7 @@
   "Pi started preparing the answer turn": "Pi начал подготовку хода с ответом",
   "Answer outcome unknown": "Исход доставки ответа неизвестен",
   "Answer saved": "Ответ сохранён",
-  "Owner questions unavailable or invalid": "Вопросы владельцу недоступны или повреждены"
+  "Owner questions unavailable or invalid": "Вопросы владельцу недоступны или повреждены",
+  "Owner question status unavailable or invalid": "Статус ответа владельца недоступен или повреждён",
+  "Load more questions": "Загрузить ещё вопросы"
 }

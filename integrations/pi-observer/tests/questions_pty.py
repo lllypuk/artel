@@ -18,6 +18,7 @@ import select
 import shutil
 import signal
 import socket
+import sqlite3
 import socketserver
 import struct
 import subprocess
@@ -313,23 +314,36 @@ class Fixture:
     def questions(self):
         return self.owner_request('GET', f"/v1/tasks/{self.task}/questions?instance_id={self.instance}&after=0&limit=5")['questions']
 
-    def start_pi(self):
+    def start_pi(self, resume=False):
+        if self.master is not None:
+            os.close(self.master)
         master, slave = pty.openpty()
         self.master = master
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 120, 0, 0))
-        artifact = shutil.copytree(self.extension_dir or PACKAGE / 'dist', self.root / 'installed-observer')
+        artifact = shutil.copytree(self.extension_dir or PACKAGE / 'dist',
+                                   self.root / ('installed-observer-resume' if resume else 'installed-observer'))
         args = [shutil.which('node'), str(CLI), '--offline', '--no-approve',
                 '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files',
                 '--no-themes', '--no-mcp', '--no-builtin-tools', '-e', str(Path(artifact) / 'index.mjs'),
                 '-e', str(PACKAGE / 'tests/probe.ts'), '-e', str(PACKAGE / 'tests/fixture.ts'),
                 '--model', 'artel-fixture/local']
+        if resume:
+            args.extend(['--session', (self.root / 'session').read_text().strip()])
         self.pi = self.spawn(args, cwd=self.root / 'work', stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
 
+        previous_runtime = getattr(self, 'runtime', '')
+        previous_session = getattr(self, 'pi_session', '')
+
         def registered():
-            rows = self.record()['runtimes']
-            return rows[0]['registration'] if rows else None
-        registration = self.wait(registered, 'original Pi registration')
+            for row in self.record()['runtimes']:
+                registration = row['registration']
+                if resume and (registration['runtime_id'] == previous_runtime or
+                               registration['pi_session_id'] != previous_session):
+                    continue
+                return registration
+            return None
+        registration = self.wait(registered, 'replacement Pi registration' if resume else 'original Pi registration')
         self.runtime = registration['runtime_id']
         self.pi_session = registration['pi_session_id']
 
@@ -358,7 +372,8 @@ class Fixture:
         self.wait(active, 'writer attach')
         self.wait(lambda: self.delivery_request('GET', '/delivery/v1/context')['ready'], 'writer ready')
 
-    def qml(self, question, answer, commission='', observed=True, total=1, trace=False):
+    def start_qml(self, question, answer, commission='', observed=True, total=1, trace=False,
+                  stop_directory=None):
         env = self.env.copy()
         env.update({'ARTEL_QUESTION_ENDPOINT': self.endpoint,
                     'ARTEL_QUESTION_OWNER_TOKEN': str(self.token_path),
@@ -369,10 +384,15 @@ class Fixture:
                     'ARTEL_QUESTION_TOTAL': str(total)})
         if trace:
             env['ARTEL_QUESTION_TRACE'] = str(self.root / 'trace.jsonl')
+        if stop_directory is not None:
+            env['ARTEL_QUESTION_STOP_DIRECTORY'] = str(stop_directory)
         child = subprocess.Popen([sys.executable, '-B', __file__, '--owned-child', str(os.getpid()),
                                   str(ROOT / 'desktop/build/e2e/acceptance'), 'ownerQuestionRoundTrip', '-maxwarnings', '0'],
                                  env=env, start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.children.append(child)
+        return child
+
+    def wait_qml(self, child):
         end = time.monotonic() + 30
         while child.poll() is None and time.monotonic() < end:
             self.pump()
@@ -382,6 +402,9 @@ class Fixture:
         out, err = child.communicate()
         assert child.returncode == 0, (out.decode()[-3000:], err.decode()[-2000:], bytes(self.output[-1000:]))
         assert all(secret.encode() not in out + err for secret in Provider.forbidden)
+
+    def qml(self, question, answer, commission='', observed=True, total=1, trace=False):
+        self.wait_qml(self.start_qml(question, answer, commission, observed, total, trace))
 
     def prepare(self, enable=True):
         self.launch()
@@ -540,6 +563,79 @@ class OwnerQuestions(unittest.TestCase):
                 second = next(row for row in fixture.questions() if row['text'] == 'SECOND_QUESTION')
                 self.assertEqual(second['answer_text'], 'SECOND_ANSWER')
                 self.assertEqual(second['answer_status'], 'unknown')
+                fixture.quit_pi()
+            finally:
+                fixture.close()
+        self.assertFalse(Path(tmp).exists())
+
+    def test_stopped_original_pi_qml_answer_and_replacement_refusal(self):
+        with tempfile.TemporaryDirectory(prefix='artel-questions-stopped-') as tmp:
+            fixture = Fixture(Path(tmp), True)
+            try:
+                fixture.prepare()
+                fixture.owner_request('POST', f"/v1/tasks/{fixture.task}/messages", {
+                    'text': f'ASK_OWNER FIRST_QUESTION for Artel task {fixture.task}',
+                    'delivery_binding_id': fixture.binding, 'instance_id': fixture.instance})
+                question = fixture.wait(lambda: next((row for row in fixture.questions()
+                                                      if row['text'] == 'FIRST_QUESTION'), None),
+                                        'question before stopping original Pi')
+                stop_directory = fixture.root / 'private/qml-stop'
+                stop_directory.mkdir(mode=0o700)
+                child = fixture.start_qml('FIRST_QUESTION', 'ANSWER_AFTER_STOP', observed=False,
+                                          trace=True, stop_directory=stop_directory)
+                fixture.wait(lambda: (stop_directory / 'stop-request').exists(),
+                             'production QML answer ready')
+                original_runtime = fixture.runtime
+                original_session = fixture.pi_session
+                fixture.quit_pi()
+                deadline = time.monotonic() + 15
+                while fixture.owner_request(
+                        'GET', f"/v1/tasks/{fixture.task}/delivery")['ready']:
+                    assert time.monotonic() < deadline, 'original writer readiness expired'
+                    time.sleep(.05)
+                (stop_directory / 'writer-stopped').write_text(original_runtime + '\n')
+                fixture.wait_qml(child)
+
+                row = next(row for row in fixture.questions() if row['id'] == question['id'])
+                self.assertEqual(row['answer_text'], 'ANSWER_AFTER_STOP')
+                self.assertEqual(row['answer_status'], 'stored')
+                database = f"file:{fixture.root / 'db/artel.sqlite'}?mode=ro"
+                with sqlite3.connect(database, uri=True) as connection:
+                    self.assertEqual(connection.execute(
+                        'SELECT count(*) FROM owner_questions WHERE id=? AND status=\'answered\'',
+                        (question['id'],)).fetchone()[0], 1)
+                    self.assertEqual(connection.execute(
+                        'SELECT count(*) FROM delivery_messages WHERE id=? AND json_extract(record,\'$.kind\')=\'answer\'',
+                        (row['answer_message_id'],)).fetchone()[0], 1)
+
+                fixture.start_pi(resume=True)
+                self.assertNotEqual(fixture.runtime, original_runtime)
+                self.assertEqual(fixture.pi_session, original_session)
+                time.sleep(3)
+                fixture.pump()
+                self.assertEqual(Provider.answer_turns, 0)
+                self.assertFalse(any('ANSWER_AFTER_STOP' in text for text in Provider.fresh))
+
+                context = fixture.delivery_request('GET', '/delivery/v1/context')
+                self.assertFalse(context['ready'])
+                replacement_writer = uid()
+                config = json.loads(fixture.delivery_config.read_text())
+                denied = fixture.delivery_request('POST', '/delivery/v1/attach', {
+                    'writer_id': replacement_writer, 'expected_previous': context['writer_id'],
+                    'journal_id': config['journal_id'], 'runtime_id': fixture.runtime,
+                    'pi_session_id': fixture.pi_session,
+                    'capability': 'owner_questions_v1'}, status=409)
+                self.assertEqual(denied['error'], 'assignment_mismatch')
+                denied = fixture.delivery_request(
+                    'GET', f'/delivery/v1/next?writer_id={replacement_writer}', status=409)
+                self.assertEqual(denied['error'], 'owner_conflict')
+                self.assertNotIn('ANSWER_AFTER_STOP', json.dumps(denied))
+                denied = fixture.delivery_request('POST', '/delivery/v1/spend', {
+                    'writer_id': replacement_writer, 'message_id': row['answer_message_id']}, status=409)
+                self.assertEqual(denied['error'], 'owner_conflict')
+                self.assertEqual(Provider.answer_turns, 0)
+                row = next(row for row in fixture.questions() if row['id'] == question['id'])
+                self.assertEqual(row['answer_status'], 'stored')
                 fixture.quit_pi()
             finally:
                 fixture.close()
