@@ -21,6 +21,14 @@ timeout --signal=TERM --kill-after=15s 180s env -i PATH="$PATH" LANG=C.UTF-8 \
     QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_FORCE_STDERR_LOGGING=1 \
     "$ROOT/desktop/build/e2e/acceptance" -maxwarnings 0 restartConcurrencyAndRecovery "$@"
 
+# Exact-result/history UI against the production QML and real CLI/daemon. This
+# synthetic slot launches no Pi, revmux or agterm; the runner creates its commits.
+timeout --signal=TERM --kill-after=15s 120s env -i PATH="$PATH" LANG=C.UTF-8 \
+    HOME="$TEST_HOME" XDG_RUNTIME_DIR="$TEST_HOME/runtime" \
+    ARTEL_TEST_DAEMON="$TEST_HOME/arteld" ARTEL_TEST_CLI="$ROOT/build/bin/artelctl" \
+    QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_FORCE_STDERR_LOGGING=1 \
+    "$ROOT/desktop/build/e2e/acceptance" -maxwarnings 0 reviewedTaskResult "$@"
+
 # Prove a failing assertion exits nonzero and still destroys its daemon/data.
 status=0
 timeout --signal=TERM --kill-after=15s 30s env -i PATH="$PATH" LANG=C.UTF-8 \

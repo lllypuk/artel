@@ -238,5 +238,22 @@
   "Pi started preparing the answer turn": "Pi начал подготовку хода с ответом",
   "Answer outcome unknown": "Исход доставки ответа неизвестен",
   "Answer saved": "Ответ сохранён",
-  "Load more questions": "Загрузить ещё вопросы"
+  "Load more questions": "Загрузить ещё вопросы",
+  "Submitted results unavailable or invalid": "Сданные результаты недоступны или повреждены",
+  "Submitted result and review": "Сданный результат и ревью",
+  "Loading submitted result…": "Загрузка сданного результата…",
+  "No result has been submitted for this task.": "Для этой задачи результат ещё не сдан.",
+  "Repository identity: %1": "Идентичность репозитория: %1",
+  "Base: %1": "База: %1",
+  "Head: %1": "Версия: %1",
+  "Required review sources complete": "Обязательные источники ревью в полном составе",
+  "Required review sources incomplete": "Обязательные источники ревью неполны",
+  "revmux task: %1 · run: %2": "Задача revmux: %1 · прогон: %2",
+  "Report reference (display only): %1": "Ссылка на отчёт (только отображение): %1",
+  "Review report reference": "Ссылка на отчёт ревью",
+  "SHA provenance: %1 — owner assertion, not independent verification": "Источник SHA: %1 — заявление владельца, не независимая проверка",
+  "Findings: %1 · Pre-existing: %2 · Open questions: %3": "Замечания: %1 · Существовали ранее: %2 · Открытые вопросы: %3",
+  "Submission and review history": "История сдач и ревью",
+  "Submitted candidate · event #%1": "Сданный кандидат · событие №%1",
+  "Load more submitted results": "Загрузить ещё сданные результаты"
 }

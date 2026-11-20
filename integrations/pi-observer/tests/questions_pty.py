@@ -780,7 +780,7 @@ class OwnerQuestions(unittest.TestCase):
                 fixture.close()
         self.assertFalse(Path(tmp).exists())
 
-    def assert_base_daemon_refuses_v4(self, fixture, old_daemon):
+    def assert_base_daemon_refuses_v5(self, fixture, old_daemon):
         fixture.stop(fixture.daemon)
         db_path = fixture.root / 'db/artel.sqlite'
 
@@ -790,7 +790,7 @@ class OwnerQuestions(unittest.TestCase):
                         db.execute('SELECT instance_id FROM metadata WHERE id=1').fetchone()[0])
 
         before = database_identity()
-        self.assertEqual(before, (4, fixture.instance))
+        self.assertEqual(before, (5, fixture.instance))
         child = fixture.spawn([str(old_daemon), '--listen', '127.0.0.1:0',
                                '--data-dir', str(fixture.root / 'db'), '--token-file', str(fixture.token_path),
                                '--observer-socket', fixture.daemon_socket],
@@ -798,8 +798,8 @@ class OwnerQuestions(unittest.TestCase):
         out, err = child.communicate(timeout=10)
         self.assertEqual(child.returncode, 1)
         self.assertNotIn(b'listening', out)
-        # The real base binary deliberately masks the store's unsupported-version
-        # error. Its v3 startup is the positive control in the same test.
+        # The real 4b/v4 base binary deliberately masks the store's
+        # unsupported-version error. Its v3 startup is the positive control below.
         self.assertEqual(err.strip(), b'arteld: cannot initialize database')
         self.assertEqual(database_identity(), before)
 
@@ -835,7 +835,7 @@ class OwnerQuestions(unittest.TestCase):
                     pending = fixture.delivery_request('GET', f'/delivery/v1/next?writer_id={capable_writer}&instance_id={fixture.instance}')
                     self.assertEqual(pending['message']['id'], answer_id, 'old writer read or spent the 4b answer')
                     fixture.quit_pi()
-                    self.assert_base_daemon_refuses_v4(fixture, old_daemon)
+                    self.assert_base_daemon_refuses_v5(fixture, old_daemon)
                 finally:
                     fixture.close()
             self.assertFalse(Path(tmp).exists())

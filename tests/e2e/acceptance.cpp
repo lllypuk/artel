@@ -6,6 +6,7 @@
 #include <QInputMethodEvent>
 #include <QJsonDocument>
 #include <QNetworkProxy>
+#include <QPointer>
 #include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQuickItem>
@@ -135,16 +136,18 @@ struct Oracle {
         request, method,
         method == "GET" ? QByteArray{} : QJsonDocument(body).toJson());
   }
-  QJsonObject get(const QString &path) {
-    auto *reply = send("GET", path);
+  QJsonObject get(const QString &path) { return request("GET", path); }
+  QJsonObject request(const QByteArray &method, const QString &path,
+                      const QJsonObject &body = {}) {
+    auto *reply = send(method, path, body);
     QElapsedTimer timer;
     timer.start();
     while (!reply->isFinished() && timer.elapsed() < 6000)
       QTest::qWait(10);
-    const bool ok =
-        reply->isFinished() &&
-        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() ==
-            200;
+    const int status =
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const bool ok = reply->isFinished() &&
+                    (status == 200 || (method != "GET" && status == 201));
     const auto result = QJsonDocument::fromJson(reply->readAll()).object();
     reply->abort();
     reply->deleteLater();
@@ -164,9 +167,10 @@ struct Window {
   Appearance appearance;
   QQmlApplicationEngine engine;
   QQuickWindow *window = nullptr;
-  Window(const Daemon &daemon)
+  Window(const Daemon &daemon, const QUrl &endpoint = {})
       : appearance(daemon.dir.path(), daemon.dir.filePath("language")) {
-    if (!client.configure(daemon.endpoint, daemon.tokenPath()))
+    if (!client.configure(endpoint.isValid() ? endpoint : daemon.endpoint,
+                          daemon.tokenPath()))
       return;
     engine.setInitialProperties(
         {{"workspace", QVariant::fromValue(&workspace)},
@@ -178,6 +182,98 @@ struct Window {
     client.reload();
   }
 };
+struct ProcessResult {
+  int code = -1;
+  QByteArray output;
+  QByteArray error;
+};
+ProcessResult runProcess(const QString &program, const QStringList &arguments) {
+  QProcess process;
+  process.start(program, arguments);
+  if (!process.waitForStarted(5000))
+    return {};
+  process.waitForFinished(15000);
+  if (process.state() != QProcess::NotRunning) {
+    process.kill();
+    process.waitForFinished(5000);
+  }
+  return {process.exitCode(), process.readAllStandardOutput(),
+          process.readAllStandardError()};
+}
+QString git(const QString &repo, const QStringList &arguments) {
+  const auto result = runProcess("git", QStringList{"-C", repo} + arguments);
+  return result.code == 0 ? QString::fromUtf8(result.output).trimmed()
+                          : QString();
+}
+bool writeJson(const QString &path, const QJsonObject &value) {
+  QFile file(path);
+  return file.open(QIODevice::WriteOnly) &&
+         file.write(QJsonDocument(value).toJson(QJsonDocument::Compact)) > 0;
+}
+QString writeReviewFixture(const QString &directory, const QString &task,
+                           const QString &run) {
+  if (!QDir().mkpath(directory))
+    return {};
+  const auto agent = [](const QString &name, const QString &executor) {
+    return QJsonObject{{"name", name},
+                       {"lenses", QJsonArray{"bugs"}},
+                       {"executor", executor},
+                       {"requested_model", "fictional"},
+                       {"actual_model", "fictional"},
+                       {"effort", "high"},
+                       {"tokens", 1},
+                       {"raised", 0},
+                       {"degraded", false}};
+  };
+  const QJsonArray agents{agent("reviewer", "pi"), agent("optional", "codex")};
+  const QJsonObject finding{{"id", "fictional-finding"},
+                            {"file", "fictional.cpp"},
+                            {"line", 1},
+                            {"end_line", 0},
+                            {"severity", "minor"},
+                            {"confidence", 100},
+                            {"title", "Synthetic title"},
+                            {"body", "Synthetic body"},
+                            {"fix", "Synthetic fix"},
+                            {"sources", QJsonArray{"reviewer"}},
+                            {"lenses", QJsonArray{"bugs"}},
+                            {"verdict", "confirmed"}};
+  const QJsonObject question{{"id", "fictional-question"},
+                             {"sources", QJsonArray{"optional"}}};
+  const QJsonObject manifest{{"task", task},
+                             {"run", run},
+                             {"profile", "pi-codex"},
+                             {"scope_path", "fictional-scope"},
+                             {"started_at", "2026-11-20T11:00:00Z"},
+                             {"finished_at", "2026-11-20T12:00:00Z"},
+                             {"duration_ms", 1},
+                             {"tokens", 2},
+                             {"agents", agents},
+                             {"degraded", QJsonValue::Null},
+                             {"prompts", QJsonArray{}},
+                             {"stages", QJsonArray{}}};
+  const QJsonObject findings{
+      {"scope", QJsonObject{{"task", task},
+                            {"run", run},
+                            {"scope_path", "fictional-scope"}}},
+      {"sources", QJsonObject{{"expected", 2},
+                              {"reported", 2},
+                              {"degraded", QJsonArray{}},
+                              {"agents", agents}}},
+      {"findings", QJsonArray{finding}},
+      {"open_questions", QJsonArray{question}},
+      {"pre_existing", QJsonArray{}},
+      {"immaterial", QJsonArray{}},
+      {"stats", QJsonObject{{"started_at", "2026-11-20T11:00:00Z"},
+                            {"finished_at", "2026-11-20T12:00:00Z"},
+                            {"duration_ms", 1},
+                            {"tokens", 2},
+                            {"stages", QJsonArray{}}}}};
+  return writeJson(directory + "/manifest.json", manifest) &&
+                 writeJson(directory + "/findings.json", findings)
+             ? directory
+             : QString();
+}
 // Forward real requests to arteld, but discard the first successful mutation
 // response only AFTER its commit. Capture retries to prove identical key/body.
 class LostResponse : public QTcpServer {
@@ -249,6 +345,110 @@ public:
       }
     });
   }
+};
+// A real forwarding proxy holds one result read after the daemon answered.
+// This makes the old-view CAS guard observable without synthetic QML data.
+class ResultDelayProxy : public QTcpServer {
+public:
+  Oracle &upstream;
+  bool holdNext = false;
+  bool failNext = false;
+  int delayed = 0;
+  int failures = 0;
+  explicit ResultDelayProxy(Oracle &oracle) : upstream(oracle) {
+    connect(this, &QTcpServer::newConnection, this, [this] {
+      while (hasPendingConnections()) {
+        auto *socket = nextPendingConnection();
+        auto bytes = std::make_shared<QByteArray>();
+        connect(socket, &QTcpSocket::disconnected, socket,
+                &QObject::deleteLater);
+        connect(socket, &QTcpSocket::readyRead, this, [this, socket, bytes] {
+          *bytes += socket->readAll();
+          const auto split = bytes->indexOf("\r\n\r\n");
+          if (split < 0)
+            return;
+          int length = 0;
+          QByteArray key;
+          for (const auto &line : bytes->left(split).split('\n')) {
+            if (line.toLower().startsWith("content-length:"))
+              length = line.mid(15).trimmed().toInt();
+            if (line.toLower().startsWith("idempotency-key:"))
+              key = line.mid(16).trimmed();
+          }
+          if (bytes->size() < split + 4 + length ||
+              socket->property("sent").toBool())
+            return;
+          socket->setProperty("sent", true);
+          const auto first = bytes->split('\n').first().split(' ');
+          const QString path = QString::fromUtf8(first[1]);
+          const bool resultRead =
+              first[0] == "GET" && path.contains("/results?");
+          const bool delay = resultRead && holdNext;
+          const bool fail = resultRead && failNext;
+          if (delay)
+            holdNext = false;
+          if (fail)
+            failNext = false;
+          auto *reply = upstream.send(
+              first[0], path,
+              QJsonDocument::fromJson(bytes->mid(split + 4)).object(), key);
+          const bool stream = path.startsWith("/v1/stream?");
+          if (stream) {
+            socket->write(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                "Connection: close\r\n\r\n");
+            connect(reply, &QNetworkReply::readyRead, socket,
+                    [reply, socket] { socket->write(reply->readAll()); });
+          }
+          connect(socket, &QTcpSocket::disconnected, reply,
+                  [reply] { reply->abort(); });
+          connect(reply, &QNetworkReply::finished, socket,
+                  [this, reply, socket, delay, fail, stream] {
+                    const int status =
+                        fail ? 503
+                             : reply
+                                   ->attribute(
+                                       QNetworkRequest::HttpStatusCodeAttribute)
+                                   .toInt();
+                    const auto body =
+                        stream            ? QByteArray{}
+                        : fail            ? QByteArray(
+                                                "{\"code\":\"unavailable\",\"message\":"
+                                                "\"controlled failure\"}")
+                        : reply->isOpen() ? reply->readAll()
+                                          : QByteArray{};
+                    const auto response =
+                        "HTTP/1.1 " + QByteArray::number(status) +
+                        " OK\r\nContent-Type: application/json\r\n"
+                        "Connection: close\r\nContent-Length: " +
+                        QByteArray::number(body.size()) + "\r\n\r\n" + body;
+                    if (fail)
+                      ++failures;
+                    if (delay) {
+                      ++delayed;
+                      held.append({socket, response});
+                    } else if (!stream) {
+                      socket->write(response);
+                      socket->disconnectFromHost();
+                    }
+                    reply->deleteLater();
+                  });
+        });
+      }
+    });
+  }
+  void release() {
+    for (auto &pending : held) {
+      if (pending.first) {
+        pending.first->write(pending.second);
+        pending.first->disconnectFromHost();
+      }
+    }
+    held.clear();
+  }
+
+private:
+  QList<QPair<QPointer<QTcpSocket>, QByteArray>> held;
 };
 } // namespace
 
@@ -500,6 +700,315 @@ private slots:
         find(after.value("tasks").toArray(), task).value("state").toString(),
         baselineTask);
     QVERIFY(!ui.panel.uncertain());
+  }
+  // Synthetic Git/report fixture only: no Pi, revmux or agterm is launched.
+  // The runner, not an agent, creates the commits used by this UI contract
+  // test.
+  void reviewedTaskResult() {
+    Daemon daemon;
+    QVERIFY(daemon.dir.isValid());
+    QVERIFY(daemon.start());
+    Oracle oracle(daemon.endpoint, daemon.tokenPath());
+    ResultDelayProxy proxy(oracle);
+    QVERIFY(proxy.listen(QHostAddress::LocalHost, 0));
+    const QUrl proxyEndpoint(
+        QString("http://127.0.0.1:%1").arg(proxy.serverPort()));
+
+    const auto repo = daemon.dir.filePath("review-repository");
+    auto result = runProcess("git", {"init", "-q", repo});
+    QVERIFY2(result.code == 0, result.error.constData());
+    QCOMPARE(git(repo, {"config", "user.name", "Fictional Runner"}), QString());
+    QCOMPARE(git(repo, {"config", "user.email", "runner@example.invalid"}),
+             QString());
+    QFile candidate(repo + "/candidate.txt");
+    QVERIFY(candidate.open(QIODevice::WriteOnly));
+    candidate.write("base\n");
+    candidate.close();
+    QCOMPARE(git(repo, {"add", "candidate.txt"}), QString());
+    QCOMPARE(git(repo, {"commit", "-q", "-m", "Runner-created base"}),
+             QString());
+    const auto base = git(repo, {"rev-parse", "HEAD"});
+    QCOMPARE(base.size(), 40);
+    QVERIFY(candidate.open(QIODevice::WriteOnly));
+    candidate.write("first head\n");
+    candidate.close();
+    QCOMPARE(git(repo, {"commit", "-q", "-am", "Runner-created first head"}),
+             QString());
+    const auto firstHead = git(repo, {"rev-parse", "HEAD"});
+    QVERIFY(candidate.open(QIODevice::WriteOnly));
+    candidate.write("second head\n");
+    candidate.close();
+    QCOMPARE(git(repo, {"commit", "-q", "-am", "Runner-created second head"}),
+             QString());
+    const auto secondHead = git(repo, {"rev-parse", "HEAD"});
+    QVERIFY(firstHead != secondHead && secondHead.size() == 40);
+
+    const auto project = oracle
+                             .request("POST", "/v1/projects",
+                                      {{"name", "Fictional reviewed result"},
+                                       {"root_path", repo}})
+                             .value("id")
+                             .toString();
+    QVERIFY(!project.isEmpty());
+    const auto task =
+        oracle
+            .request("POST", "/v1/projects/" + project + "/tasks",
+                     {{"title", "Review exact candidate"},
+                      {"description", "Original task description"}})
+            .value("id")
+            .toString();
+    const auto otherTask =
+        oracle
+            .request("POST", "/v1/projects/" + project + "/tasks",
+                     {{"title", "Other task during loading"}})
+            .value("id")
+            .toString();
+    QVERIFY(!task.isEmpty() && !otherTask.isEmpty());
+    QVERIFY(!oracle
+                 .request("PUT", "/v1/projects/" + project + "/queue",
+                          {{"expected_queue_version", 1},
+                           {"task_ids", QJsonArray{task}}})
+                 .isEmpty());
+
+    auto ui = std::make_unique<Window>(daemon, proxyEndpoint);
+    QVERIFY(ui->window);
+    QTRY_VERIFY(ui->panel.writable());
+    QVERIFY(click(ui->window, "projectsNavButton"));
+    QVERIFY(ui->panel.selectProject(project));
+    QVERIFY(ui->panel.selectTask(task));
+    QTRY_VERIFY_WITH_TIMEOUT(ui->panel.resultsLoaded(), 5000);
+    QVERIFY(item(ui->window, "noTaskResult")->isVisible());
+    QVERIFY(!item(ui->window, "resultError")->isVisible());
+    QVERIFY(item(ui->window, "commissionField"));
+    ui->panel.setCommissionText("Fictional commission text");
+    QTRY_COMPARE(
+        item(ui->window, "commissionField")->property("text").toString(),
+        QString("Fictional commission text"));
+    QTRY_VERIFY(ui->panel.allowed("in_progress"));
+    QVERIFY(click(ui->window, "startButton"));
+    QTRY_COMPARE(ui->panel.task().value("state").toString(),
+                 QString("in_progress"));
+
+    const auto bindings = daemon.dir.filePath("bindings");
+    QVERIFY(QDir().mkpath(bindings));
+    QVERIFY(QFile::setPermissions(
+        bindings, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    const auto cli = qEnvironmentVariable("ARTEL_TEST_CLI");
+    QVERIFY2(!cli.isEmpty(), "Run reviewedTaskResult through scripts/e2e");
+    const auto firstBinding = bindings + "/first.json";
+    const auto firstRequest =
+        QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QStringList firstSubmit{"results",
+                                  "submit",
+                                  "--task-id",
+                                  task,
+                                  "--repo",
+                                  repo,
+                                  "--base",
+                                  base,
+                                  "--head",
+                                  firstHead,
+                                  "--summary",
+                                  "Fictional first candidate",
+                                  "--expected-result-id",
+                                  "",
+                                  "--binding",
+                                  firstBinding,
+                                  "--revmux-task",
+                                  "fictional-review",
+                                  "--run",
+                                  "run-01",
+                                  "--request-id",
+                                  firstRequest,
+                                  "--endpoint",
+                                  daemon.endpoint.toString(),
+                                  "--token-file",
+                                  daemon.tokenPath()};
+    result = runProcess(cli, firstSubmit);
+    QVERIFY2(result.code == 0, result.error.constData());
+    const auto first = QJsonDocument::fromJson(result.output).object();
+    const auto firstID = first.value("id").toString();
+    QVERIFY(!firstID.isEmpty());
+    QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
+                 firstID);
+
+    const auto report = writeReviewFixture(daemon.dir.filePath("report"),
+                                           "fictional-review", "run-01");
+    QVERIFY(!report.isEmpty());
+    const auto attachRequest =
+        QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QStringList attach{"reviews",           "attach",
+                             "--task-id",         task,
+                             "--result-id",       firstID,
+                             "--binding",         firstBinding,
+                             "--report-dir",      report,
+                             "--required-source", "reviewer=pi",
+                             "--request-id",      attachRequest,
+                             "--endpoint",        daemon.endpoint.toString(),
+                             "--token-file",      daemon.tokenPath()};
+    result = runProcess(cli, attach);
+    QVERIFY2(result.code == 0, result.error.constData());
+    const auto firstAttach = result.output;
+    const auto review = QJsonDocument::fromJson(firstAttach).object();
+    const auto reviewID = review.value("id").toString();
+    QVERIFY(review.value("complete").toBool() && !reviewID.isEmpty());
+    result = runProcess(cli, attach);
+    QVERIFY2(result.code == 0, result.error.constData());
+    QCOMPARE(result.output, firstAttach);
+    QTRY_COMPARE(ui->panel.resultHistory().toList().size(), 1);
+    QTRY_VERIFY(item(ui->window, "currentReviewRun_" + reviewID));
+    QCOMPARE(item(ui->window, "resultBase")->property("text").toString(),
+             QString("Base: %1").arg(base));
+    QCOMPARE(item(ui->window, "resultHead")->property("text").toString(),
+             QString("Head: %1").arg(firstHead));
+    QVERIFY(item(ui->window, "resultRepo")
+                ->property("text")
+                .toString()
+                .contains(first.value("repo").toString()));
+    QVERIFY(item(ui->window, "currentReviewRun_" + reviewID)
+                ->property("text")
+                .toString()
+                .contains("run-01"));
+    QVERIFY(item(ui->window, "currentReviewReport_" + reviewID)
+                ->property("text")
+                .toString()
+                .contains(report));
+    QVERIFY(item(ui->window, "currentReviewProvenance_" + reviewID)
+                ->property("text")
+                .toString()
+                .contains("operator"));
+    QVERIFY(item(ui->window, "currentReviewOutcome_" + reviewID)->isVisible());
+    QVERIFY(item(ui->window, "currentReviewSummary_" + reviewID)
+                ->property("text")
+                .toString()
+                .contains("Open questions: 1"));
+    QVERIFY(!item(ui->window, "noTaskResult")->isVisible());
+
+    // A failed read is an explicit error, never an empty-result claim.
+    proxy.failNext = true;
+    ui->panel.reload();
+    QTRY_COMPARE(proxy.failures, 1);
+    QTRY_VERIFY(!ui->panel.resultsError().isEmpty());
+    QVERIFY(!ui->panel.resultsLoaded());
+    QVERIFY(!item(ui->window, "noTaskResult")->isVisible());
+    QVERIFY(item(ui->window, "resultError")->isVisible());
+    ui->panel.reload();
+    QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
+                 firstID);
+
+    // Switching selection cancels a held read; its late response cannot leak.
+    proxy.holdNext = true;
+    QVERIFY(ui->panel.selectTask(otherTask));
+    QTRY_COMPARE(proxy.delayed, 1);
+    QVERIFY(ui->panel.resultsLoading());
+    QVERIFY(ui->panel.currentResult().toMap().isEmpty());
+    QVERIFY(ui->panel.selectTask(task));
+    QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
+                 firstID);
+    proxy.release();
+    QTest::qWait(50);
+    QCOMPARE(ui->panel.currentResult().toMap().value("id").toString(), firstID);
+
+    // SSE invalidates the result, not either kind of local draft. While the
+    // replacement read is held, the old view cannot accept the new candidate.
+    QVERIFY(click(ui->window, "editTaskButton"));
+    QVERIFY(enter(ui->window, "descriptionField", "Unsaved result-test draft"));
+    ui->panel.setCommissionText("Fictional commission kept across SSE");
+    const auto secondBinding = bindings + "/second.json";
+    const QStringList secondSubmit{
+        "results",
+        "submit",
+        "--task-id",
+        task,
+        "--repo",
+        repo,
+        "--base",
+        base,
+        "--head",
+        secondHead,
+        "--summary",
+        "Fictional second candidate",
+        "--expected-result-id",
+        firstID,
+        "--binding",
+        secondBinding,
+        "--revmux-task",
+        "fictional-review",
+        "--run",
+        "run-02",
+        "--request-id",
+        QUuid::createUuid().toString(QUuid::WithoutBraces),
+        "--endpoint",
+        daemon.endpoint.toString(),
+        "--token-file",
+        daemon.tokenPath()};
+    proxy.holdNext = true;
+    result = runProcess(cli, secondSubmit);
+    QVERIFY2(result.code == 0, result.error.constData());
+    const auto second = QJsonDocument::fromJson(result.output).object();
+    const auto secondID = second.value("id").toString();
+    QVERIFY(!secondID.isEmpty() && secondID != firstID);
+    QTRY_COMPARE(proxy.delayed, 2);
+    QVERIFY(!ui->panel.resultsLoaded());
+    QCOMPARE(ui->panel.editor().value("description").toString(),
+             QString("Unsaved result-test draft"));
+    QCOMPARE(ui->panel.commissionText(),
+             QString("Fictional commission kept across SSE"));
+    ui->panel.discard();
+    QVERIFY(!ui->panel.allowed("done"));
+    const auto blockedSnapshot = oracle.get("/v1/snapshot");
+    QVERIFY(!click(ui->window, "doneButton"));
+    QCOMPARE(oracle.get("/v1/snapshot").value("event_seq"),
+             blockedSnapshot.value("event_seq"));
+    proxy.release();
+    QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
+                 secondID);
+    QCOMPARE(ui->panel.commissionText(),
+             QString("Fictional commission kept across SSE"));
+    QCOMPARE(item(ui->window, "resultHead")->property("text").toString(),
+             QString("Head: %1").arg(secondHead));
+    QTRY_COMPARE(ui->panel.resultHistory().toList().size(), 2);
+
+    // Existing owner actions accept and return using the newly loaded ID.
+    QTRY_VERIFY(ui->panel.allowed("done"));
+    QVERIFY(click(ui->window, "doneButton"));
+    QTRY_COMPARE(ui->panel.task().value("state").toString(), QString("done"));
+    QTRY_VERIFY(ui->panel.allowed("backlog"));
+    QVERIFY(click(ui->window, "reopenButton"));
+    QTRY_COMPARE(ui->panel.task().value("state").toString(),
+                 QString("backlog"));
+    QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
+                 secondID);
+
+    // Restart both daemon and production QML; immutable old review history and
+    // the second current candidate remain visible after reconstruction.
+    QVERIFY(ui->window->close());
+    ui.reset();
+    daemon.stop();
+    QVERIFY(daemon.start());
+    oracle.endpoint = daemon.endpoint;
+    ui = std::make_unique<Window>(daemon, proxyEndpoint);
+    QVERIFY(ui->window);
+    QTRY_VERIFY(ui->panel.writable());
+    QVERIFY(click(ui->window, "projectsNavButton"));
+    QVERIFY(ui->panel.selectProject(project));
+    QVERIFY(ui->panel.selectTask(task));
+    QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
+                 secondID);
+    QTRY_COMPARE(ui->panel.resultHistory().toList().size(), 2);
+    QCOMPARE(ui->panel.task().value("state").toString(), QString("backlog"));
+    QVERIFY(item(ui->window, "resultHistory_" + firstID));
+    QVERIFY(item(ui->window, "historyReviewRun_" + reviewID));
+    QCOMPARE(item(ui->window, "historyResultHead_" + firstID)
+                 ->property("text")
+                 .toString(),
+             QString("Head: %1").arg(firstHead));
+    QCOMPARE(item(ui->window, "resultHead")->property("text").toString(),
+             QString("Head: %1").arg(secondHead));
+    const auto wire =
+        oracle.get("/v1/tasks/" + task + "/results?after=0&limit=50");
+    QCOMPARE(wire.value("current_result_id").toString(), secondID);
+    QCOMPARE(wire.value("entries").toArray().size(), 3);
   }
   void restartConcurrencyAndRecovery() {
     Daemon daemon;

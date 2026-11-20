@@ -183,6 +183,78 @@ Reusing a legacy prune key with an exact-set body returns an idempotency conflic
 If a legacy prune outcome is uncertain, inspect the current registry and any
 available prior result rather than blindly submitting another prune.
 
+## Submitted Git candidates and imported revmux reviews
+
+A submitted result is an immutable owner assertion about one exact `base`/`head`
+pair. The repository identity is the canonical absolute Git common-dir, not the
+project root or current worktree `HEAD`. Importing a review changes neither task
+state nor queue/assignment. `range_source: operator` records the provenance of
+the SHA claim; it is not independent Git or CI verification. Report references
+are selectable display data only: Artel never opens a path/URI or copies raw
+findings into SQLite.
+
+For an isolated manual cycle, keep the temporary daemon and private variables
+from the first example. Create a project/task in the desktop, copy its UUID from
+the task card, and configure the explicitly opted-in delivery binding above.
+From source, run `make observer-build`, then launch Pi in a **separate ordinary
+terminal**, without agterm:
+
+```sh
+ARTEL_OBSERVER_CONFIG="$ARTEL_CONFIG" pi -e "$PWD/integrations/pi-observer/dist/index.mjs"
+```
+
+Send one commission containing that exact task UUID through the card. Pi runs
+only in that terminal; Artel does not launch it or infer a commit/result from
+activity. After the owner has literal full commit SHAs, create a private pre-run
+binding and submit the selected candidate (all placeholders must be replaced
+with values from this disposable instance):
+
+```sh
+mkdir -m 700 "$ARTEL_TMP/review"
+SUBMIT_JSON=$("$ARTELCTL" results submit --task-id "$TASK_ID" --repo "$REPO" \
+  --base "$BASE" --head "$HEAD" --summary "Ready for owner review" \
+  --expected-result-id "" --binding "$ARTEL_TMP/review/first.binding.json" \
+  --revmux-task "$REVMUX_TASK" --run "$RUN_ID" --request-id "$SUBMIT_REQUEST_ID" \
+  --endpoint "$ARTEL_ENDPOINT" --token-file "$ARTEL_TOKEN")
+RESULT_ID=$(printf '%s\n' "$SUBMIT_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+```
+
+Before the external run, the binding fixes repo/task/run/base/head. Run revmux
+yourself outside Artel in a clean worktree with both SHAs as literals, then put
+its completed `manifest.json` and `findings.json` in one local directory. Import
+only normalized evidence, naming every required `name=executor` pair explicitly:
+
+```sh
+ATTACH_JSON=$("$ARTELCTL" reviews attach --task-id "$TASK_ID" --result-id "$RESULT_ID" \
+  --binding "$ARTEL_TMP/review/first.binding.json" --report-dir "$REPORT_DIR" \
+  --required-source reviewer=pi --request-id "$ATTACH_REQUEST_ID" \
+  --endpoint "$ARTEL_ENDPOINT" --token-file "$ARTEL_TOKEN")
+```
+
+Repeat the **same command with the same request ID** after an uncertain response.
+An identical already-attached repo/task/run returns the original review without
+another event. The card distinguishes loading, read failure and a confirmed
+empty history, and shows full SHAs, run ID, provenance, report reference,
+required-source completeness, findings/pre-existing/open-question counts and
+prior candidates. Incomplete/degraded evidence and zero findings are not owner
+acceptance.
+
+After a new commit, submit its full SHA with `--expected-result-id "$RESULT_ID"`,
+a new binding path/run and a new request ID. Capture the returned new result ID
+for subsequent decisions. The old review remains attached to the old candidate
+and is visible in history; it does not review the new SHA. A late identical
+`reviews attach` for the old result is still historical. Accept or return only
+through the card's existing manual actions: they use the current result ID from
+the loaded view, and a conflict requires rereading rather than automatic retry.
+The contract is in the [owner API](../api/openapi.yaml).
+
+`make test-e2e` explicitly invokes the Qt slot `reviewedTaskResult`. Its Git
+commits are created by the **test runner**, and its manifest/findings pair is
+synthetic. It uses a real temporary daemon/CLI and production QML, but launches
+no Pi, revmux or agterm. This proves the UI/SSE/CAS/history contract only; it is
+separate from, and not evidence for, a real demonstration where Pi makes a
+commit and the owner runs actual revmux.
+
 ## Owner questions and asynchronous answers (stage 4b)
 
 This is a local code slice for one owner and one delivery grant, not a global
@@ -267,9 +339,11 @@ There is no editing, TTL, broadcast, remote access, blocking wait in Pi or
 automatic task transition.
 
 Compatibility and SQLite rollback are deliberately one-way. Opening a v3
-database atomically migrates it to v4 and retains existing commissions, attempts
-and receipts; a failed migration rolls back to v3. After a successful migration,
-an old v3 binary refuses the database: in-place downgrade is unsupported.
+database atomically migrates it through v4 to v5 and retains existing
+commissions, attempts, receipts and identity while adding submitted results and
+reviews; a failed migration rolls back to v3. After a successful migration, old
+v3 and 4b/v4 binaries refuse the v5 database without changing its data or
+identity: in-place downgrade is unsupported.
 Absent/false `allow_owner_questions` preserves the v3 enable/revoke wire and
 receipt hashes and ordinary stage-4a delivery. The base extension can continue
 ordinary commissions but cannot ask questions or receive answer text. Opted-in

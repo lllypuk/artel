@@ -89,6 +89,46 @@ Item {
         background: null
         Layout.fillWidth: true
     }
+    component ReviewDetails: ColumnLayout {
+        id: reviewDetails
+        required property var review
+        required property string namePrefix
+        Layout.fillWidth: true
+        UI.StatusLabel {
+            theme: manual.theme
+            objectName: reviewDetails.namePrefix + "Outcome_" + reviewDetails.review.id
+            text: reviewDetails.review.complete ? qsTr("Required review sources complete") : qsTr("Required review sources incomplete")
+            severity: reviewDetails.review.complete ? "info" : "warning"
+            Layout.fillWidth: true
+        }
+        CopyText {
+            objectName: reviewDetails.namePrefix + "Run_" + reviewDetails.review.id
+            text: qsTr("revmux task: %1 · run: %2").arg(reviewDetails.review.revmux_task).arg(reviewDetails.review.run)
+        }
+        CopyText {
+            objectName: reviewDetails.namePrefix + "Report_" + reviewDetails.review.id
+            text: qsTr("Report reference (display only): %1").arg(reviewDetails.review.report_ref)
+            Accessible.name: qsTr("Review report reference")
+        }
+        Caption {
+            objectName: reviewDetails.namePrefix + "Provenance_" + reviewDetails.review.id
+            text: qsTr("SHA provenance: %1 — owner assertion, not independent verification").arg(reviewDetails.review.range_source)
+            color: theme.muted
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
+        }
+        Caption {
+            objectName: reviewDetails.namePrefix + "Summary_" + reviewDetails.review.id
+            text: qsTr("Findings: %1 · Pre-existing: %2 · Open questions: %3").arg(reviewDetails.review.findings).arg(reviewDetails.review.pre_existing).arg(reviewDetails.review.open_questions)
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
+        }
+        CopyText {
+            objectName: reviewDetails.namePrefix + "Reasons_" + reviewDetails.review.id
+            visible: reviewDetails.review.incomplete_reasons.length > 0
+            text: reviewDetails.review.incomplete_reasons.join("\n")
+        }
+    }
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: theme.space4
@@ -549,6 +589,65 @@ Item {
                             enabled: manual.panel.writable && !manual.panel.project.archived
                             onClicked: manual.panel.editTask(false)
                         }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Caption {
+                                text: qsTr("Submitted result and review")
+                                font.bold: true
+                            }
+                            Caption {
+                                objectName: "resultLoading"
+                                visible: manual.panel.resultsLoading && !manual.panel.resultsLoaded
+                                text: qsTr("Loading submitted result…")
+                                color: theme.muted
+                            }
+                            UI.StatusLabel {
+                                theme: manual.theme
+                                objectName: "resultError"
+                                visible: manual.panel.resultsError !== ""
+                                text: manual.panel.resultsError
+                                severity: "critical"
+                                Layout.fillWidth: true
+                            }
+                            Caption {
+                                objectName: "noTaskResult"
+                                visible: manual.panel.resultsLoaded && !manual.panel.resultsLoading && !manual.panel.currentResult.id && !manual.panel.resultsMore && manual.panel.resultsError === ""
+                                text: qsTr("No result has been submitted for this task.")
+                                color: theme.muted
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            ColumnLayout {
+                                objectName: "currentResult"
+                                visible: !!manual.panel.currentResult.id
+                                Layout.fillWidth: true
+                                CopyText {
+                                    objectName: "resultSummary"
+                                    visible: text.length > 0
+                                    text: manual.panel.currentResult.summary || ""
+                                }
+                                CopyText {
+                                    objectName: "resultRepo"
+                                    text: qsTr("Repository identity: %1").arg(manual.panel.currentResult.repo || "")
+                                }
+                                CopyText {
+                                    objectName: "resultBase"
+                                    text: qsTr("Base: %1").arg(manual.panel.currentResult.base || "")
+                                }
+                                CopyText {
+                                    objectName: "resultHead"
+                                    text: qsTr("Head: %1").arg(manual.panel.currentResult.head || "")
+                                }
+                                Repeater {
+                                    model: manual.panel.currentResult.reviews || []
+                                    delegate: ReviewDetails {
+                                        required property var modelData
+                                        namePrefix: "currentReview"
+                                        review: modelData
+                                    }
+                                }
+                            }
+                        }
                         Flow {
                             Layout.fillWidth: true
                             spacing: theme.space2
@@ -830,6 +929,60 @@ Item {
                                 visible: manual.panel.questionsMore
                                 enabled: manual.panel.questionsMore && !manual.panel.questionsLoading
                                 onClicked: manual.panel.moreQuestions()
+                            }
+                        }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 1
+                            color: theme.border
+                        }
+                        ColumnLayout {
+                            visible: manual.panel.resultHistory.length > 0
+                            Layout.fillWidth: true
+                            Caption {
+                                text: qsTr("Submission and review history")
+                                font.bold: true
+                            }
+                            Repeater {
+                                model: manual.panel.resultHistory
+                                delegate: ColumnLayout {
+                                    id: resultHistoryRow
+                                    required property var modelData
+                                    objectName: "resultHistory_" + resultHistoryRow.modelData.result.id
+                                    Layout.fillWidth: true
+                                    Caption {
+                                        text: qsTr("Submitted candidate · event #%1").arg(resultHistoryRow.modelData.seq)
+                                        color: theme.muted
+                                        font.pixelSize: theme.secondary
+                                    }
+                                    CopyText {
+                                        objectName: "historyResultHead_" + resultHistoryRow.modelData.result.id
+                                        text: qsTr("Head: %1").arg(resultHistoryRow.modelData.result.head)
+                                    }
+                                    CopyText {
+                                        objectName: "historyResultRepo_" + resultHistoryRow.modelData.result.id
+                                        text: qsTr("Repository identity: %1").arg(resultHistoryRow.modelData.result.repo)
+                                    }
+                                    CopyText {
+                                        visible: resultHistoryRow.modelData.result.summary.length > 0
+                                        text: resultHistoryRow.modelData.result.summary
+                                    }
+                                    Repeater {
+                                        model: resultHistoryRow.modelData.reviews
+                                        delegate: ReviewDetails {
+                                            required property var modelData
+                                            namePrefix: "historyReview"
+                                            review: modelData
+                                        }
+                                    }
+                                }
+                            }
+                            PanelButton {
+                                objectName: "resultsMoreButton"
+                                text: qsTr("Load more submitted results")
+                                visible: manual.panel.resultsMore
+                                enabled: manual.panel.resultsMore && !manual.panel.resultsLoading
+                                onClicked: manual.panel.moreResults()
                             }
                         }
                         Rectangle {

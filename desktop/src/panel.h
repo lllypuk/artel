@@ -15,6 +15,12 @@ class Panel : public QObject {
   Q_PROPERTY(QVariantList allProjects READ projectSnapshot NOTIFY changed)
   Q_PROPERTY(QVariantList tasks READ tasks NOTIFY changed)
   Q_PROPERTY(QVariantList history READ history NOTIFY changed)
+  Q_PROPERTY(QVariant currentResult READ currentResult NOTIFY changed)
+  Q_PROPERTY(QVariant resultHistory READ resultHistory NOTIFY changed)
+  Q_PROPERTY(QString resultsError READ resultsError NOTIFY changed)
+  Q_PROPERTY(bool resultsLoaded READ resultsLoaded NOTIFY changed)
+  Q_PROPERTY(bool resultsLoading READ resultsLoading NOTIFY changed)
+  Q_PROPERTY(bool resultsMore READ resultsMore NOTIFY changed)
   Q_PROPERTY(QVariant project READ project NOTIFY changed)
   Q_PROPERTY(QVariant task READ task NOTIFY changed)
   Q_PROPERTY(QVariant editor READ editor NOTIFY changed)
@@ -55,6 +61,12 @@ public:
   QVariantList projectSnapshot() const;
   QVariantList tasks() const;
   QVariantList history() const;
+  QVariant currentResult() const;
+  QVariant resultHistory() const;
+  QString resultsError() const;
+  bool resultsLoaded() const { return m_resultsLoaded; }
+  bool resultsLoading() const { return m_client->resultsLoading(); }
+  bool resultsMore() const { return m_resultsMore; }
   QVariantMap project() const;
   QVariantMap task() const;
   QVariantMap editor() const { return m_client->draft(); }
@@ -104,6 +116,7 @@ public:
   Q_INVOKABLE bool transition(const QString &state);
   Q_INVOKABLE bool allowed(const QString &state) const;
   Q_INVOKABLE void moreHistory();
+  Q_INVOKABLE void moreResults();
   Q_INVOKABLE bool sendCommission();
   Q_INVOKABLE QString answerText(const QString &question) const;
   Q_INVOKABLE void setAnswerText(const QString &question, const QString &text);
@@ -133,6 +146,8 @@ private:
   void setProjectSelection(const QString &id);
   void setTaskSelection(const QString &id);
   void resetCommissions();
+  void resetResults(bool preserveCurrent = false);
+  void loadResults();
   void resetQuestions();
   void pollQuestions();
   void updateQuestions(const QVariantList &rows, bool append);
@@ -158,8 +173,9 @@ private:
   QString m_project, m_task, m_kind, m_editorId, m_editorProject,
       m_historyInstance, m_editorInstance;
   qint64 m_seenSequence = -1;
-  qint64 m_version = 0, m_historyCursor = 0;
-  QVariantList m_history;
+  qint64 m_version = 0, m_historyCursor = 0, m_resultsCursor = 0;
+  QVariantList m_history, m_resultEntries;
+  QString m_currentResult;
   bool m_archived = false, m_historyMore = false, m_adopted = false,
-       m_wasOnline = false;
+       m_wasOnline = false, m_resultsLoaded = false, m_resultsMore = false;
 };
