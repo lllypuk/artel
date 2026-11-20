@@ -275,6 +275,69 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Task'}
         default: {$ref: '#/components/responses/Error'}
+  /v1/tasks/{task_id}/results:
+    parameters: [{$ref: '#/components/parameters/TaskID'}]
+    post:
+      operationId: submitTaskResult
+      description: >-
+        Atomically records an immutable owner-submitted Git candidate and CASes the
+        current result. expected_result_id is empty only when no result is expected.
+        Exact request receipt replay is checked before that CAS, including after newer submissions.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SubmitTaskResult'}
+      responses:
+        '201':
+          description: Submitted candidate or exact original request receipt replay
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskResult'}
+        default: {$ref: '#/components/responses/Error'}
+    get:
+      operationId: taskResultHistory
+      description: Bounded task-scoped submissions and reviews in event order; late reviews retain their original result_id.
+      parameters:
+        - {name: after, in: query, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+      responses:
+        '200':
+          description: Current result ID and a bounded history page
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskResultHistoryPage'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tasks/{task_id}/results/{result_id}/reviews:
+    parameters:
+      - {$ref: '#/components/parameters/TaskID'}
+      - {name: result_id, in: path, required: true, schema: {$ref: '#/components/schemas/UUID'}}
+    post:
+      operationId: attachTaskReview
+      description: >-
+        Attaches normalized review evidence without changing task state, queue or assignment.
+        Stored result task/repo/base/head are authoritative; matching request values are only assertions.
+        The business uniqueness key is repo/revmux_task/run. An identical existing attachment returns
+        the original review without another event; transfer or changed normalized payload is 409.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AttachTaskReview'}
+      responses:
+        '201':
+          description: Attached review or exact original request receipt replay
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskReview'}
+        '200':
+          description: Existing identical review for the same repo/task/run business key
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskReview'}
+        default: {$ref: '#/components/responses/Error'}
   /v1/tasks/{id}/transition:
     parameters: [{$ref: '#/components/parameters/ID'}]
     post:
@@ -295,6 +358,8 @@ paths:
                   description: Required when leaving queued; only the first queued task may start.
                   type: integer
                   minimum: 1
+                expected_result_id:
+                  $ref: '#/components/schemas/ExpectedResultID'
       responses:
         '200':
           description: Task manually transitioned
@@ -417,6 +482,117 @@ components:
           schema: {$ref: '#/components/schemas/DeliveryError'}
   schemas:
     UUID: {type: string, format: uuid}
+    ExpectedResultID:
+      type: string
+      maxLength: 36
+      pattern: '^$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      description: Canonical current result UUID, or empty to assert that no result exists. Omission is legacy only when no result exists.
+    FullSHA: {type: string, pattern: '^[0-9a-f]{40}$'}
+    ReviewRequirement:
+      type: object
+      additionalProperties: false
+      required: [name, executor]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        executor: {type: string, minLength: 1, maxLength: 120}
+    ReviewSource:
+      type: object
+      additionalProperties: false
+      required: [name, executor, required, responded, degraded, findings, pre_existing, open_questions]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        executor: {type: string, minLength: 1, maxLength: 120}
+        required: {type: boolean}
+        responded: {type: boolean, description: A responded source with zero findings is not missing.}
+        degraded: {type: boolean}
+        findings: {type: integer, minimum: 0}
+        pre_existing: {type: integer, minimum: 0}
+        open_questions: {type: integer, minimum: 0}
+    SubmitTaskResult:
+      type: object
+      additionalProperties: false
+      required: [repo, base, head, expected_result_id]
+      properties:
+        repo:
+          type: string
+          maxLength: 4096
+          description: Canonical absolute, symlink-resolved Git common-dir identity; not the project root or worktree path.
+        base: {$ref: '#/components/schemas/FullSHA'}
+        head: {$ref: '#/components/schemas/FullSHA'}
+        summary: {type: string, maxLength: 4096, description: Optional owner summary; no automatic verdict.}
+        expected_result_id: {$ref: '#/components/schemas/ExpectedResultID'}
+    TaskResult:
+      type: object
+      additionalProperties: false
+      required: [id, task_id, repo, base, head, summary, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/UUID'}
+        task_id: {$ref: '#/components/schemas/UUID'}
+        repo: {type: string}
+        base: {$ref: '#/components/schemas/FullSHA'}
+        head: {$ref: '#/components/schemas/FullSHA'}
+        summary: {type: string}
+        created_at: {type: string, format: date-time}
+    AttachTaskReview:
+      type: object
+      additionalProperties: false
+      required: [repo, base, head, revmux_task, run, range_source, report_ref, complete, required_sources, sources, incomplete_reasons, findings, pre_existing, open_questions]
+      properties:
+        repo: {type: string, maxLength: 4096}
+        base: {$ref: '#/components/schemas/FullSHA'}
+        head: {$ref: '#/components/schemas/FullSHA'}
+        revmux_task: {type: string, minLength: 1, maxLength: 200}
+        run: {type: string, minLength: 1, maxLength: 200}
+        range_source: {type: string, enum: [operator], description: 'Owner assertion, never independent Git attestation.'}
+        report_ref: {type: string, minLength: 1, maxLength: 4096, description: Display-only local path or URI; never opened by the daemon.}
+        complete: {type: boolean, description: 'Completeness of required sources only, not acceptance or a clean review.'}
+        required_sources: {type: array, maxItems: 64, items: {$ref: '#/components/schemas/ReviewRequirement'}}
+        sources: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/ReviewSource'}}
+        incomplete_reasons: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 500}}
+        findings: {type: integer, minimum: 0}
+        pre_existing: {type: integer, minimum: 0}
+        open_questions: {type: integer, minimum: 0}
+    TaskReview:
+      type: object
+      additionalProperties: false
+      required: [id, task_id, result_id, repo, base, head, revmux_task, run, range_source, report_ref, complete, required_sources, sources, incomplete_reasons, findings, pre_existing, open_questions, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/UUID'}
+        task_id: {$ref: '#/components/schemas/UUID'}
+        result_id: {$ref: '#/components/schemas/UUID'}
+        repo: {type: string, maxLength: 4096}
+        base: {$ref: '#/components/schemas/FullSHA'}
+        head: {$ref: '#/components/schemas/FullSHA'}
+        revmux_task: {type: string, minLength: 1, maxLength: 200}
+        run: {type: string, minLength: 1, maxLength: 200}
+        range_source: {type: string, enum: [operator]}
+        report_ref: {type: string, minLength: 1, maxLength: 4096}
+        complete: {type: boolean}
+        required_sources: {type: array, maxItems: 64, items: {$ref: '#/components/schemas/ReviewRequirement'}}
+        sources: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/ReviewSource'}}
+        incomplete_reasons: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 500}}
+        findings: {type: integer, minimum: 0}
+        pre_existing: {type: integer, minimum: 0}
+        open_questions: {type: integer, minimum: 0}
+        created_at: {type: string, format: date-time}
+    TaskResultHistoryEntry:
+      type: object
+      additionalProperties: false
+      required: [seq, kind]
+      properties:
+        seq: {type: integer, minimum: 1}
+        kind: {type: string, enum: [result, review]}
+        result: {$ref: '#/components/schemas/TaskResult'}
+        review: {$ref: '#/components/schemas/TaskReview'}
+    TaskResultHistoryPage:
+      type: object
+      additionalProperties: false
+      required: [current_result_id, entries, next_after, has_more]
+      properties:
+        current_result_id: {$ref: '#/components/schemas/ExpectedResultID'}
+        entries: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/TaskResultHistoryEntry'}}
+        next_after: {type: integer, minimum: 0}
+        has_more: {type: boolean}
     QuestionText:
       type: string
       minLength: 1

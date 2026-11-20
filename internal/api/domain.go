@@ -33,6 +33,7 @@ func New(ctx context.Context, s *store.Store) http.Handler {
 	observerapi.MountOwner(mux, s)
 	MountDeliveryOwner(mux, s)
 	mountOwnerQuestions(mux, s)
+	mountTaskResults(mux, s)
 	mux.Handle("GET /healthz", Handler())
 	mux.HandleFunc("GET /v1/snapshot", a.snapshot)
 	mux.HandleFunc("GET /v1/events", a.history)
@@ -167,7 +168,7 @@ func commandFields(c *app.Command) map[string]any {
 	case app.EditTask:
 		allowed = map[string]any{"title": &c.Title, "description": &c.Description, "acceptance_criteria": &c.AcceptanceCriteria, "expected_version": &c.ExpectedVersion}
 	case app.Transition:
-		allowed = map[string]any{"state": &c.State, "expected_version": &c.ExpectedVersion, "expected_queue_version": &c.ExpectedQueueVersion}
+		allowed = map[string]any{"state": &c.State, "expected_version": &c.ExpectedVersion, "expected_queue_version": &c.ExpectedQueueVersion, "expected_result_id": &c.ExpectedResultID}
 	case app.ReplaceQueue:
 		allowed = map[string]any{"task_ids": &c.TaskIDs, "expected_queue_version": &c.ExpectedQueueVersion}
 	}
@@ -188,8 +189,8 @@ func validateCommand(c app.Command, fields map[string]json.RawMessage) error {
 	if c.Action == app.ReplaceQueue && (c.ExpectedQueueVersion < 1 || c.TaskIDs == nil) {
 		return domain.Invalid("task_ids and expected_queue_version required")
 	}
-	if c.Action == app.Transition && c.State != domain.Backlog && c.State != domain.InProgress && c.State != domain.Done && c.State != domain.Cancelled {
-		return domain.Invalid("invalid target state")
+	if c.Action == app.Transition {
+		return validateTransitionCommand(c)
 	}
 	for _, id := range c.TaskIDs {
 		if !validUUID(id) {
@@ -198,6 +199,16 @@ func validateCommand(c app.Command, fields map[string]json.RawMessage) error {
 	}
 	return nil
 }
+func validateTransitionCommand(c app.Command) error {
+	if c.State != domain.Backlog && c.State != domain.InProgress && c.State != domain.Done && c.State != domain.Cancelled {
+		return domain.Invalid("invalid target state")
+	}
+	if c.ExpectedResultID != nil && *c.ExpectedResultID != "" && !validUUID(*c.ExpectedResultID) {
+		return domain.Invalid("invalid expected_result_id")
+	}
+	return nil
+}
+
 func validUUID(id string) bool { u, err := uuid.Parse(id); return err == nil && u.String() == id }
 func (a *server) mutate(w http.ResponseWriter, r *http.Request, action string) {
 	c, err := decodeCommand(w, r, action)
