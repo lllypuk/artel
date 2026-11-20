@@ -53,10 +53,15 @@ bool enter(QQuickWindow *window, const QString &name, const QString &text) {
     return false;
   control->forceActiveFocus();
   QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+  // Key handling and text changes can replace a QML delegate.
+  control = item(window, name);
+  if (!control)
+    return false;
   QInputMethodEvent event;
   event.setCommitString(text);
   QCoreApplication::sendEvent(control, &event);
-  return control->property("text").toString() == text;
+  control = item(window, name);
+  return control && control->property("text").toString() == text;
 }
 void writeFile(const QString &path, const QByteArray &bytes) {
   QFile file(path);
@@ -3469,7 +3474,8 @@ private slots:
     QVERIFY(panel.selectTask(fixture.task));
     QTRY_COMPARE(panel.questions().size(), 5);
     QVERIFY(panel.questionsMore());
-    QVERIFY(item(window, "questionsMoreButton")->isEnabled());
+    auto *moreButton = item(window, "questionsMoreButton");
+    QVERIFY(moreButton && moreButton->isEnabled());
     auto question = [&](const QString &id) {
       for (const auto &value : panel.questions())
         if (value.toMap().value("id").toString() == id)
@@ -3478,25 +3484,35 @@ private slots:
     };
     QVERIFY(!panel.assignment().value("ready").toBool());
     QVERIFY(!panel.assignment().value("available").toBool());
-    QCOMPARE(
-        item(window, "questionText_" + ids[0])->property("textFormat").toInt(),
-        static_cast<int>(Qt::PlainText));
-    QVERIFY(item(window, "answerProviderWarning_" + ids[0])->isVisible());
+    auto *questionText = item(window, "questionText_" + ids[0]);
+    QVERIFY(questionText);
+    QCOMPARE(questionText->property("textFormat").toInt(),
+             static_cast<int>(Qt::PlainText));
+    auto *providerWarning = item(window, "answerProviderWarning_" + ids[0]);
+    QVERIFY(providerWarning && providerWarning->isVisible());
     panel.moreQuestions();
     QTRY_COMPARE(panel.questions().size(), 6);
     QVERIFY(!panel.questionsMore());
     QVERIFY(enter(window, "answerField_" + ids[1], "Other recipient draft"));
     QVERIFY(enter(window, "answerField_" + ids[0], "Answer <b>plain</b>"));
     QCOMPARE(panel.answerText(ids[1]), QString("Other recipient draft"));
-    auto *answerButton = item(window, "answerButton_" + ids[0]);
-    QVERIFY(answerButton
-                ->isEnabled()); // Writer readiness is not answer eligibility.
-    answerButton->forceActiveFocus();
+    const auto answerButtonName = "answerButton_" + ids[0];
+    {
+      auto *button = item(window, answerButtonName);
+      // Writer readiness is not answer eligibility.
+      QVERIFY(button && button->isEnabled());
+      button->forceActiveFocus();
+    }
     QTest::keyClick(window, Qt::Key_Space);
     QTRY_VERIFY(panel.uncertain());
     QCOMPARE(posts, 1);
     QVERIFY(!panel.answerQuestion(ids[0]));
-    QTRY_VERIFY(!answerButton->isEnabled());
+    // Panel::changed can rebuild the Repeater during key handling and waits.
+    const auto answerButtonDisabled = [&] {
+      const auto *button = item(window, answerButtonName);
+      return button && !button->isEnabled();
+    };
+    QTRY_VERIFY(answerButtonDisabled());
     panel.setAnswerText(ids[0], "Newer draft survives the replay");
     QVERIFY(panel.retry());
     QTRY_COMPARE(question(ids[0]).value("status").toString(),
@@ -3537,12 +3553,11 @@ private slots:
              QString("observed"));
     QCOMPARE(panel.questions().size(), 6);
     QVERIFY(question(foreign).isEmpty());
-    QVERIFY(item(window, "answerStatus_" + ids[1])->isVisible());
-    QVERIFY(item(window, "answerBlockReason_" + ids[1])->isVisible());
-    QVERIFY(item(window, "answerBlockReason_" + ids[1])
-                ->property("text")
-                .toString()
-                .contains("not active"));
+    auto *answerStatus = item(window, "answerStatus_" + ids[1]);
+    QVERIFY(answerStatus && answerStatus->isVisible());
+    auto *blockReason = item(window, "answerBlockReason_" + ids[1]);
+    QVERIFY(blockReason && blockReason->isVisible());
+    QVERIFY(blockReason->property("text").toString().contains("not active"));
     client.loadQuestions(fixture.task, 0);
     QTRY_COMPARE(panel.questions().size(), 5);
     QCOMPARE(question(ids[0]).value("answer_status").toString(),
