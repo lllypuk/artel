@@ -25,6 +25,105 @@ paths:
     $ref: './observer-openapi.yaml#/paths/~1v1~1observers~1{observer_id}~1revoke'
   /v1/observers/{observer_id}/prune:
     $ref: './observer-openapi.yaml#/paths/~1v1~1observers~1{observer_id}~1prune'
+  /v1/tasks/{task_id}/messages:
+    parameters: [{$ref: '#/components/parameters/TaskID'}]
+    post:
+      operationId: appendTaskMessage
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AppendMessage'}
+      responses:
+        '200':
+          description: Stored commission or unchanged idempotent replay
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeliveryMessage'}
+        default: {$ref: '#/components/responses/Error'}
+    get:
+      operationId: listTaskMessages
+      parameters:
+        - {name: after, in: query, schema: {type: integer, minimum: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 50}}
+        - {name: ids, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: One task page in record order with live statuses
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [messages, next_after]
+                properties:
+                  messages: {type: array, items: {$ref: '#/components/schemas/DeliveryMessage'}}
+                  next_after: {type: integer, minimum: 0}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tasks/{task_id}/delivery:
+    parameters: [{$ref: '#/components/parameters/TaskID'}]
+    get:
+      operationId: taskDeliveryProjection
+      responses:
+        '200':
+          description: Assignment, binding state and writer readiness without secrets
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeliveryProjection'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/observers/{observer_id}/delivery:
+    parameters: [{$ref: '#/components/parameters/ObserverID'}]
+    put:
+      operationId: enableDelivery
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EnableDelivery'}
+      responses:
+        '200':
+          description: Pending assignment; activation requires a writer attach
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeliveryBinding'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/observers/{observer_id}/delivery/revoke:
+    parameters: [{$ref: '#/components/parameters/ObserverID'}]
+    post:
+      operationId: revokeDelivery
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+                  type: object
+                  additionalProperties: false
+                  required: [delivery_binding_id]
+                  properties:
+                    delivery_binding_id: {$ref: '#/components/schemas/UUID'}
+      responses:
+        '200':
+          description: Revoked assignment
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeliveryBinding'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/observers/{observer_id}/delivery/{delivery_binding_id}:
+    parameters:
+      - {$ref: '#/components/parameters/ObserverID'}
+      - {name: delivery_binding_id, in: path, required: true, schema: {$ref: '#/components/schemas/UUID'}}
+    get:
+      operationId: deliveryBindingStatus
+      responses:
+        '200':
+          description: Binding identity and state; writer markers are never exposed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeliveryBinding'}
+        default: {$ref: '#/components/responses/Error'}
   /healthz:
     get:
       operationId: health
@@ -226,6 +325,8 @@ components:
       description: 32 random bytes encoded as 64 hex characters, read from private local file.
   parameters:
     ID: {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/UUID'}}
+    TaskID: {name: task_id, in: path, required: true, schema: {$ref: '#/components/schemas/UUID'}}
+    ObserverID: {name: observer_id, in: path, required: true, schema: {$ref: '#/components/schemas/UUID'}}
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {$ref: '#/components/schemas/UUID'}}
     Instance: {name: instance_id, in: query, required: true, schema: {$ref: '#/components/schemas/UUID'}}
     After: {name: after, in: query, required: true, schema: {type: integer, minimum: 0}}
@@ -330,6 +431,66 @@ components:
         project_id: {$ref: '#/components/schemas/UUID'}
         queue_version: {$ref: '#/components/schemas/Version'}
         task_ids: {type: array, uniqueItems: true, items: {$ref: '#/components/schemas/UUID'}}
+    AppendMessage:
+      type: object
+      additionalProperties: false
+      required: [text, delivery_binding_id, instance_id]
+      properties:
+        text: {type: string, minLength: 1, maxLength: 8192, description: Non-empty UTF-8 without NUL; stored byte-identically}
+        delivery_binding_id: {$ref: '#/components/schemas/UUID'}
+        instance_id: {$ref: '#/components/schemas/UUID'}
+    DeliveryMessage:
+      type: object
+      additionalProperties: false
+      required: [id, task_id, delivery_binding_id, text, status, blocked, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/UUID'}
+        task_id: {$ref: '#/components/schemas/UUID'}
+        delivery_binding_id: {$ref: '#/components/schemas/UUID'}
+        text: {type: string}
+        status: {type: string, enum: [stored, unknown, observed]}
+        blocked: {type: boolean}
+        block_reason: {type: string, enum: [task_closed, project_archived]}
+        created_at: {type: string, format: date-time}
+    DeliveryBinding:
+      type: object
+      additionalProperties: false
+      required: [delivery_binding_id, observer_id, runtime_id, project_id, pi_session_id, journal_id, generation, status, created_at]
+      properties:
+        delivery_binding_id: {$ref: '#/components/schemas/UUID'}
+        observer_id: {$ref: '#/components/schemas/UUID'}
+        runtime_id: {$ref: '#/components/schemas/UUID'}
+        project_id: {$ref: '#/components/schemas/UUID'}
+        pi_session_id: {$ref: '#/components/schemas/UUID'}
+        journal_id: {$ref: '#/components/schemas/UUID'}
+        generation: {type: integer, minimum: 0}
+        status: {type: string, enum: [pending, active, revoked]}
+        created_at: {type: string, format: date-time}
+    EnableDelivery:
+      type: object
+      additionalProperties: false
+      required: [expected_version, delivery_binding_id, journal_id, verifier, runtime_id, project_id, pi_session_id, instance_id]
+      properties:
+        expected_version: {$ref: '#/components/schemas/Version'}
+        delivery_binding_id: {$ref: '#/components/schemas/UUID'}
+        journal_id: {$ref: '#/components/schemas/UUID'}
+        verifier: {type: string, pattern: '^[0-9a-f]{64}$'}
+        runtime_id: {$ref: '#/components/schemas/UUID'}
+        project_id: {$ref: '#/components/schemas/UUID'}
+        pi_session_id: {$ref: '#/components/schemas/UUID'}
+        instance_id: {$ref: '#/components/schemas/UUID'}
+    DeliveryProjection:
+      type: object
+      additionalProperties: false
+      required: [task_id, project_id, binding]
+      properties:
+        task_id: {$ref: '#/components/schemas/UUID'}
+        project_id: {$ref: '#/components/schemas/UUID'}
+        binding:
+          type: object
+          nullable: true
+          allOf: [{$ref: '#/components/schemas/DeliveryBinding'}]
+        ready: {type: boolean}
     Event:
       type: object
       additionalProperties: false

@@ -592,6 +592,107 @@ Item {
                             implicitHeight: 1
                             color: theme.border
                         }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Caption {
+                                text: qsTr("Pi commission")
+                                font.bold: true
+                            }
+                            Caption {
+                                objectName: "assignmentLine"
+                                visible: manual.panel.assignment.enabled
+                                text: qsTr("Assigned to Pi session %1").arg(manual.panel.assignment.piSession)
+                                color: theme.muted
+                                font.pixelSize: theme.secondary
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            UI.StatusLabel {
+                                theme: manual.theme
+                                objectName: "assignmentWarning"
+                                text: manual.panel.assignment.reason
+                                visible: !!manual.panel.assignment.reason
+                                severity: "warning"
+                                Layout.fillWidth: true
+                            }
+                            UI.StatusLabel {
+                                theme: manual.theme
+                                objectName: "providerWarning"
+                                // Shown before any send: the text leaves this
+                                // panel as context for the provider configured
+                                // in Pi; no delivery or turn completion is implied.
+                                text: qsTr("The text will be sent to the provider configured in Pi as part of the conversation context. It does not confirm delivery to the provider or that Pi completed the turn.")
+                                visible: manual.panel.assignment.available
+                                severity: "warning"
+                                Layout.fillWidth: true
+                            }
+                            UI.LongText {
+                                id: commissionField
+                                theme: manual.theme
+                                objectName: "commissionField"
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: Math.max(120, implicitHeight)
+                                placeholderText: qsTr("Commission text for Pi")
+                                Accessible.name: placeholderText
+                                enabled: manual.panel.assignment.available && !manual.panel.busy
+                                text: manual.panel.commissionText
+                                onTextChanged: {
+                                    if (activeFocus)
+                                        manual.panel.commissionText = text;
+                                }
+                                onActiveFocusChanged: manual.revealField(this, cursorRectangle.y)
+                                onCursorRectangleChanged: manual.revealField(this, cursorRectangle.y)
+                            }
+                            PanelButton {
+                                objectName: "sendCommissionButton"
+                                text: qsTr("Send to Pi")
+                                kind: "primary"
+                                enabled: manual.panel.assignment.canSend && !manual.panel.busy
+                                onClicked: manual.panel.sendCommission()
+                            }
+                            Caption {
+                                text: qsTr("Commissions")
+                                font.bold: true
+                                visible: manual.panel.messages.length > 0 || manual.panel.messagesMore
+                            }
+                            Repeater {
+                                model: manual.panel.messages
+                                delegate: ColumnLayout {
+                                    id: messageRow
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    Caption {
+                                        objectName: "messageStatus_" + messageRow.modelData.id
+                                        text: "%1 · %2".arg(messageRow.modelData.displayTimestamp).arg(messageRow.modelData.blockReason ? "%1 · %2".arg(messageRow.modelData.statusLabel).arg(messageRow.modelData.blockReason) : messageRow.modelData.statusLabel)
+                                        wrapMode: Text.Wrap
+                                        color: theme.muted
+                                        font.pixelSize: theme.secondary
+                                        Layout.fillWidth: true
+                                    }
+                                    Toggle {
+                                        id: expandMessage
+                                        objectName: "messageTextToggle_" + messageRow.modelData.id
+                                        text: qsTr("Show commission text")
+                                    }
+                                    CopyText {
+                                        visible: expandMessage.checked
+                                        text: messageRow.modelData.text
+                                    }
+                                }
+                            }
+                            PanelButton {
+                                objectName: "messagesMoreButton"
+                                text: qsTr("Load more commissions")
+                                visible: manual.panel.messagesMore
+                                enabled: manual.panel.messagesMore && !manual.panel.messagesLoading
+                                onClicked: manual.panel.moreMessages()
+                            }
+                        }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 1
+                            color: theme.border
+                        }
                         Caption {
                             text: qsTr("History — owner manual actions")
                             font.bold: true

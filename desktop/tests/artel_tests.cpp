@@ -3161,6 +3161,196 @@ private slots:
     QTRY_VERIFY(!panel.dirty());
     other.stop();
   }
+  void taskCommissionWarningSendHistoryAndStatuses() {
+    UiFixture fixture;
+    const QString binding = "44444444-4444-4444-8444-444444444444";
+    const QString session = "55555555-5555-4555-8555-555555555555";
+    const QString message = "66666666-6666-4666-8666-666666666666";
+    bool bound = false, silentPost = false, ready = true;
+    int posts = 0;
+    QString status = "stored";
+    QPointer<QTcpSocket> hanging;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/tasks/") &&
+          request.contains("/delivery ")) {
+        QJsonObject projection{{"task_id", fixture.task},
+                               {"project_id", fixture.project},
+                               {"binding", QJsonValue::Null}};
+        if (bound) {
+          projection.insert("ready", ready);
+          projection.insert(
+              "binding", QJsonObject{{"delivery_binding_id", binding},
+                                     {"observer_id", fixture.instance},
+                                     {"runtime_id", fixture.instance},
+                                     {"project_id", fixture.project},
+                                     {"pi_session_id", session},
+                                     {"journal_id", fixture.instance},
+                                     {"generation", 1},
+                                     {"status", "active"},
+                                     {"created_at", "2026-11-17T12:00:00Z"}});
+        }
+        UiFixture::respond(socket, 200, QJsonDocument(projection).toJson());
+      } else if (request.startsWith("GET /v1/tasks/") &&
+                 request.contains("/messages?")) {
+        const QJsonObject row{{"id", message},
+                              {"task_id", fixture.task},
+                              {"delivery_binding_id", binding},
+                              {"text", "Do the thing"},
+                              {"status", status},
+                              {"blocked", false},
+                              {"created_at", "2026-11-17T12:00:00Z"}};
+        const bool known =
+            request.contains(("/tasks/" + fixture.task + "/").toUtf8());
+        UiFixture::respond(
+            socket, 200,
+            QJsonDocument(
+                QJsonObject{{"messages",
+                             known && (request.contains("ids=") || posts > 0)
+                                 ? QJsonArray{row}
+                                 : QJsonArray{}},
+                            {"next_after", 0}})
+                .toJson());
+      } else if (request.startsWith("POST /v1/tasks/")) {
+        ++posts;
+        if (silentPost) {
+          hanging = socket;
+          return;
+        }
+        UiFixture::respond(
+            socket, 200,
+            QJsonDocument(QJsonObject{{"id", message},
+                                      {"task_id", fixture.task},
+                                      {"delivery_binding_id", binding},
+                                      {"text", "Do the thing"},
+                                      {"status", "stored"},
+                                      {"blocked", false},
+                                      {"created_at", "2026-11-17T12:00:00Z"}})
+                .toJson());
+      } else {
+        fixture.normal(socket, request);
+      }
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    // No delivery enabled: the reason is shown, sending stays disabled and
+    // history is legitimately empty.
+    QTRY_VERIFY(item(window, "assignmentWarning")->isVisible());
+    QVERIFY(item(window, "assignmentWarning")
+                ->property("text")
+                .toString()
+                .contains("not enabled"));
+    QVERIFY(!item(window, "sendCommissionButton")->isEnabled());
+    QVERIFY(!panel.sendCommission());
+    QVERIFY(panel.messages().isEmpty());
+    // The binding becomes active and ready: assignment line plus the warning
+    // that the text goes to the provider configured in Pi, shown before send.
+    bound = true;
+    panel.reload();
+    // The bounded projection poll picks up the enabled assignment.
+    QTRY_VERIFY_WITH_TIMEOUT(item(window, "assignmentLine")->isVisible(),
+                             10000);
+    QVERIFY(item(window, "assignmentLine")
+                ->property("text")
+                .toString()
+                .contains(session));
+    QVERIFY(item(window, "providerWarning")->isVisible());
+    QVERIFY(enter(window, "commissionField", "Do the thing"));
+    QCOMPARE(panel.commissionText(), QString("Do the thing"));
+    // LongText releases Tab to keyboard navigation per the design contract.
+    item(window, "commissionField")->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_Tab);
+    QVERIFY(window->activeFocusItem() != item(window, "commissionField"));
+    QVERIFY(item(window, "sendCommissionButton")->isEnabled());
+    silentPost = true;
+    QVERIFY(click(window, "sendCommissionButton"));
+    // Exactly one commission per explicit send.
+    QTRY_COMPARE(posts, 1);
+    // A repeated action is impossible while the previous send is unresolved;
+    // the action and the button are disabled no-ops.
+    QVERIFY(!panel.sendCommission());
+    QVERIFY(!item(window, "sendCommissionButton")->isEnabled());
+    QCOMPARE(posts, 1);
+    // Resolve the hanging send; history reloads and keeps the commission text
+    // only until the server confirms the accepted commission.
+    UiFixture::respond(
+        hanging, 200,
+        QJsonDocument(QJsonObject{{"id", message},
+                                  {"task_id", fixture.task},
+                                  {"delivery_binding_id", binding},
+                                  {"text", "Do the thing"},
+                                  {"status", "stored"},
+                                  {"blocked", false},
+                                  {"created_at", "2026-11-17T12:00:00Z"}})
+            .toJson());
+    QTRY_VERIFY(!client.pending());
+    QTRY_COMPARE(panel.messages().size(), 1);
+    QCOMPARE(panel.messages().first().toMap().value("statusLabel").toString(),
+             QString("Stored"));
+    QCOMPARE(panel.commissionText(), QString());
+    // The bounded poll picks up the observed status and updates the existing
+    // row instead of appending a new one.
+    status = "observed";
+    QTRY_VERIFY_WITH_TIMEOUT(
+        panel.messages().first().toMap().value("status").toString() ==
+            "observed",
+        9000);
+    QCOMPARE(panel.messages().size(), 1);
+    QCOMPARE(panel.messages().first().toMap().value("statusLabel").toString(),
+             QString("Pi started preparing the turn"));
+    // Selection change drops the commission history of the other task.
+    auto snapshot = QJsonDocument::fromJson(fixture.state).object();
+    auto tasks = snapshot.value("tasks").toArray();
+    auto other = tasks.first().toObject();
+    other.insert("id", "77777777-7777-4777-8777-777777777777");
+    tasks.append(other);
+    snapshot.insert("tasks", tasks);
+    fixture.state = QJsonDocument(snapshot).toJson();
+    panel.reload();
+    QTRY_VERIFY(!client.loading());
+    QVERIFY(panel.selectTask("77777777-7777-4777-8777-777777777777"));
+    QTRY_VERIFY(!panel.messagesLoading());
+    QVERIFY(panel.messages().isEmpty());
+    QVERIFY(!item(window, "messageStatus_" + message));
+    // Returning to the original task reloads its history from the server.
+    QVERIFY(panel.selectTask(fixture.task));
+    QTRY_COMPARE(panel.messages().size(), 1);
+    // Stale writer readiness blocks sending with an explicit reason.
+    ready = false;
+    QVERIFY(panel.selectTask("77777777-7777-4777-8777-777777777777"));
+    QVERIFY(panel.selectTask(fixture.task));
+    QTRY_VERIFY(item(window, "assignmentWarning")->isVisible());
+    QTRY_VERIFY(item(window, "assignmentWarning")
+                    ->property("text")
+                    .toString()
+                    .contains("not ready"));
+    QVERIFY(!panel.sendCommission());
+    // A terminal task refuses the commission; the reason stays visible.
+    auto closed = QJsonDocument::fromJson(fixture.state).object();
+    auto closedTasks = closed.value("tasks").toArray();
+    auto closedFirst = closedTasks.first().toObject();
+    closedFirst.insert("state", "done");
+    closedTasks[0] = closedFirst;
+    closed.insert("tasks", closedTasks);
+    fixture.state = QJsonDocument(closed).toJson();
+    panel.reload();
+    QTRY_COMPARE(panel.task().value("state").toString(), QString("done"));
+    QTRY_VERIFY(item(window, "assignmentWarning")
+                    ->property("text")
+                    .toString()
+                    .contains("closed"));
+    QVERIFY(!panel.sendCommission());
+    client.stop();
+  }
   void unknownSaveRetryAndHistoryPagination() {
     UiFixture fixture;
     bool drop = true, invalidHistory = false;

@@ -28,7 +28,7 @@ export type Transport = (method: string, path: string, body: unknown, signal: Ab
 
 // No proxy, redirects, TCP fallback, or response/error text logging. Absolute deadline
 // also bounds peers which keep a connection alive by trickling individual bytes.
-export function unixTransport(config: ObserverConfig, token: string): Transport {
+export function unixTransport(config: ObserverConfig, token: string, maxResponse = 16384): Transport {
   return (method, path, body, signal) => new Promise((resolve, reject) => {
     const data = body === undefined ? undefined : JSON.stringify(body);
     if (data && Buffer.byteLength(data) > 16384) { reject(new ObserverFailure("invalid_metadata")); return; }
@@ -41,7 +41,7 @@ export function unixTransport(config: ObserverConfig, token: string): Transport 
       let size = 0;
       res.on("data", (chunk: Buffer) => {
         size += chunk.length;
-        if (size > 16384) {
+        if (size > maxResponse) {
           reject(new ObserverFailure("protocol_error")); req.destroy();
         } else chunks.push(chunk);
       });
@@ -50,7 +50,8 @@ export function unixTransport(config: ObserverConfig, token: string): Transport 
         try {
           const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
           if (res.statusCode !== 200) {
-            const codes = ["unauthorized", "runtime_retired", "runtime_superseded", "generation_conflict", "sequence_conflict", "capacity_exceeded", "invalid_request", "rate_limited", "unavailable"];
+            const codes = ["unauthorized", "runtime_retired", "runtime_superseded", "generation_conflict", "sequence_conflict", "capacity_exceeded", "invalid_request", "rate_limited", "unavailable",
+              "not_ready", "owner_conflict", "closed", "revoked", "assignment_mismatch", "instance_mismatch", "slot_occupied", "version_conflict", "idempotency_conflict", "not_found", "task_closed"];
             const code = codes.includes(value.error) ? value.error : "protocol_error";
             const quota = ["runtime_payloads", "runtime_identities", "observers"].includes(value.capacity) ? value.capacity : "unknown";
             reject(new ObserverFailure(code === "capacity_exceeded" ? `capacity_${quota}` : code));
@@ -82,6 +83,7 @@ export class ObserverClient {
   private lastReport = -Infinity;
   private retry = 0;
   private timing: typeof defaults;
+  private bound: Context | undefined;
 
   private readonly config: ObserverConfig;
   readonly registration: Registration;
@@ -128,7 +130,12 @@ export class ObserverClient {
     if (this.generation !== c.generation) {
       this.generation = c.generation; this.seq = 0; this.packet = undefined;
     }
+    this.bound = c;
     return c;
+  }
+  // Bound runtime of the last accepted context; delivery starts only there.
+  boundRuntime(): string | undefined {
+    return this.bound?.disposition === "bound" ? this.bound.binding?.runtime_id : undefined;
   }
   private async cycle(signal: AbortSignal): Promise<void> {
     try {

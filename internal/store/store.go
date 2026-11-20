@@ -26,13 +26,19 @@ var schema string
 //go:embed observer_schema.sql
 var observerSchema string
 
-const schemaVersion = 2
+//go:embed delivery_schema.sql
+var deliverySchema string
+
+const schemaVersion = 3
 
 type Store struct {
-	db            *sql.DB
-	observerMu    sync.Mutex
-	observerClock func() time.Time
-	observerSeen  map[string]time.Time
+	db              *sql.DB
+	observerMu      sync.Mutex
+	observerClock   func() time.Time
+	observerSeen    map[string]time.Time
+	deliveryMu      sync.Mutex
+	deliveryReadyMu sync.Mutex
+	deliveryReady   map[string]time.Time
 }
 
 type Snapshot struct {
@@ -86,7 +92,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db, observerClock: time.Now, observerSeen: make(map[string]time.Time)}
+	s := &Store{db: db, observerClock: time.Now, observerSeen: make(map[string]time.Time), deliveryReady: make(map[string]time.Time)}
 	if err := s.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -125,6 +131,17 @@ func prepareFiles(path string) error {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+func requireSchemaQueries(ctx context.Context, tx *sql.Tx, queries []string, message string) error {
+	for _, query := range queries {
+		rows, err := tx.QueryContext(ctx, query)
+		if err != nil {
+			return errors.New(message)
+		}
+		_ = rows.Close()
+	}
+	return nil
+}
+
 func (s *Store) migrate(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -149,7 +166,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO metadata(id,instance_id) VALUES(1,?)", uuid.NewString()); err != nil {
 			return err
 		}
-	} else if version != 1 && version != schemaVersion {
+	} else if version < 1 || version > schemaVersion {
 		return errors.New("unsupported database schema version")
 	}
 	var applicationID int
@@ -167,36 +184,45 @@ func (s *Store) migrate(ctx context.Context) error {
 		return errors.New("invalid database identity")
 	}
 	// Verify required tables/columns even when a foreign database claims our version.
-	for _, query := range []string{
+	if err := requireSchemaQueries(ctx, tx, []string{
 		"SELECT id,root_path,archived,record FROM projects LIMIT 0",
 		"SELECT id,project_id,state,record FROM tasks LIMIT 0",
 		"SELECT project_id,position,task_id FROM queue_entries LIMIT 0",
 		"SELECT seq,action,project_id,task_id,source,timestamp,changes FROM events LIMIT 0",
 		"SELECT key,method,path,payload_hash,status,body FROM mutation_receipts LIMIT 0",
-	} {
-		rows, err := tx.QueryContext(ctx, query)
-		if err != nil {
-			return errors.New("invalid database schema")
-		}
-		_ = rows.Close()
+	}, "invalid database schema"); err != nil {
+		return err
 	}
 	if version < 2 {
 		if _, err := tx.ExecContext(ctx, observerSchema); err != nil {
 			return fmt.Errorf("upgrade observer schema: %w", err)
 		}
 	}
-	for _, query := range []string{
+	if version < 3 {
+		if _, err := tx.ExecContext(ctx, deliverySchema); err != nil {
+			return fmt.Errorf("upgrade delivery schema: %w", err)
+		}
+	}
+	if err := requireSchemaQueries(ctx, tx, []string{
 		"SELECT id,verifier,record FROM observers LIMIT 0",
 		"SELECT observer_id,runtime_id,retired FROM observer_identities LIMIT 0",
 		"SELECT observer_id,runtime_id,record FROM observer_runtimes LIMIT 0",
 		"SELECT principal,key,request_hash,result FROM observer_receipts LIMIT 0",
 		"SELECT seq,observer_id,action,timestamp FROM observer_audit LIMIT 0",
-	} {
-		rows, err := tx.QueryContext(ctx, query)
-		if err != nil {
-			return errors.New("invalid observer schema")
-		}
-		_ = rows.Close()
+	}, "invalid observer schema"); err != nil {
+		return err
+	}
+	return commitAfterSchemaCheck(ctx, tx)
+}
+
+func commitAfterSchemaCheck(ctx context.Context, tx *sql.Tx) error {
+	if err := requireSchemaQueries(ctx, tx, []string{
+		"SELECT id,verifier,record FROM delivery_bindings LIMIT 0",
+		"SELECT seq,id,task_id,binding_id,receipt_key,blocked,record FROM delivery_messages LIMIT 0",
+		"SELECT attempt_id,message_seq,binding_id,writer_id,state,record FROM delivery_attempts LIMIT 0",
+		"SELECT principal,key,request_hash,result FROM delivery_receipts LIMIT 0",
+	}, "invalid delivery schema"); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -346,6 +372,21 @@ func persist(ctx context.Context, tx *sql.Tx, snap Snapshot) error {
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM queue_entries"); err != nil {
 		return err
+	}
+	// Delivery commissions exist only in schema v3+; raw legacy fixtures may not.
+	var deliveryTables int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE name='delivery_messages'").Scan(&deliveryTables); err != nil {
+		return err
+	}
+	if deliveryTables != 0 {
+		// Closing a task or archiving a project permanently blocks undelivered
+		// commissions in the same transaction as the domain change.
+		if _, err := tx.ExecContext(ctx, "UPDATE delivery_messages SET blocked=1,block_reason='task_closed' WHERE blocked=0 AND task_id IN (SELECT id FROM tasks WHERE state IN ('done','cancelled'))"); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE delivery_messages SET blocked=1,block_reason='project_archived' WHERE blocked=0 AND task_id IN (SELECT id FROM tasks WHERE project_id IN (SELECT id FROM projects WHERE archived=1))"); err != nil {
+			return err
+		}
 	}
 	for project, queue := range snap.Queues {
 		for pos, task := range queue {

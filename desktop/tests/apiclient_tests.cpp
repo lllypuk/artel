@@ -12,7 +12,27 @@
 namespace {
 const QString instanceID = "11111111-1111-4111-8111-111111111111";
 const QString projectID = "22222222-2222-4222-8222-222222222222";
+const QString taskID = "33333333-3333-4333-8333-333333333333";
+const QString bindingID = "44444444-4444-4444-8444-444444444444";
+const QString messageID = "55555555-5555-4555-8555-555555555555";
 const QByteArray secret(64, 'a');
+QByteArray messageBody(const QString &status = "stored") {
+  return QJsonDocument(QJsonObject{{"id", messageID},
+                                   {"task_id", taskID},
+                                   {"delivery_binding_id", bindingID},
+                                   {"text", "line one\nline two"},
+                                   {"status", status},
+                                   {"blocked", false},
+                                   {"created_at", "2026-11-17T12:00:00Z"}})
+      .toJson(QJsonDocument::Compact);
+}
+QByteArray idempotencyKey(const QByteArray &request) {
+  const QRegularExpression expression(
+      "Idempotency-Key: ([0-9a-fA-F-]{36})",
+      QRegularExpression::CaseInsensitiveOption);
+  const auto match = expression.match(QString::fromLatin1(request));
+  return match.hasMatch() ? match.captured(1).toLatin1() : QByteArray{};
+}
 QByteArray snapshot(qint64 seq = 0, const QString &instance = instanceID,
                     bool withProject = false) {
   QJsonArray projects;
@@ -474,6 +494,92 @@ private slots:
     QVERIFY(!client.retry());
     QVERIFY(!client.abandonUncertain());
     QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    client.stop();
+  }
+  void commissionUnknownOutcomeReusesKeyAndRefusesRepeat() {
+    Fixture fixture;
+    int posts = 0;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("POST")) {
+        ++posts;
+        if (posts == 1) {
+          socket->disconnectFromHost(); // Commit followed by a lost reply.
+          return;
+        }
+        QTimer::singleShot(60, socket,
+                           [socket] { respond(socket, 200, messageBody()); });
+      } else {
+        fixture.normal(socket, request);
+      }
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(client.sendMessage(taskID, "line one\nline two", bindingID));
+    QTRY_VERIFY(client.uncertain());
+    // A repeated explicit action is refused while the first one is unresolved.
+    QVERIFY(!client.sendMessage(taskID, "different", bindingID));
+    QCOMPARE(posts, 1);
+    QVERIFY(client.retry());
+    QTRY_VERIFY(!client.uncertain());
+    QCOMPARE(posts, 2);
+    QCOMPARE(idempotencyKey(fixture.requests.at(fixture.requests.size() - 2)),
+             idempotencyKey(fixture.requests.last()));
+    client.stop();
+  }
+  void commissionTimeoutReusesSameKey() {
+    Fixture fixture;
+    bool silent = true;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("POST") && silent)
+        return; // The deadline aborts the request without any response.
+      if (request.startsWith("POST")) {
+        QTimer::singleShot(60, socket,
+                           [socket] { respond(socket, 200, messageBody()); });
+      } else {
+        fixture.normal(socket, request);
+      }
+    };
+    ApiClient client;
+    client.setTimeout(100);
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(client.sendMessage(taskID, "commission", bindingID));
+    QTRY_VERIFY(client.uncertain());
+    QVERIFY(client.error().contains("same key"));
+    silent = false;
+    QVERIFY(client.retry());
+    QTRY_VERIFY(!client.uncertain());
+    QCOMPARE(idempotencyKey(fixture.requests.at(fixture.requests.size() - 2)),
+             idempotencyKey(fixture.requests.last()));
+    client.stop();
+  }
+  void commissionIncompatibleAndStaleResponses() {
+    Fixture fixture;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("POST"))
+        respond(socket, 200, "{}"); // Old daemon without the contract.
+      else
+        fixture.normal(socket, request);
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(client.sendMessage(taskID, "commission", bindingID));
+    QTRY_VERIFY(client.uncertain());
+    QVERIFY(client.error().contains("same key"));
+    // Replacement of the database pins the original instance: no replay.
+    fixture.state = snapshot(0, "33333333-3333-4333-8333-333333333333");
+    client.reload();
+    QTRY_COMPARE(client.instance(),
+                 QString("33333333-3333-4333-8333-333333333333"));
+    QVERIFY(!client.retry());
+    QVERIFY(client.canAbandon());
+    QVERIFY(client.abandonUncertain());
+    QVERIFY(!client.uncertain());
     client.stop();
   }
   void realTemporaryDaemon() {

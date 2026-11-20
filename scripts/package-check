@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCE_DIRS = {"cmd", "internal", "api", "desktop", "scripts", "packaging"}
 SOURCE_FILES = {"go.mod", "go.sum", "LICENSE"}
 OBSERVER_SOURCES = {"package.json", "package-lock.json", "build.mjs", "README.md",
-                    "src/index.ts", "src/client.ts", "src/config.ts"}
+                    "src/index.ts", "src/client.ts", "src/config.ts",
+                    "src/delivery.ts", "src/delivery-journal.ts"}
 PAYLOAD = {
     "usr/bin/artel", "usr/bin/arteld", "usr/bin/artelctl",
     "usr/lib/systemd/user/arteld.service",

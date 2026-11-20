@@ -133,6 +133,52 @@ ineligible.
 
 Upgrade the daemon, desktop and CLI together; the old version-only request now
 returns 400 and the updated clients do not fall back. There is no data migration.
+
+## Opt-in delivery (owner commission to one bound Pi session)
+
+Delivery is off by default and separate from observation: the same Unix listener
+serves `/delivery/v1/*` under a dedicated delivery credential, and the existing
+observer token can never read commissions. One installation holds at most one
+non-revoked binding; enable stays `pending` until a writer with the exact bound
+runtime/project/session/generation and original journal ID attaches.
+
+Select the exact observer/runtime/project/session UUIDs from
+`artelctl observer list --json`, then:
+
+```sh
+"$ARTELCTL" delivery enable --id OBSERVER_UUID --runtime-id RUNTIME_UUID \
+  --project-id PROJECT_UUID --pi-session-id SESSION_UUID \
+  --observer-socket "$ARTEL_SOCKET" \
+  --output "$(dirname "$ARTEL_CONFIG")/delivery.json" \
+  --expected-version N --endpoint "$ARTEL_ENDPOINT" --token-file "$ARTEL_TOKEN"
+"$ARTELCTL" delivery revoke --id OBSERVER_UUID --binding-id BINDING_UUID \
+  --output "$(dirname "$ARTEL_CONFIG")/delivery.json" \
+  --endpoint "$ARTEL_ENDPOINT" --token-file "$ARTEL_TOKEN"
+```
+
+Enable persists a private pending record (original request, retry key, and a
+reference to the delivery token it writes next to the config directory) before
+the first HTTP request; a lost response is recovered with
+`delivery enable --resume PENDING_PATH` using the original key — never regenerate
+a credential to retry. The confirmed writer config and the delivery token land
+in the same private directory as the observer config (the writer discovers
+`delivery.json` next to its `ARTEL_OBSERVER_CONFIG`) only after server
+confirmation; the extension picks them up without restarting the bound runtime.
+JSON output is public IDs/paths only.
+
+In the desktop task screen the owner types a commission, sees the exact
+assignment and a warning that the text goes to the provider configured in Pi as
+context, and sends explicitly. Statuses are `stored` → «Сохранено»,
+`unknown` → «Исход неизвестен», `observed` → «Pi начал подготовку хода».
+`observed` only means the exact `before_agent_start` observation; an unknown
+outcome never triggers an automatic resend, and the same request with the same
+key returns the original record. Closing the task or archiving the project
+permanently blocks undelivered commissions; reopening does not resume them.
+
+Isolated end-to-end proof: `python3 -B integrations/pi-observer/tests/delivery_pty.py`
+with a real temporary daemon and pinned Pi; see
+`docs/experiments/pi-bridge-delivery/product-slice-evidence.md` for scope and
+recovery limits.
 Reusing a legacy prune key with an exact-set body returns an idempotency conflict.
 If a legacy prune outcome is uncertain, inspect the current registry and any
 available prior result rather than blindly submitting another prune.
