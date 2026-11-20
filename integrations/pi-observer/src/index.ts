@@ -74,6 +74,11 @@ export default function observer(pi: ExtensionAPI) {
   // the memory clears only when the config starts naming another binding.
   let terminalBinding: string | undefined;
   let ownerQuestionsRegistered = false;
+  const activateOwnerQuestions = (active: boolean) => {
+    if (!ownerQuestionsRegistered) return;
+    const currentTools = pi.getActiveTools().filter(name => name !== "artel_ask_owner");
+    pi.setActiveTools(active ? [...currentTools, "artel_ask_owner"] : currentTools);
+  };
   const startDeliveryLoop = (deliveryPath: string, registration: Registration, ctx: ExtensionContext) => {
     stopDeliveryTimer();
     deliveryTimer = setInterval(() => {
@@ -81,6 +86,7 @@ export default function observer(pi: ExtensionAPI) {
         if (deliveryShutdown) return;
         if (writer?.terminated()) {
           terminalBinding = writer.bindingId();
+          activateOwnerQuestions(false);
           // Close the dropped writer so its kernel lock and timers are
           // released before a fresh grant activates in this process.
           void writer.stop();
@@ -94,6 +100,7 @@ export default function observer(pi: ExtensionAPI) {
           pi.registerTool({
             name: "artel_ask_owner",
             label: "Ask Artel owner",
+            defaultActive: false,
             description: "Store one explicit question for the owner of an open Artel task. Returns after storage; the answer arrives later as a separate custom message.",
             promptSnippet: "Ask the Artel owner about a specific open task UUID",
             promptGuidelines: ["Use artel_ask_owner only with the exact Artel task UUID explicitly supplied by the owner."],
@@ -102,8 +109,7 @@ export default function observer(pi: ExtensionAPI) {
                 text: { type: "string", description: "Question for the owner" } }, required: ["task_id", "text"] },
             async execute(_toolCallId, params: { task_id?: unknown; text?: unknown }, signal) {
               try {
-                if (!writer || writer.bindingId() !== config.delivery_binding_id ||
-                    typeof params.task_id !== "string" || typeof params.text !== "string") throw new Error("unavailable");
+                if (!writer || typeof params.task_id !== "string" || typeof params.text !== "string") throw new Error("unavailable");
                 const result = await writer.askOwner(params.task_id, params.text, signal ?? new AbortController().signal);
                 return { content: [{ type: "text", text: `Question ${result.id} stored; do not wait for the answer in this tool call.` }],
                   details: { question_id: result.id, status: result.status } };
@@ -115,6 +121,7 @@ export default function observer(pi: ExtensionAPI) {
           });
           ownerQuestionsRegistered = true;
         }
+        activateOwnerQuestions(config.allow_owner_questions === true);
         writer = new DeliveryWriter(config, token, ctx, registration.pi_session_id, registration.runtime_id, status, attempt => {
           if (deliveryShutdown) return;
           const answer = attempt.kind === "answer";

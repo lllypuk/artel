@@ -6,6 +6,8 @@ const UUID_PATTERN = /^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9
 export interface JournalEntry {
   attempt_id?: string;
   receipt_key?: string;
+  kind?: "answer";
+  question_id?: string;
   receipt?: { type: string; message_type: string; published: boolean };
 }
 
@@ -56,7 +58,12 @@ export class DeliveryJournal {
       const record = entry as Record<string, unknown>;
       if ((record.attempt_id !== undefined && !UUID_PATTERN.test(String(record.attempt_id))) ||
           (record.receipt_key !== undefined && !UUID_PATTERN.test(String(record.receipt_key))) ||
+          (record.kind !== undefined && record.kind !== "answer") ||
+          (record.kind === "answer" && !UUID_PATTERN.test(String(record.question_id))) ||
+          (record.kind !== "answer" && record.question_id !== undefined) ||
           (record.receipt !== undefined && (typeof record.receipt !== "object" || record.receipt === null ||
+            (record.receipt as { type?: unknown }).type !== "before_agent_start" ||
+            (record.receipt as { message_type?: unknown }).message_type !== "custom" ||
             typeof (record.receipt as { published?: unknown }).published !== "boolean"))) {
         throw new Error("journal mismatch");
       }
@@ -75,26 +82,31 @@ export class DeliveryJournal {
     return new Map(this.entries);
   }
 
-  recordAttempt(messageId: string, attemptId: string, receiptKey: string): void {
-    this.verifyUnchanged();
+  recordAttempt(messageId: string, attemptId: string, receiptKey: string,
+    kind?: "answer", questionId?: string): void {
+    this.assertUnchanged();
     const entry = this.entries.get(messageId) ?? {};
     entry.attempt_id = attemptId;
     entry.receipt_key = receiptKey;
+    if (kind === "answer") {
+      entry.kind = kind;
+      entry.question_id = questionId;
+    }
     this.entries.set(messageId, entry);
     this.persist();
   }
 
   recordReceipt(messageId: string, receipt: JournalEntry["receipt"]): void {
-    this.verifyUnchanged();
+    this.assertUnchanged();
     const entry = this.entries.get(messageId) ?? {};
     entry.receipt = receipt;
     this.entries.set(messageId, entry);
     this.persist();
   }
 
-  // External replacement or deletion of the journal between open and write
-  // must stop the writer, not silently overwrite the new file.
-  private verifyUnchanged(): void {
+  // External replacement or deletion must fence both a new spend and the final
+  // synchronous Pi call, not just a later journal write.
+  assertUnchanged(): void {
     try {
       const fd = openSync(this.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       try {

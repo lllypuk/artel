@@ -6,8 +6,10 @@ temporary fixture. The provider counts a custom answer only as the fresh last
 message of a request, never as later transcript history.
 """
 import fcntl
+import hashlib
 import http.client
 import http.server
+import io
 import json
 import os
 from pathlib import Path
@@ -16,9 +18,11 @@ import select
 import shutil
 import signal
 import socket
+import socketserver
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import termios
 import threading
@@ -107,10 +111,73 @@ class UnixConnection(http.client.HTTPConnection):
         self.sock.connect(self.path)
 
 
+class SpendDropProxy:
+    """Private UDS proxy that loses exactly one real spend response."""
+    def __init__(self, listen_path, target_path):
+        self.drop_next = False
+        self.dropped = 0
+        fixture = self
+
+        class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+            daemon_threads = True
+
+        class Handler(socketserver.BaseRequestHandler):
+            def handle(self):
+                request = self._read(self.request)
+                upstream = socket.socket(socket.AF_UNIX)
+                upstream.settimeout(3)
+                upstream.connect(target_path)
+                try:
+                    upstream.sendall(request)
+                    response = self._read(upstream)
+                finally:
+                    upstream.close()
+                if fixture.drop_next and request.startswith(b'POST /delivery/v1/spend '):
+                    fixture.drop_next = False
+                    fixture.dropped += 1
+                    return
+                self.request.sendall(response)
+
+            @staticmethod
+            def _read(connection):
+                data = bytearray()
+                while b'\r\n\r\n' not in data:
+                    chunk = connection.recv(65536)
+                    if not chunk:
+                        raise AssertionError('truncated proxy headers')
+                    data.extend(chunk)
+                    assert len(data) <= 65536
+                head, body = bytes(data).split(b'\r\n\r\n', 1)
+                length = 0
+                for line in head.split(b'\r\n')[1:]:
+                    if line.lower().startswith(b'content-length:'):
+                        length = int(line.split(b':', 1)[1])
+                while len(body) < length:
+                    chunk = connection.recv(length - len(body))
+                    if not chunk:
+                        raise AssertionError('truncated proxy body')
+                    body += chunk
+                return head + b'\r\n\r\n' + body
+
+        self.server = Server(listen_path, Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=3)
+        assert not self.thread.is_alive()
+
+
 class Fixture:
-    def __init__(self, root, allow_questions):
+    def __init__(self, root, allow_questions, extension_dir=None, daemon_binary=None, spend_proxy=False):
         self.root = root
         self.allow_questions = allow_questions
+        self.extension_dir = extension_dir
+        self.daemon_binary = daemon_binary or ROOT / 'build/bin/arteld'
+        self.spend_proxy = None
+        self.use_spend_proxy = spend_proxy
         self.children = []
         self.daemon = self.pi = None
         self.master = None
@@ -118,6 +185,7 @@ class Fixture:
         for name in ['agent', 'private', 'work', 'runtime']:
             (root / name).mkdir(mode=0o700)
         self.socket = str(root / 'private/observer.sock')
+        self.daemon_socket = str(root / 'private/daemon-observer.sock') if spend_proxy else self.socket
         self.token_path = root / 'private/owner.token'
         self.delivery_config = root / 'private/delivery.json'
         self.env = {
@@ -168,9 +236,11 @@ class Fixture:
         return out
 
     def launch(self):
-        self.daemon = self.spawn([str(ROOT / 'build/bin/arteld'), '--listen', '127.0.0.1:0',
+        if self.use_spend_proxy:
+            self.spend_proxy = SpendDropProxy(self.socket, self.daemon_socket)
+        self.daemon = self.spawn([str(self.daemon_binary), '--listen', '127.0.0.1:0',
                                   '--data-dir', str(self.root / 'db'), '--token-file', str(self.token_path),
-                                  '--observer-socket', self.socket], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                  '--observer-socket', self.daemon_socket], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         assert select.select([self.daemon.stdout], [], [], 10)[0], 'daemon startup deadline'
         line = self.daemon.stdout.readline().decode().strip()
         assert line.startswith('arteld: listening '), (line, self.daemon.poll(),
@@ -247,7 +317,7 @@ class Fixture:
         master, slave = pty.openpty()
         self.master = master
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 120, 0, 0))
-        artifact = shutil.copytree(PACKAGE / 'dist', self.root / 'installed-observer')
+        artifact = shutil.copytree(self.extension_dir or PACKAGE / 'dist', self.root / 'installed-observer')
         args = [shutil.which('node'), str(CLI), '--offline', '--no-approve',
                 '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files',
                 '--no-themes', '--no-mcp', '--no-builtin-tools', '-e', str(Path(artifact) / 'index.mjs'),
@@ -263,7 +333,7 @@ class Fixture:
         self.runtime = registration['runtime_id']
         self.pi_session = registration['pi_session_id']
 
-    def enable_delivery(self):
+    def delivery_args(self):
         record = self.record()
         args = [str(ROOT / 'build/bin/artelctl'), 'delivery', 'enable', '--id', self.observer_id,
                 '--expected-version', str(record['version']), '--runtime-id', self.runtime,
@@ -272,7 +342,10 @@ class Fixture:
                 '--endpoint', self.endpoint, '--token-file', str(self.token_path)]
         if self.allow_questions:
             args.append('--allow-owner-questions')
-        self.run(args)
+        return args
+
+    def enable_delivery(self):
+        self.run(self.delivery_args())
         config = json.loads(self.delivery_config.read_text())
         self.binding = config['delivery_binding_id']
         assert config.get('allow_owner_questions', False) == self.allow_questions
@@ -283,6 +356,7 @@ class Fixture:
             row = self.owner_request('GET', f'/v1/observers/{self.observer_id}/delivery/{self.binding}')
             return row['status'] == 'active'
         self.wait(active, 'writer attach')
+        self.wait(lambda: self.delivery_request('GET', '/delivery/v1/context')['ready'], 'writer ready')
 
     def qml(self, question, answer, commission='', observed=True, total=1, trace=False):
         env = self.env.copy()
@@ -309,7 +383,7 @@ class Fixture:
         assert child.returncode == 0, (out.decode()[-3000:], err.decode()[-2000:], bytes(self.output[-1000:]))
         assert all(secret.encode() not in out + err for secret in Provider.forbidden)
 
-    def prepare(self):
+    def prepare(self, enable=True):
         self.launch()
         self.run([str(ROOT / 'build/bin/artelctl'), 'observer', 'provision', '--name', 'fictional-questions',
                   '--observer-socket', self.socket, '--output', str(self.root / 'private/observer.json'),
@@ -330,7 +404,48 @@ class Fixture:
         self.owner_request('PATCH', f'/v1/observers/{self.observer_id}/binding',
                            {'expected_version': record['version'], 'runtime_id': self.runtime,
                             'project_id': self.project})
-        self.enable_delivery()
+        if enable:
+            self.enable_delivery()
+
+    def enable_base_writer_question_without_publishing(self):
+        """Create a real opted-in grant and answer before the old writer picks it up."""
+        record = self.record()
+        self.binding = uid()
+        self.delivery_token = uid().replace('-', '') * 2
+        journal_id = uid()
+        binding_dir = self.root / 'private/delivery' / self.binding
+        binding_dir.mkdir(parents=True, mode=0o700)
+        token_path = binding_dir / 'token'
+        token_path.write_text(self.delivery_token + '\n')
+        token_path.chmod(0o600)
+        journal_path = binding_dir / 'journal.json'
+        journal_path.write_text(json.dumps({'journal_id': journal_id, 'entries': {}}) + '\n')
+        journal_path.chmod(0o600)
+        Provider.forbidden.append(self.delivery_token)
+        granted = self.owner_request('PUT', f'/v1/observers/{self.observer_id}/delivery', {
+            'expected_version': record['version'], 'delivery_binding_id': self.binding,
+            'journal_id': journal_id, 'verifier': hashlib.sha256(self.delivery_token.encode()).hexdigest(),
+            'runtime_id': self.runtime, 'project_id': self.project, 'pi_session_id': self.pi_session,
+            'instance_id': self.instance, 'allow_owner_questions': True})
+        self.assert_pending = granted['status']
+        capable_writer = uid()
+        self.delivery_request('POST', '/delivery/v1/attach', {
+            'writer_id': capable_writer, 'expected_previous': '', 'journal_id': journal_id,
+            'runtime_id': self.runtime, 'pi_session_id': self.pi_session,
+            'capability': 'owner_questions_v1'})
+        self.delivery_request('POST', '/delivery/v1/ready', {'writer_id': capable_writer})
+        question = self.delivery_request('POST', '/delivery/v1/questions', {
+            'instance_id': self.instance, 'task_id': self.task, 'writer_id': capable_writer,
+            'text': 'BASE_WRITER_MUST_NOT_READ'}, key=uid())
+        answered = self.owner_request('POST', f"/v1/tasks/{self.task}/questions/{question['id']}/answer", {
+            'instance_id': self.instance, 'text': 'BASE_WRITER_MUST_NOT_SPEND'}, key=uid())
+        config = {'status': 'confirmed', 'delivery_binding_id': self.binding,
+                  'database_instance_id': self.instance, 'observer_socket': self.socket,
+                  'token_file': str(token_path), 'journal_file': str(journal_path),
+                  'journal_id': journal_id, 'allow_owner_questions': True}
+        self.delivery_config.write_text(json.dumps(config) + '\n')
+        self.delivery_config.chmod(0o600)
+        return capable_writer, question['id'], answered['message_id']
 
     def quit_pi(self):
         if self.pi.poll() is None:
@@ -341,6 +456,8 @@ class Fixture:
 
     def close(self):
         Provider.hold_release.set()
+        if self.spend_proxy is not None:
+            self.spend_proxy.close()
         for child in reversed(self.children):
             self.stop(child, True)
         if self.master is not None:
@@ -349,6 +466,35 @@ class Fixture:
         self.server.server_close()
         self.thread.join(timeout=3)
         assert not self.thread.is_alive()
+
+
+def build_base_artifacts(root):
+    """Build actual 98484e29 artifacts in tmp without moving the checkout."""
+    archive = subprocess.run(['git', 'archive',
+                              '98484e29e69ee5a0b89ac61e1c3a1c5ce5b9b319',
+                              'cmd', 'internal', 'go.mod', 'go.sum',
+                              'integrations/pi-observer/src'],
+                             cwd=ROOT, check=True, stdout=subprocess.PIPE, timeout=30)
+    base = root / 'base'
+    base.mkdir(mode=0o700)
+    with tarfile.open(fileobj=io.BytesIO(archive.stdout), mode='r:') as source:
+        source.extractall(base, filter='data')
+    daemon = root / 'arteld-base'
+    env = os.environ.copy()
+    env['GOTOOLCHAIN'] = 'go1.26.3'
+    subprocess.run(['go', 'build', '-o', str(daemon), './cmd/arteld'], cwd=base,
+                   env=env, check=True, capture_output=True, timeout=180)
+    extension = root / 'base-extension'
+    extension.mkdir(mode=0o700)
+    esbuild = (PACKAGE / 'node_modules/esbuild/lib/main.js').as_uri()
+    script = f'''import {{ build }} from {json.dumps(esbuild)};
+await build({{ entryPoints: [{json.dumps(str(base / 'integrations/pi-observer/src/index.ts'))}],
+  outfile: {json.dumps(str(extension / 'index.mjs'))}, bundle: true, platform: 'node', format: 'esm',
+  target: 'node22.23.2', external: ['@earendil-works/pi-coding-agent'], legalComments: 'none' }});'''
+    subprocess.run([shutil.which('node'), '--input-type=module', '-e', script],
+                   check=True, capture_output=True, timeout=60)
+    (extension / 'package.json').write_text(json.dumps({'type': 'module'}) + '\n')
+    return daemon, extension
 
 
 class OwnerQuestions(unittest.TestCase):
@@ -398,6 +544,105 @@ class OwnerQuestions(unittest.TestCase):
             finally:
                 fixture.close()
         self.assertFalse(Path(tmp).exists())
+
+    def test_manual_turn_precedes_answer_and_ambiguous_spend_never_repeats(self):
+        with tempfile.TemporaryDirectory(prefix='artel-questions-manual-') as tmp:
+            fixture = Fixture(Path(tmp), True)
+            try:
+                fixture.prepare()
+                fixture.owner_request('POST', f"/v1/tasks/{fixture.task}/messages", {
+                    'text': f'ASK_OWNER FIRST_QUESTION for Artel task {fixture.task}',
+                    'delivery_binding_id': fixture.binding, 'instance_id': fixture.instance})
+                question = fixture.wait(lambda: next((row for row in fixture.questions()
+                                                      if row['text'] == 'FIRST_QUESTION'), None), 'question before manual turn')
+                fixture.command('MANUAL_BEFORE_ANSWER')
+                fixture.wait(lambda: 'MANUAL_BEFORE_ANSWER' in Provider.fresh, 'manual provider turn')
+                fixture.owner_request('POST', f"/v1/tasks/{fixture.task}/questions/{question['id']}/answer", {
+                    'instance_id': fixture.instance, 'text': 'ANSWER_AFTER_MANUAL'}, key=uid())
+                fixture.wait(lambda: Provider.answer_turns == 1, 'answer after manual turn')
+                self.assertLess(Provider.fresh.index('MANUAL_BEFORE_ANSWER'),
+                                next(i for i, text in enumerate(Provider.fresh) if 'ANSWER_AFTER_MANUAL' in text))
+                self.assertIn('FIRST_QUESTION', Provider.fresh[-1])
+                fixture.quit_pi()
+            finally:
+                fixture.close()
+        self.assertFalse(Path(tmp).exists())
+
+        with tempfile.TemporaryDirectory(prefix='artel-questions-spend-ack-') as tmp:
+            fixture = Fixture(Path(tmp), True, spend_proxy=True)
+            try:
+                fixture.prepare()
+                fixture.owner_request('POST', f"/v1/tasks/{fixture.task}/messages", {
+                    'text': f'ASK_OWNER FIRST_QUESTION for Artel task {fixture.task}',
+                    'delivery_binding_id': fixture.binding, 'instance_id': fixture.instance})
+                question = fixture.wait(lambda: next((row for row in fixture.questions()
+                                                      if row['text'] == 'FIRST_QUESTION'), None), 'question before lost spend ACK')
+                fixture.spend_proxy.drop_next = True
+                fixture.owner_request('POST', f"/v1/tasks/{fixture.task}/questions/{question['id']}/answer", {
+                    'instance_id': fixture.instance, 'text': 'UNKNOWN_SPEND_ANSWER'}, key=uid())
+                fixture.wait(lambda: fixture.spend_proxy.dropped == 1, 'real spend response dropped')
+                time.sleep(3)
+                fixture.pump()
+                self.assertEqual(Provider.answer_turns, 0, 'independent provider counter saw an automatic retry')
+                self.assertFalse(any('UNKNOWN_SPEND_ANSWER' in text for text in Provider.fresh))
+                row = next(row for row in fixture.questions() if row['id'] == question['id'])
+                self.assertEqual(row['answer_status'], 'unknown')
+                fixture.quit_pi()
+            finally:
+                fixture.close()
+        self.assertFalse(Path(tmp).exists())
+
+    def test_actual_base_extension_and_old_daemon_compatibility(self):
+        with tempfile.TemporaryDirectory(prefix='artel-base-artifacts-') as artifacts:
+            old_daemon, old_extension = build_base_artifacts(Path(artifacts))
+            with tempfile.TemporaryDirectory(prefix='artel-base-writer-') as tmp:
+                fixture = Fixture(Path(tmp), False, extension_dir=old_extension)
+                try:
+                    fixture.prepare()
+                    fixture.owner_request('POST', f"/v1/tasks/{fixture.task}/messages", {
+                        'text': 'PLAIN_BASE_4A', 'delivery_binding_id': fixture.binding,
+                        'instance_id': fixture.instance})
+                    fixture.wait(lambda: any('PLAIN_BASE_4A' in text for text in Provider.fresh),
+                                 'actual base extension ordinary 4a')
+                    messages = fixture.owner_request('GET', f"/v1/tasks/{fixture.task}/messages")['messages']
+                    self.assertEqual(next(row for row in messages if row['text'] == 'PLAIN_BASE_4A')['status'],
+                                     'observed')
+                    fixture.run([str(ROOT / 'build/bin/artelctl'), 'delivery', 'revoke', '--id', fixture.observer_id,
+                                 '--binding-id', fixture.binding, '--output', str(fixture.delivery_config),
+                                 '--endpoint', fixture.endpoint, '--token-file', str(fixture.token_path)])
+                    capable_writer, question_id, answer_id = fixture.enable_base_writer_question_without_publishing()
+                    fixture.wait(lambda: fixture.delivery_request('GET', '/delivery/v1/context')['writer_id'] == capable_writer,
+                                 'old writer did not replace capable owner')
+                    time.sleep(3)
+                    fixture.pump()
+                    self.assertEqual(Provider.answer_turns, 0)
+                    row = next(row for row in fixture.questions() if row['id'] == question_id)
+                    self.assertEqual(row['answer_message_id'], answer_id)
+                    self.assertEqual(row['answer_status'], 'stored')
+                    pending = fixture.delivery_request('GET', f'/delivery/v1/next?writer_id={capable_writer}')
+                    self.assertEqual(pending['message']['id'], answer_id, 'old writer read or spent the 4b answer')
+                    fixture.quit_pi()
+                finally:
+                    fixture.close()
+            self.assertFalse(Path(tmp).exists())
+
+            with tempfile.TemporaryDirectory(prefix='artel-old-daemon-') as tmp:
+                fixture = Fixture(Path(tmp), True, daemon_binary=old_daemon)
+                try:
+                    fixture.prepare(enable=False)
+                    child = fixture.spawn(fixture.delivery_args(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    out, err = child.communicate(timeout=20)
+                    self.assertNotEqual(child.returncode, 0, (out, err))
+                    self.assertFalse(fixture.delivery_config.exists())
+                    binding_dirs = list((fixture.root / 'private/delivery').iterdir())
+                    self.assertEqual(len(binding_dirs), 1)
+                    fixture.owner_request('GET', f"/v1/observers/{fixture.observer_id}/delivery/{binding_dirs[0].name}",
+                                          status=404)
+                    fixture.quit_pi()
+                finally:
+                    fixture.close()
+            self.assertFalse(Path(tmp).exists())
+        self.assertFalse(Path(artifacts).exists())
 
     def test_question_requires_explicit_opt_in(self):
         with tempfile.TemporaryDirectory(prefix='artel-questions-off-') as tmp:

@@ -110,14 +110,15 @@ export class DeliveryWriter {
 
   // One explicit tool call performs one bounded store request. It never waits
   // for the owner and never retries automatically after an uncertain outcome.
-  async askOwner(taskId: string, text: string, signal: AbortSignal): Promise<{ id: string; status: string }> {
+  async askOwner(taskId: string, text: string, signal: AbortSignal,
+    idempotencyKey = randomUUID()): Promise<{ id: string; status: string }> {
     if (this.config.allow_owner_questions !== true || this.closed || this.stopped || !this.attached)
       throw new ObserverFailure("capability_required");
-    if (!UUID.test(taskId) || !text || Buffer.byteLength(text) > 4096 || text.includes("\0"))
+    if (!UUID.test(taskId) || !text || Buffer.byteLength(text) > 4096 || text.includes("\0") || !UUID.test(idempotencyKey))
       throw new ObserverFailure("invalid_request");
     const result = await this.transport("POST", "/delivery/v1/questions", {
       instance_id: this.config.database_instance_id, task_id: taskId, writer_id: this.writerId, text,
-    }, signal, randomUUID()) as { id?: unknown; status?: unknown };
+    }, signal, idempotencyKey) as { id?: unknown; status?: unknown };
     if (typeof result.id !== "string" || !UUID.test(result.id) || result.status !== "stored")
       throw new ObserverFailure("protocol_error");
     return { id: result.id, status: result.status };
@@ -249,14 +250,18 @@ export class DeliveryWriter {
       if (this.closed || this.stopped || !next.message) return;
       const message = next.message;
       if (!UUID.test(message.id) || typeof message.text !== "string" || typeof next.receipt_key !== "string" || !UUID.test(next.receipt_key) ||
+          (message.kind !== undefined && message.kind !== "answer") ||
           (message.kind === "answer" && (!UUID.test(message.question_id ?? "") || typeof message.question_text !== "string")))
         throw new ObserverFailure("protocol_error");
-      // Recheck idle immediately before spending: a manual turn that started
-      // while next was in flight must not consume the delivery right.
+      // Recheck idle and journal identity immediately before spending: neither
+      // a manual turn nor a replaced recovery artifact may consume the right.
       if (!this.ctx.isIdle()) return;
+      if (!this.journal) throw new Error("journal unavailable or unsafe");
+      this.journal.assertUnchanged();
       const spend = await this.transport("POST", "/delivery/v1/spend",
         { writer_id: this.writerId, message_id: message.id }, signal) as { attempt_id?: string; right?: boolean; state?: string };
-      if (!spend.attempt_id || typeof spend.attempt_id !== "string") throw new ObserverFailure("protocol_error");
+      if (!spend.attempt_id || typeof spend.attempt_id !== "string" || !UUID.test(spend.attempt_id))
+        throw new ObserverFailure("protocol_error");
       const attempt: ActiveAttempt = {
         messageId: message.id, attemptId: spend.attempt_id,
         receiptKey: next.receipt_key,
@@ -270,7 +275,7 @@ export class DeliveryWriter {
         return;
       }
       this.attempts.set(message.id, attempt);
-      this.journal?.recordAttempt(message.id, spend.attempt_id, attempt.receiptKey);
+      this.journal.recordAttempt(message.id, spend.attempt_id, attempt.receiptKey, attempt.kind, attempt.questionId);
       const verified = await this.transport("POST", "/delivery/v1/verify",
         { writer_id: this.writerId, attempt_id: attempt.attemptId }, signal) as { verified?: boolean };
       if (!verified.verified) {
@@ -290,15 +295,17 @@ export class DeliveryWriter {
         return;
       }
       const code = error instanceof ObserverFailure ? error.code : "offline";
-      if (!["offline", "unavailable", "rate_limited", "not_ready", "closed"].includes(code)) {
-        this.stopped = true;
-        this.status(`Artel: delivery stopped — ${code}`);
-        return;
-      }
       if (code === "owner_conflict" || code === "revoked" || code === "assignment_mismatch") {
         // Terminal for this assignment: a competing or revoked ownership marker
         // never reconnects under the same writer identity. The kernel lock is
         // released so a replacement writer can take the grant in this process.
+        this.stopped = true;
+        this.attempts.clear();
+        this.releaseLock();
+        this.status(`Artel: delivery stopped — ${code}`);
+        return;
+      }
+      if (!["offline", "unavailable", "rate_limited", "not_ready", "closed"].includes(code)) {
         this.stopped = true;
         this.attempts.clear();
         this.releaseLock();
@@ -331,6 +338,10 @@ export class DeliveryWriter {
     // Busy after spend: extinguish the right without a call; the attempt stays
     // unknown on the server and is never retried automatically.
     if (!this.ctx.isIdle()) { attempt.right = false; return; }
+    // No await is permitted between this final integrity/idle check and Pi.
+    if (!this.journal) throw new Error("journal unavailable or unsafe");
+    this.journal.assertUnchanged();
+    if (!this.ctx.isIdle()) { attempt.right = false; return; }
     attempt.right = false;
     this.hooks.sends += 1;
     this.send(attempt);
@@ -347,7 +358,8 @@ export class DeliveryWriter {
       for (const [messageId, entry] of this.journal.entriesView()) {
         if (this.closed || this.stopped) return;
         if (!entry.attempt_id || !entry.receipt_key || !entry.receipt || entry.receipt.published) continue;
-        await this.publishReceipt({ messageId, attemptId: entry.attempt_id, receiptKey: entry.receipt_key, text: "", right: false });
+        await this.publishReceipt({ messageId, attemptId: entry.attempt_id, receiptKey: entry.receipt_key, text: "", right: false,
+          ...(entry.kind === "answer" ? { kind: "answer" as const, questionId: entry.question_id } : {}) });
       }
     } finally { this.flushing = false; }
   }

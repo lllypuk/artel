@@ -12,7 +12,7 @@ import { ObserverFailure, type Transport } from "../src/client.ts";
 
 const TEST_HOOK = Symbol.for("artel.delivery.test");
 
-interface Call { method: string; path: string; body: Record<string, unknown> }
+interface Call { method: string; path: string; body: Record<string, unknown>; idempotencyKey?: string }
 
 type Handler = (body: Record<string, unknown>, state: Record<string, unknown>) => unknown;
 
@@ -20,8 +20,8 @@ type Handler = (body: Record<string, unknown>, state: Record<string, unknown>) =
 // the same encode/decode bounds as the real unix transport.
 function stub(routes: Record<string, Handler>, state: Record<string, unknown>) {
   const calls: Call[] = [];
-  const transport: Transport = async (method, path, body) => {
-    calls.push({ method, path, body: body as Record<string, unknown> });
+  const transport: Transport = async (method, path, body, _signal, idempotencyKey) => {
+    calls.push({ method, path, body: body as Record<string, unknown>, ...(idempotencyKey ? { idempotencyKey } : {}) });
     const [plain, query] = path.split("?");
     const handler = routes[`${method} ${plain}`];
     if (!handler) throw new ObserverFailure("protocol_error");
@@ -616,4 +616,218 @@ test("a manual turn starting while next is in flight never spends the right", as
     assert.equal(calls.filter(c => c.path === "/delivery/v1/spend").length, 0, "the delivery right is not consumed");
     await w.stop();
   } finally { delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true }); }
+});
+
+function ownerQuestionsRoutes(env: Env): Record<string, Handler> {
+  return {
+    "GET /delivery/v1/context": (_body, s) => ({
+      database_instance_id: env.config.database_instance_id,
+      delivery_binding_id: env.config.delivery_binding_id,
+      status: "active", runtime_id: env.runtime, project_id: randomUUID(),
+      pi_session_id: env.session, journal_id: env.config.journal_id,
+      generation: 1, writer_id: (s.writer as string) ?? "", ready: true,
+      allow_owner_questions: true,
+      owner_questions_capability: s.writer ? "owner_questions_v1" : "",
+    }),
+    "POST /delivery/v1/attach": (body, s) => {
+      assert.equal(body.capability, "owner_questions_v1");
+      s.writer = body.writer_id;
+      return {};
+    },
+    "POST /delivery/v1/ready": () => ({}),
+  };
+}
+
+test("ordinary 4a omits the 4b capability and owner-question access", async () => {
+  const env = makeEnv();
+  try {
+    const message = commission("Ordinary fictional commission");
+    const { transport, calls } = stub({
+      ...contextRoute(env),
+      "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
+      "POST /delivery/v1/ready": () => ({}),
+      "GET /delivery/v1/next": (_b, s) => s.spent ? { message: null } : { message, receipt_key: (message as { receipt_key: string }).receipt_key },
+      "POST /delivery/v1/spend": (_b, s) => { s.spent = true; return { attempt_id: randomUUID(), right: true }; },
+      "POST /delivery/v1/verify": () => ({ verified: true }),
+    }, {});
+    const w = writer(env, transport);
+    await w.start();
+    await until(() => env.hooks.sends === 1, "ordinary 4a delivery");
+    assert.equal("capability" in calls.find(c => c.path === "/delivery/v1/attach")!.body, false);
+    await assert.rejects(w.askOwner(randomUUID(), "Must not be sent", new AbortController().signal),
+      (error: unknown) => error instanceof ObserverFailure && error.code === "capability_required");
+    assert.equal(calls.some(c => c.path === "/delivery/v1/questions"), false);
+    assert.equal(env.sent[0].kind, undefined);
+    await w.stop();
+  } finally { delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true }); }
+});
+
+test("question ACK recovery replays only the limited payload with the original key", async () => {
+  const env = makeEnv();
+  env.config.allow_owner_questions = true;
+  try {
+    const taskId = randomUUID(), questionId = randomUUID(), key = randomUUID();
+    const { transport, calls } = stub({
+      ...ownerQuestionsRoutes(env),
+      "GET /delivery/v1/next": () => ({ message: null }),
+      "POST /delivery/v1/questions": () => ({ id: questionId, status: "stored" }),
+    }, {});
+    const w = writer(env, transport);
+    await w.start();
+    await until(() => calls.some(c => c.path === "/delivery/v1/attach"), "capable attach");
+    const signal = new AbortController().signal;
+    assert.deepEqual(await w.askOwner(taskId, "Fictional question", signal, key), { id: questionId, status: "stored" });
+    assert.deepEqual(await w.askOwner(taskId, "Fictional question", signal, key), { id: questionId, status: "stored" });
+    const questions = calls.filter(c => c.path === "/delivery/v1/questions");
+    assert.equal(questions.length, 2);
+    assert.deepEqual(questions.map(c => c.idempotencyKey), [key, key]);
+    for (const call of questions) {
+      assert.deepEqual(call.body, { instance_id: env.config.database_instance_id, task_id: taskId,
+        writer_id: call.body.writer_id, text: "Fictional question" });
+      assert.deepEqual(Object.keys(call.body).sort(), ["instance_id", "task_id", "text", "writer_id"]);
+    }
+    await w.stop();
+  } finally { delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true }); }
+});
+
+test("mixed queue preserves answer context and wrong-kind or question starts yield no receipt", async () => {
+  const env = makeEnv();
+  env.config.allow_owner_questions = true;
+  try {
+    const ordinary = commission("Ordinary before answer");
+    const answer = { ...commission("Fictional answer"), kind: "answer", question_id: randomUUID(), question_text: "Fictional question" };
+    const queue = [ordinary, answer];
+    const attempts = new Map<string, string>();
+    let published = 0;
+    const { transport, calls } = stub({
+      ...ownerQuestionsRoutes(env),
+      "GET /delivery/v1/next": (_b, s) => {
+        const index = (s.index as number | undefined) ?? 0;
+        const message = queue[index];
+        return message ? { message, receipt_key: (message as { receipt_key: string }).receipt_key } : { message: null };
+      },
+      "POST /delivery/v1/spend": (body, s) => {
+        const attemptId = randomUUID(); attempts.set(body.message_id as string, attemptId);
+        s.index = ((s.index as number | undefined) ?? 0) + 1;
+        return { attempt_id: attemptId, right: true };
+      },
+      "POST /delivery/v1/verify": () => ({ verified: true }),
+      "POST /delivery/v1/receipt": () => { published += 1; return {}; },
+    }, {});
+    const w = writer(env, transport);
+    await w.start();
+    await until(() => env.hooks.sends === 2, "commission then answer from mixed queue");
+    assert.equal(env.sent[0].kind, undefined);
+    assert.deepEqual({ kind: env.sent[1].kind, questionId: env.sent[1].questionId, questionText: env.sent[1].questionText },
+      { kind: "answer", questionId: answer.question_id, questionText: answer.question_text });
+    const attemptId = attempts.get(answer.id)!;
+    let publications = 0;
+    const publish = async () => { publications += 1; };
+    w.observeStart({ messageType: "custom", message: { customType: "artel-delivery",
+      details: { message_id: answer.id, attempt_id: attemptId, custom_type: "artel-owner-answer", question_id: answer.question_id } } }, env.session, publish);
+    w.observeStart({ messageType: "custom", message: { customType: "artel-owner-answer",
+      details: { message_id: answer.id, attempt_id: attemptId, custom_type: "artel-owner-answer", question_id: randomUUID() } } }, env.session, publish);
+    await sleep(50);
+    assert.equal(publications, 0);
+    w.observeStart({ messageType: "custom", message: { customType: "artel-owner-answer",
+      details: { message_id: answer.id, attempt_id: attemptId, custom_type: "artel-owner-answer", question_id: answer.question_id } } },
+      env.session, attempt => w.publishReceipt(attempt));
+    await until(() => published === 1, "matching typed answer receipt");
+    const receipt = calls.find(c => c.path === "/delivery/v1/receipt")!;
+    assert.equal(receipt.body.pi_session_id, env.session);
+    assert.deepEqual(receipt.body.details, { message_id: answer.id, attempt_id: attemptId,
+      custom_type: "artel-owner-answer", question_id: answer.question_id });
+    await w.stop();
+  } finally { delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true }); }
+});
+
+test("answer receipt recovery uses journal type and original session without any Pi call", async () => {
+  const env = makeEnv();
+  env.config.allow_owner_questions = true;
+  try {
+    const messageId = randomUUID(), attemptId = randomUUID(), receiptKey = randomUUID(), questionId = randomUUID();
+    const journal = DeliveryJournal.open(env.config.journal_file, env.config.journal_id);
+    journal.recordAttempt(messageId, attemptId, receiptKey, "answer", questionId);
+    journal.recordReceipt(messageId, { type: "before_agent_start", message_type: "custom", published: false });
+    const { transport, calls } = stub({
+      ...ownerQuestionsRoutes(env),
+      "GET /delivery/v1/next": () => ({ message: null }),
+      "POST /delivery/v1/receipt": () => ({}),
+    }, {});
+    const w = writer(env, transport);
+    await w.start();
+    await until(() => calls.some(c => c.path === "/delivery/v1/receipt"), "stored answer receipt recovered");
+    await sleep(80);
+    assert.equal(env.hooks.sends, 0);
+    assert.equal(calls.filter(c => c.path === "/delivery/v1/spend").length, 0);
+    const receipt = calls.find(c => c.path === "/delivery/v1/receipt")!;
+    assert.equal(receipt.body.pi_session_id, env.session);
+    assert.deepEqual(receipt.body.details, { message_id: messageId, attempt_id: attemptId,
+      custom_type: "artel-owner-answer", question_id: questionId });
+    assert.equal(DeliveryJournal.open(env.config.journal_file, env.config.journal_id).entry(messageId)?.receipt?.published, true);
+    await w.stop();
+  } finally { delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true }); }
+});
+
+for (const stage of ["before-spend", "after-spend", "after-verify"] as const) {
+  test(`journal loss ${stage} fences the right and never calls Pi`, async () => {
+    const env = makeEnv();
+    try {
+      const message = commission("Journal fence");
+      const { transport, calls } = stub({
+        ...contextRoute(env),
+        "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
+        "POST /delivery/v1/ready": () => ({}),
+        "GET /delivery/v1/next": (_b, s) => {
+          if (s.spent) return { message: null };
+          if (stage === "before-spend") rmSync(env.config.journal_file);
+          return { message, receipt_key: (message as { receipt_key: string }).receipt_key };
+        },
+        "POST /delivery/v1/spend": (_b, s) => {
+          s.spent = true;
+          if (stage === "after-spend") rmSync(env.config.journal_file);
+          return { attempt_id: randomUUID(), right: true };
+        },
+        "POST /delivery/v1/verify": () => {
+          if (stage === "after-verify") rmSync(env.config.journal_file);
+          return { verified: true };
+        },
+      }, {});
+      const w = writer(env, transport);
+      await w.start();
+      await until(() => env.statuses.some(s => s.includes("stopped") && s.includes("journal")), "terminal journal fence");
+      assert.equal(env.hooks.sends, 0);
+      assert.equal(calls.filter(c => c.path === "/delivery/v1/spend").length, stage === "before-spend" ? 0 : 1);
+      assert.equal(calls.filter(c => c.path === "/delivery/v1/verify").length, stage === "after-verify" ? 1 : 0);
+      await w.stop();
+    } finally { delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true }); }
+  });
+}
+
+test("busy after spend and a lost verify ACK never retransmit", async () => {
+  for (const failure of ["busy", "lost-verify"] as const) {
+    const env = makeEnv();
+    try {
+      const message = commission(failure);
+      let idle = true;
+      const { transport, calls } = stub({
+        ...contextRoute(env),
+        "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
+        "POST /delivery/v1/ready": () => ({}),
+        "GET /delivery/v1/next": (_b, s) => s.spent ? { message: null } : { message, receipt_key: (message as { receipt_key: string }).receipt_key },
+        "POST /delivery/v1/spend": (_b, s) => { s.spent = true; return { attempt_id: randomUUID(), right: true }; },
+        "POST /delivery/v1/verify": () => {
+          if (failure === "busy") { idle = false; return { verified: true }; }
+          throw new ObserverFailure("offline");
+        },
+      }, {});
+      const w = writer(env, transport, () => idle);
+      await w.start();
+      await until(() => calls.some(c => c.path === "/delivery/v1/verify"), failure);
+      await sleep(100);
+      assert.equal(env.hooks.sends, 0);
+      assert.equal(calls.filter(c => c.path === "/delivery/v1/spend").length, 1);
+      await w.stop();
+    } finally { delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true }); }
+  }
 });

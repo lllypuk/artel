@@ -75,11 +75,11 @@
 **Files:**
 - Modify: `cmd/artelctl/{delivery,delivery_test}.go`, `integrations/pi-observer/src/{index,config,client,delivery,delivery-journal}.ts`, `integrations/pi-observer/tests/{delivery,extension,config}.test.ts`, `integrations/pi-observer/tests/questions_pty.py`.
 
-- [ ] Довести совместимость bootstrap/resume, видимость/доступ инструмента по opt-in, ограниченный запрос вопроса без захвата истории. Для ответа переиспользовать идентификаторы попытки и квитанции 4a; проверить контекст вопроса и тип custom-сообщения.
-- [ ] Добавить success-регрессии обычных поручений без 4b, восстановления сохранённой квитанции без вызова Pi и восстановления ACK вопроса с тем же ключом.
-- [ ] Добавить тесты отказа старого daemon, выключенного opt-in, busy до/после spend, отсутствия/замены журнала, stale writer и terminal pickup, потерянных ответов spend/verify, отзыва и shutdown. PTY: начать ручной ход перед ответом и проверить, что ответ не заменяет ручной ввод; после неоднозначного spend независимый счётчик не видит автоматического повтора.
-- [ ] Проверить смешанную очередь: wrong-kind/question события не дают receipt; потеря журнала до spend не расходует право, после spend не вызывает Pi; recovery квитанции даёт ноль новых Pi-вызовов. Собрать в tmp артефакты из git-объекта базы `98484e29` без переключения рабочего checkout: старая extension доставляет обычное 4a, но на 4b не получает текст/право; новый CLI против старого daemon не оставляет grant или confirmed config.
-- [ ] Gate: `go test ./cmd/artelctl -count=1`, `make observer-check`, `make lint test build` и `make test-e2e`.
+- [x] Довести совместимость bootstrap/resume, видимость/доступ инструмента по opt-in, ограниченный запрос вопроса без захвата истории. Для ответа переиспользовать идентификаторы попытки и квитанции 4a; проверить контекст вопроса и тип custom-сообщения.
+- [x] Добавить success-регрессии обычных поручений без 4b, восстановления сохранённой квитанции без вызова Pi и восстановления ACK вопроса с тем же ключом.
+- [x] Добавить тесты отказа старого daemon, выключенного opt-in, busy до/после spend, отсутствия/замены журнала, stale writer и terminal pickup, потерянных ответов spend/verify, отзыва и shutdown. PTY: начать ручной ход перед ответом и проверить, что ответ не заменяет ручной ввод; после неоднозначного spend независимый счётчик не видит автоматического повтора.
+- [x] Проверить смешанную очередь: wrong-kind/question события не дают receipt; потеря журнала до spend не расходует право, после spend не вызывает Pi; recovery квитанции даёт ноль новых Pi-вызовов. Собрать в tmp артефакты из git-объекта базы `98484e29` без переключения рабочего checkout: старая extension доставляет обычное 4a, но на 4b не получает текст/право; новый CLI против старого daemon не оставляет grant или confirmed config.
+- [x] Gate: `go test ./cmd/artelctl -count=1`, `make observer-check`, `make lint test build` и `make test-e2e`.
 
 ### Task 4: Закрепить Qt-сценарий ответа
 
