@@ -359,6 +359,7 @@ public:
   int delayed = 0;
   int failures = 0;
   int resultReads = 0;
+  QList<QJsonObject> transitions;
   explicit ResultDelayProxy(Oracle &oracle) : upstream(oracle) {
     connect(this, &QTcpServer::newConnection, this, [this] {
       while (hasPendingConnections()) {
@@ -387,6 +388,9 @@ public:
           const QString path = QString::fromUtf8(first[1]);
           const bool resultRead =
               first[0] == "GET" && path.contains("/results?");
+          if (first[0] == "POST" && path.endsWith("/transition"))
+            transitions.append(
+                QJsonDocument::fromJson(bytes->mid(split + 4)).object());
           if (resultRead)
             ++resultReads;
           const bool delay = resultRead && holdNext;
@@ -773,7 +777,32 @@ private slots:
     QTRY_VERIFY(ui->panel.writable());
     QVERIFY(click(ui->window, "projectsNavButton"));
     QVERIFY(ui->panel.selectProject(project));
+    // A fresh selection cannot treat either a held or failed initial result
+    // read as confirmed absence, and production QML must not send a decision.
+    proxy.holdNext = true;
+    proxy.failNext = true;
     QVERIFY(ui->panel.selectTask(task));
+    QTRY_COMPARE(proxy.delayed, 1);
+    QVERIFY(ui->panel.resultsLoading());
+    QVERIFY(!ui->panel.resultsLoaded());
+    QVERIFY(ui->panel.currentResult().toMap().isEmpty());
+    QVERIFY(!ui->panel.allowed("in_progress"));
+    QVERIFY(!item(ui->window, "noTaskResult")->isVisible());
+    const auto freshSnapshot = oracle.get("/v1/snapshot");
+    QVERIFY(!click(ui->window, "startButton"));
+    QCOMPARE(oracle.get("/v1/snapshot").value("event_seq"),
+             freshSnapshot.value("event_seq"));
+    proxy.release();
+    QTRY_COMPARE(proxy.failures, 1);
+    QTRY_VERIFY(!ui->panel.resultsError().isEmpty());
+    QVERIFY(!ui->panel.resultsLoaded());
+    QVERIFY(!ui->panel.allowed("in_progress"));
+    QVERIFY(!item(ui->window, "noTaskResult")->isVisible());
+    QVERIFY(item(ui->window, "resultError")->isVisible());
+    QVERIFY(!click(ui->window, "startButton"));
+    QCOMPARE(oracle.get("/v1/snapshot").value("event_seq"),
+             freshSnapshot.value("event_seq"));
+    ui->panel.reload();
     QTRY_VERIFY_WITH_TIMEOUT(ui->panel.resultsLoaded(), 5000);
     QVERIFY(item(ui->window, "noTaskResult")->isVisible());
     QVERIFY(!item(ui->window, "resultError")->isVisible());
@@ -831,6 +860,10 @@ private slots:
     QVERIFY(click(ui->window, "startButton"));
     QTRY_COMPARE(ui->panel.task().value("state").toString(),
                  QString("in_progress"));
+    QCOMPARE(proxy.transitions.size(), 1);
+    QVERIFY(proxy.transitions.first().value("expected_result_id").isString());
+    QCOMPARE(proxy.transitions.first().value("expected_result_id").toString(),
+             QString());
 
     const auto bindings = daemon.dir.filePath("bindings");
     QVERIFY(QDir().mkpath(bindings));
@@ -935,7 +968,7 @@ private slots:
     // A failed read is an explicit error, never an empty-result claim.
     proxy.failNext = true;
     ui->panel.reload();
-    QTRY_COMPARE(proxy.failures, 1);
+    QTRY_COMPARE(proxy.failures, 2);
     QTRY_VERIFY(!ui->panel.resultsError().isEmpty());
     QVERIFY(!ui->panel.resultsLoaded());
     QVERIFY(!item(ui->window, "noTaskResult")->isVisible());
@@ -948,7 +981,7 @@ private slots:
       // Switching selection cancels a held read; its late response cannot leak.
       proxy.holdNext = true;
       QVERIFY(ui->panel.selectTask(otherTask));
-      QTRY_COMPARE(proxy.delayed, 1);
+      QTRY_COMPARE(proxy.delayed, 2);
       QVERIFY(ui->panel.resultsLoading());
       QVERIFY(ui->panel.currentResult().toMap().isEmpty());
       QVERIFY(ui->panel.selectTask(task));
@@ -999,7 +1032,7 @@ private slots:
     const auto second = QJsonDocument::fromJson(result.output).object();
     const auto secondID = second.value("id").toString();
     QVERIFY(!secondID.isEmpty() && secondID != firstID);
-    QTRY_COMPARE(proxy.delayed, sharedDelivery ? 1 : 2);
+    QTRY_COMPARE(proxy.delayed, sharedDelivery ? 2 : 3);
     QVERIFY(!ui->panel.resultsLoaded());
     QCOMPARE(ui->panel.editor().value("description").toString(),
              QString("Unsaved result-test draft"));
@@ -1091,7 +1124,7 @@ private slots:
       proxy.holdNext = true;
       const auto readsBefore = proxy.resultReads;
       ui->panel.reload();
-      QTRY_COMPARE(proxy.delayed, 3);
+      QTRY_COMPARE(proxy.delayed, 4);
       QVERIFY(!ui->panel.resultsLoaded());
       QVERIFY(ui->panel.resultsLoading());
       QVERIFY(ui->panel.currentResult().toMap().isEmpty());

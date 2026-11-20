@@ -922,7 +922,7 @@ bool Panel::queue(const QString &id, int direction) {
 }
 bool Panel::allowed(const QString &target) const {
   if (!writable() || dirty() || project().value("archived").toBool() ||
-      task().isEmpty() || (!m_currentResult.isEmpty() && !m_resultsLoaded))
+      task().isEmpty() || !m_resultsLoaded)
     return false;
   const auto state = task().value("state").toString();
   if (target == "in_progress") {
@@ -946,9 +946,8 @@ bool Panel::transition(const QString &state) {
   if (!allowed(state))
     return false;
   QVariantMap payload{{"state", state},
-                      {"expected_version", task().value("version")}};
-  if (m_resultsLoaded)
-    payload.insert("expected_result_id", m_currentResult);
+                      {"expected_version", task().value("version")},
+                      {"expected_result_id", m_currentResult}};
   if (task().value("state") == "queued")
     payload.insert("expected_queue_version", project().value("queue_version"));
   return m_client->save("POST", "/v1/tasks/" + m_task + "/transition", payload);
