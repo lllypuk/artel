@@ -234,23 +234,18 @@ func validateAgent(value agent) error {
 	return nil
 }
 
-func indexAgents(values []agent, what string) (map[string]agent, map[string]agent, error) {
+func indexAgents(values []agent, what string) (map[string]agent, error) {
 	byName := make(map[string]agent, len(values))
-	byPair := make(map[string]agent, len(values))
 	for _, value := range values {
 		if err := validateAgent(value); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		pair := sourceKey(value.Name, value.Executor)
 		if _, exists := byName[value.Name]; exists {
-			return nil, nil, fmt.Errorf("duplicate or ambiguous %s source name", what)
+			return nil, fmt.Errorf("duplicate or ambiguous %s source name", what)
 		}
-		if _, exists := byPair[pair]; exists {
-			return nil, nil, fmt.Errorf("duplicate %s source", what)
-		}
-		byName[value.Name], byPair[pair] = value, value
+		byName[value.Name] = value
 	}
-	return byName, byPair, nil
+	return byName, nil
 }
 
 func degradedSet(raw json.RawMessage) (map[string]bool, error) {
@@ -283,6 +278,9 @@ func listedDegraded(names []string) (map[string]bool, error) {
 }
 
 func normalizeRequirements(required []store.ReviewRequirement) ([]store.ReviewRequirement, map[string]bool, error) {
+	if len(required) > store.MaxRequiredSources {
+		return nil, nil, errors.New("too many required sources")
+	}
 	values := append([]store.ReviewRequirement{}, required...)
 	seen := make(map[string]bool, len(values))
 	for _, value := range values {
@@ -330,44 +328,44 @@ func readPair(binding Binding, reportDir string) (manifest, findingsDocument, er
 	return manifestDoc, findingsDoc, nil
 }
 
-func mapSources(manifestDoc manifest, findingsDoc findingsDocument) (map[string]agent, map[string]agent, map[string]bool, error) {
-	roster, _, err := indexAgents(manifestDoc.Agents, "manifest")
+func mapSources(manifestDoc manifest, findingsDoc findingsDocument) (map[string]agent, map[string]bool, error) {
+	roster, err := indexAgents(manifestDoc.Agents, "manifest")
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	actual, _, err := indexAgents(findingsDoc.Sources.Agents, "reported")
+	actual, err := indexAgents(findingsDoc.Sources.Agents, "reported")
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	manifestDegraded, err := degradedSet(manifestDoc.Degraded)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	findingsDegraded, err := listedDegraded(findingsDoc.Sources.Degraded)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	for name, reported := range actual {
 		expected, ok := roster[name]
 		if !ok || expected.Executor != reported.Executor {
-			return nil, nil, nil, errors.New("contradictory source role in revmux pair")
+			return nil, nil, errors.New("contradictory source role in revmux pair")
 		}
 	}
 	for name := range manifestDegraded {
 		if _, ok := roster[name]; !ok {
-			return nil, nil, nil, errors.New("manifest degradation names an unknown source")
+			return nil, nil, errors.New("manifest degradation names an unknown source")
 		}
 	}
 	for name := range findingsDegraded {
 		if _, ok := actual[name]; !ok {
-			return nil, nil, nil, errors.New("findings degradation names an unreported source")
+			return nil, nil, errors.New("findings degradation names an unreported source")
 		}
 	}
 	degraded := make(map[string]bool, len(actual))
 	for name, reported := range actual {
 		degraded[name] = *reported.Degraded || *roster[name].Degraded || manifestDegraded[name] || findingsDegraded[name]
 	}
-	return roster, actual, degraded, nil
+	return actual, degraded, nil
 }
 
 func countItems(items []reviewItem, sources []store.ReviewSource, indexes map[string]int, selectCount func(*store.ReviewSource) *int) error {
@@ -386,7 +384,7 @@ func countItems(items []reviewItem, sources []store.ReviewSource, indexes map[st
 }
 
 func normalizeSources(manifestDoc manifest, findingsDoc findingsDocument, required map[string]bool) ([]store.ReviewSource, map[string]int, error) {
-	_, actual, degraded, err := mapSources(manifestDoc, findingsDoc)
+	actual, degraded, err := mapSources(manifestDoc, findingsDoc)
 	if err != nil {
 		return nil, nil, err
 	}

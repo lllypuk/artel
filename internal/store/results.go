@@ -17,6 +17,7 @@ import (
 const (
 	TaskResultSubmitted = "task.result.submit"
 	TaskReviewAttached  = "task.review.attach"
+	MaxRequiredSources  = 32
 	resultHistoryMax    = 100
 )
 
@@ -194,7 +195,7 @@ func validateAttachReview(taskID, resultID, key string, in AttachReviewInput) er
 	if err := validateReviewMetadata(in); err != nil {
 		return err
 	}
-	if in.RequiredSources == nil || len(in.RequiredSources) > 64 || in.Sources == nil || len(in.Sources) > 128 ||
+	if in.RequiredSources == nil || len(in.RequiredSources) > MaxRequiredSources || in.Sources == nil || len(in.Sources) > 128 ||
 		in.IncompleteReasons == nil || len(in.IncompleteReasons) > 32 {
 		return domain.Invalid("invalid review source limits")
 	}

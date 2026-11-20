@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -402,6 +403,29 @@ func TestReviewsAttachRejectsBindingMismatchWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestSelectedResultUsesSingleEntryPagesWithinResponseLimit(t *testing.T) {
+	target := store.TaskResult{ID: uuid.NewString(), TaskID: uuid.NewString(), Repo: "/tmp/result/.git",
+		Base: strings.Repeat("1", 40), Head: strings.Repeat("a", 40), Summary: "selected", CreatedAt: "2026-11-20T12:00:00Z"}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Query().Get("limit") != "1" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(make([]byte, 4*1024*1024+1))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(store.TaskResultHistoryPage{CurrentResultID: target.ID,
+			Entries: []store.TaskResultHistoryEntry{{Seq: 1, Kind: "result", Result: &target}}, NextAfter: 1})
+	}))
+	defer server.Close()
+	client := resultOwnerClient{endpoint: server.URL, token: "test", client: server.Client()}
+	selected, err := selectedResult(client, target.TaskID, target.ID)
+	if err != nil || selected.ID != target.ID || requests != 1 {
+		t.Fatalf("selected=%+v requests=%d err=%v", selected, requests, err)
+	}
+}
+
 func TestResultCLIArgumentValidation(t *testing.T) {
 	for _, args := range [][]string{
 		{"results"}, {"results", "unknown"}, {"reviews"}, {"reviews", "unknown"},
@@ -413,5 +437,13 @@ func TestResultCLIArgumentValidation(t *testing.T) {
 		if code := run(args, &out, &diagnostic); code != 2 || out.Len() != 0 || diagnostic.Len() == 0 {
 			t.Fatalf("args=%v code/output mismatch", args)
 		}
+	}
+	tooMany := []string{"reviews", "attach", "--task-id", uuid.NewString(), "--result-id", uuid.NewString(), "--binding", "x", "--report-dir", "y"}
+	for index := 0; index <= store.MaxRequiredSources; index++ {
+		tooMany = append(tooMany, "--required-source", fmt.Sprintf("source-%d=codex", index))
+	}
+	var out, diagnostic bytes.Buffer
+	if code := run(tooMany, &out, &diagnostic); code != 2 || out.Len() != 0 || diagnostic.Len() == 0 {
+		t.Fatal("33 required sources passed CLI argument validation")
 	}
 }

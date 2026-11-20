@@ -101,6 +101,18 @@ Item {
             severity: reviewDetails.review.complete ? "info" : "warning"
             Layout.fillWidth: true
         }
+        Repeater {
+            model: reviewDetails.review.sources
+            delegate: UI.StatusLabel {
+                required property var modelData
+                theme: manual.theme
+                objectName: reviewDetails.namePrefix + "OptionalDegraded_" + reviewDetails.review.id + "_" + modelData.name
+                visible: modelData.degraded && !modelData.required
+                text: qsTr("Optional review source degraded: %1 (%2)").arg(modelData.name).arg(modelData.executor)
+                severity: "warning"
+                Layout.fillWidth: true
+            }
+        }
         CopyText {
             objectName: reviewDetails.namePrefix + "Run_" + reviewDetails.review.id
             text: qsTr("revmux task: %1 · run: %2").arg(reviewDetails.review.revmux_task).arg(reviewDetails.review.run)

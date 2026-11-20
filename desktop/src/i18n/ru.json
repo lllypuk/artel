@@ -248,6 +248,7 @@
   "Head: %1": "Версия: %1",
   "Required review sources complete": "Обязательные источники ревью в полном составе",
   "Required review sources incomplete": "Обязательные источники ревью неполны",
+  "Optional review source degraded: %1 (%2)": "Необязательный источник ревью деградировал: %1 (%2)",
   "revmux task: %1 · run: %2": "Задача revmux: %1 · прогон: %2",
   "Report reference (display only): %1": "Ссылка на отчёт (только отображение): %1",
   "Review report reference": "Ссылка на отчёт ревью",

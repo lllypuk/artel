@@ -265,9 +265,9 @@ func commitAfterSchemaCheck(ctx context.Context, tx *sql.Tx) error {
 		return err
 	}
 	if err := requireSchemaQueries(ctx, tx, []string{
-		"SELECT seq,id,task_id,repo,base_sha,head_sha,record FROM task_results LIMIT 0",
+		"SELECT id,task_id,repo,base_sha,head_sha,record FROM task_results LIMIT 0",
 		"SELECT task_id,result_id FROM current_task_results LIMIT 0",
-		"SELECT seq,id,task_id,result_id,repo,revmux_task,run,payload_hash,record FROM task_reviews LIMIT 0",
+		"SELECT id,task_id,result_id,repo,revmux_task,run,payload_hash,record FROM task_reviews LIMIT 0",
 	}, "invalid task results schema"); err != nil {
 		return err
 	}

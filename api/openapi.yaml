@@ -546,7 +546,7 @@ components:
         range_source: {type: string, enum: [operator], description: 'Owner assertion, never independent Git attestation.'}
         report_ref: {type: string, minLength: 1, maxLength: 4096, description: Display-only local path or URI; never opened by the daemon.}
         complete: {type: boolean, description: 'Completeness of required sources only, not acceptance or a clean review.'}
-        required_sources: {type: array, maxItems: 64, items: {$ref: '#/components/schemas/ReviewRequirement'}}
+        required_sources: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ReviewRequirement'}}
         sources: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/ReviewSource'}}
         incomplete_reasons: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 500}}
         findings: {type: integer, minimum: 0}
@@ -568,7 +568,7 @@ components:
         range_source: {type: string, enum: [operator]}
         report_ref: {type: string, minLength: 1, maxLength: 4096}
         complete: {type: boolean}
-        required_sources: {type: array, maxItems: 64, items: {$ref: '#/components/schemas/ReviewRequirement'}}
+        required_sources: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ReviewRequirement'}}
         sources: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/ReviewSource'}}
         incomplete_reasons: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 500}}
         findings: {type: integer, minimum: 0}

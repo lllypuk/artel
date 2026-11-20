@@ -286,7 +286,7 @@ func selectedResult(client resultOwnerClient, taskID, resultID string) (store.Ta
 	after := int64(0)
 	for {
 		var page store.TaskResultHistoryPage
-		path := "/v1/tasks/" + taskID + "/results?after=" + strconv.FormatInt(after, 10) + "&limit=100"
+		path := "/v1/tasks/" + taskID + "/results?after=" + strconv.FormatInt(after, 10) + "&limit=1"
 		if err := client.request(http.MethodGet, path, "", nil, &page); err != nil {
 			return selected, err
 		}
@@ -333,7 +333,8 @@ func parseAttachOptions(args []string) (attachOptions, error) {
 		return err
 	})
 	if flags.Parse(args[1:]) != nil || flags.NArg() != 0 || local.Endpoint(options.endpoint) != nil ||
-		!validCanonicalID(options.taskID) || !validCanonicalID(options.resultID) || options.bindingPath == "" || options.reportPath == "" {
+		!validCanonicalID(options.taskID) || !validCanonicalID(options.resultID) || options.bindingPath == "" || options.reportPath == "" ||
+		len(options.required) > store.MaxRequiredSources {
 		return options, errors.New("invalid arguments")
 	}
 	key, err := resultKey(*requestID)

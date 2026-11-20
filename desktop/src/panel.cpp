@@ -115,8 +115,19 @@ Panel::Panel(ApiClient *client, QObject *parent)
             m_currentResult = current;
             m_resultsCursor = cursor;
             m_resultsMore = more;
-            m_resultsLoaded = true;
+            m_resultsLoaded = m_currentResult.isEmpty();
+            for (const auto &value : m_resultEntries) {
+              const auto entry = value.toMap();
+              if (entry.value("kind").toString() == "result" &&
+                  entry.value("result").toMap().value("id").toString() ==
+                      m_currentResult) {
+                m_resultsLoaded = true;
+                break;
+              }
+            }
             emit changed();
+            if (!m_resultsLoaded && m_resultsMore)
+              moreResults();
           });
   connect(client, &ApiClient::messagesReceived, this,
           [this](const QVariantList &rows, qint64 after, bool more) {

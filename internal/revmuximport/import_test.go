@@ -2,6 +2,7 @@ package revmuximport
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -313,5 +314,24 @@ func TestImportRejectsDuplicateRequirements(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("duplicate requirement accepted")
+	}
+}
+
+func TestImportRequiredSourceLimitKeepsValidIncompleteReviewAttachable(t *testing.T) {
+	required := make([]store.ReviewRequirement, store.MaxRequiredSources)
+	for index := range required {
+		required[index] = store.ReviewRequirement{Name: fmt.Sprintf("missing-%02d", index), Executor: "codex"}
+	}
+	manifestDoc, findingsDoc := syntheticPair()
+	input, err := importSynthetic(t, manifestDoc, findingsDoc, required)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input.Complete || len(input.RequiredSources) != store.MaxRequiredSources || len(input.IncompleteReasons) != store.MaxRequiredSources {
+		t.Fatalf("32-source incomplete review not preserved: %+v", input)
+	}
+	required = append(required, store.ReviewRequirement{Name: "one-too-many", Executor: "codex"})
+	if _, err := importSynthetic(t, manifestDoc, findingsDoc, required); err == nil {
+		t.Fatal("33 required sources exceeded the aligned API limit")
 	}
 }

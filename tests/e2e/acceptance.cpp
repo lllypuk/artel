@@ -226,6 +226,9 @@ QString writeReviewFixture(const QString &directory, const QString &task,
                        {"degraded", false}};
   };
   const QJsonArray agents{agent("reviewer", "pi"), agent("optional", "codex")};
+  auto optional = agents[1].toObject();
+  optional.insert("degraded", true);
+  const QJsonArray reportedAgents{agents[0], optional};
   const QJsonObject finding{{"id", "fictional-finding"},
                             {"file", "fictional.cpp"},
                             {"line", 1},
@@ -257,9 +260,9 @@ QString writeReviewFixture(const QString &directory, const QString &task,
                             {"run", run},
                             {"scope_path", "fictional-scope"}}},
       {"sources", QJsonObject{{"expected", 2},
-                              {"reported", 2},
+                              {"reported", 1},
                               {"degraded", QJsonArray{}},
-                              {"agents", agents}}},
+                              {"agents", reportedAgents}}},
       {"findings", QJsonArray{finding}},
       {"open_questions", QJsonArray{question}},
       {"pre_existing", QJsonArray{}},
@@ -355,6 +358,7 @@ public:
   bool failNext = false;
   int delayed = 0;
   int failures = 0;
+  int resultReads = 0;
   explicit ResultDelayProxy(Oracle &oracle) : upstream(oracle) {
     connect(this, &QTcpServer::newConnection, this, [this] {
       while (hasPendingConnections()) {
@@ -383,6 +387,8 @@ public:
           const QString path = QString::fromUtf8(first[1]);
           const bool resultRead =
               first[0] == "GET" && path.contains("/results?");
+          if (resultRead)
+            ++resultReads;
           const bool delay = resultRead && holdNext;
           const bool fail = resultRead && failNext;
           if (delay)
@@ -915,6 +921,11 @@ private slots:
                 .toString()
                 .contains("operator"));
     QVERIFY(item(ui->window, "currentReviewOutcome_" + reviewID)->isVisible());
+    const auto optionalDegraded = item(
+        ui->window, "currentReviewOptionalDegraded_" + reviewID + "_optional");
+    QVERIFY(optionalDegraded && optionalDegraded->isVisible());
+    QVERIFY(optionalDegraded->property("text").toString().contains(
+        "optional (codex)"));
     QVERIFY(item(ui->window, "currentReviewSummary_" + reviewID)
                 ->property("text")
                 .toString()
@@ -1055,10 +1066,52 @@ private slots:
       QCOMPARE(item(ui->window, "resultHead")->property("text").toString(),
                QString("Head: %1").arg(secondHead));
     }
+    QString expectedCurrent = secondID;
+    int expectedFirstPage = 3;
+    if (!sharedDelivery) {
+      // The newest candidate starts outside the 50-entry first page. A held
+      // read must remain visibly pending and read-only; release auto-loads the
+      // exact current object before any owner transition becomes available.
+      QString expected = secondID;
+      QJsonObject latest = second;
+      for (int index = 0; index < 51; ++index) {
+        latest = oracle.request(
+            "POST", "/v1/tasks/" + task + "/results",
+            {{"repo", second.value("repo")},
+             {"base", base},
+             {"head", secondHead},
+             {"summary",
+              QString("Fictional paginated candidate %1").arg(index)},
+             {"expected_result_id", expected}});
+        QVERIFY(!latest.value("id").toString().isEmpty());
+        expected = latest.value("id").toString();
+      }
+      expectedCurrent = expected;
+      expectedFirstPage = 50;
+      proxy.holdNext = true;
+      const auto readsBefore = proxy.resultReads;
+      ui->panel.reload();
+      QTRY_COMPARE(proxy.delayed, 3);
+      QVERIFY(!ui->panel.resultsLoaded());
+      QVERIFY(ui->panel.resultsLoading());
+      QVERIFY(ui->panel.currentResult().toMap().isEmpty());
+      QVERIFY(!ui->panel.allowed("cancelled"));
+      QVERIFY(item(ui->window, "resultLoading")->isVisible());
+      QVERIFY(!item(ui->window, "noTaskResult")->isVisible());
+      proxy.release();
+      QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
+                   expectedCurrent);
+      QTRY_VERIFY(ui->panel.resultsLoaded() && ui->panel.allowed("cancelled"));
+      QVERIFY(proxy.resultReads >= readsBefore + 2);
+      QCOMPARE(ui->panel.currentResult().toMap().value("summary").toString(),
+               QString("Fictional paginated candidate 50"));
+      QCOMPARE(item(ui->window, "resultHead")->property("text").toString(),
+               QString("Head: %1").arg(secondHead));
+    }
     const auto wire =
         oracle.get("/v1/tasks/" + task + "/results?after=0&limit=50");
-    QCOMPARE(wire.value("current_result_id").toString(), secondID);
-    QCOMPARE(wire.value("entries").toArray().size(), 3);
+    QCOMPARE(wire.value("current_result_id").toString(), expectedCurrent);
+    QCOMPARE(wire.value("entries").toArray().size(), expectedFirstPage);
   }
   void restartConcurrencyAndRecovery() {
     Daemon daemon;

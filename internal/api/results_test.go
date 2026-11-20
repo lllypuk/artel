@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -152,6 +153,103 @@ func TestTaskResultHTTPWorkflowAuthorityAndRegression(t *testing.T) {
 	}
 	request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results?limit=101", "", "", 400)
 	request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results?unknown=1", "", "", 400)
+}
+
+func TestResultWireRejectsNullOmittedAndAliasFields(t *testing.T) {
+	f := newAPIResultFixture(t)
+	for _, body := range []string{
+		`{"repo":"/tmp/api-result/.git","base":"1111111111111111111111111111111111111111","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","expected_result_id":null}`,
+		`{"repo":"/tmp/api-result/.git","base":"1111111111111111111111111111111111111111","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","summary":null,"expected_result_id":""}`,
+	} {
+		request(t, f.h, "POST", "/v1/tasks/"+f.task.ID+"/results", body, uuid.NewString(), 400)
+	}
+	resultBody := apiSubmit(t, f, uuid.NewString(), apiSubmitInput(""), 201)
+	var result store.TaskResult
+	if err := json.Unmarshal(resultBody, &result); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "top-level scalar null", mutate: func(body map[string]any) { body["findings"] = nil }},
+		{name: "source scalar null", mutate: func(body map[string]any) {
+			body["sources"].([]any)[0].(map[string]any)["degraded"] = nil
+		}},
+		{name: "source counter null", mutate: func(body map[string]any) {
+			body["sources"].([]any)[0].(map[string]any)["findings"] = nil
+		}},
+		{name: "source field omitted", mutate: func(body map[string]any) {
+			delete(body["sources"].([]any)[0].(map[string]any), "responded")
+		}},
+		{name: "source field alias", mutate: func(body map[string]any) {
+			source := body["sources"].([]any)[0].(map[string]any)
+			source["Name"] = source["name"]
+			delete(source, "name")
+		}},
+		{name: "source unknown field", mutate: func(body map[string]any) {
+			body["sources"].([]any)[0].(map[string]any)["unexpected"] = false
+		}},
+		{name: "requirement field omitted", mutate: func(body map[string]any) {
+			delete(body["required_sources"].([]any)[0].(map[string]any), "executor")
+		}},
+		{name: "requirement field alias", mutate: func(body map[string]any) {
+			requirement := body["required_sources"].([]any)[0].(map[string]any)
+			requirement["Executor"] = requirement["executor"]
+			delete(requirement, "executor")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data, err := json.Marshal(apiReviewInput(result, "strict-wire"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(data, &body); err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(body)
+			data, err = json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request(t, f.h, "POST", "/v1/tasks/"+f.task.ID+"/results/"+result.ID+"/reviews", string(data), uuid.NewString(), 400)
+		})
+	}
+	history, err := f.store.TaskResultHistory(t.Context(), f.task.ID, 0, 100)
+	if err != nil || len(history.Entries) != 1 {
+		t.Fatalf("rejected wire payload mutated history: %+v %v", history, err)
+	}
+}
+
+func TestReviewRequiredSourceLimitMatchesReasons(t *testing.T) {
+	f := newAPIResultFixture(t)
+	resultBody := apiSubmit(t, f, uuid.NewString(), apiSubmitInput(""), 201)
+	var result store.TaskResult
+	if err := json.Unmarshal(resultBody, &result); err != nil {
+		t.Fatal(err)
+	}
+	input := apiReviewInput(result, "required-limit")
+	input.RequiredSources = make([]store.ReviewRequirement, store.MaxRequiredSources)
+	input.Sources = []store.ReviewSource{}
+	input.IncompleteReasons = make([]string, store.MaxRequiredSources)
+	for index := range input.RequiredSources {
+		name := "missing-" + strconv.Itoa(index)
+		input.RequiredSources[index] = store.ReviewRequirement{Name: name, Executor: "codex"}
+		input.IncompleteReasons[index] = "required source missing: " + name
+	}
+	input.Complete = false
+	apiAttach(t, f, result.ID, uuid.NewString(), input, 201)
+	input.RequiredSources = append(input.RequiredSources, store.ReviewRequirement{Name: "one-too-many", Executor: "codex"})
+	input.IncompleteReasons = append(input.IncompleteReasons, "required source missing: one-too-many")
+	apiAttach(t, f, result.ID, uuid.NewString(), input, 400)
+	for _, schemaName := range []string{"AttachTaskReview", "TaskReview"} {
+		schema := contract(t).Components.Schemas[schemaName].Value.Properties["required_sources"].Value
+		if schema.MaxItems == nil || *schema.MaxItems != store.MaxRequiredSources {
+			t.Fatalf("%s required_sources max=%v", schemaName, schema.MaxItems)
+		}
+	}
 }
 
 func TestTaskResultLostHTTPResponseRetry(t *testing.T) {

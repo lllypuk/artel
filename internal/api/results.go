@@ -26,8 +26,47 @@ func mountTaskResults(mux *http.ServeMux, s *store.Store) {
 	})
 }
 
+func validateResultNestedObjects(fields map[string]json.RawMessage) error {
+	schemas := []struct {
+		name     string
+		allowed  []string
+		required []string
+	}{
+		{name: "required_sources", allowed: []string{"name", "executor"}, required: []string{"name", "executor"}},
+		{name: "sources", allowed: []string{"name", "executor", "required", "responded", "degraded", "findings", "pre_existing", "open_questions"},
+			required: []string{"name", "executor", "required", "responded", "degraded", "findings", "pre_existing", "open_questions"}},
+	}
+	for _, schema := range schemas {
+		raw, ok := fields[schema.name]
+		if !ok {
+			continue
+		}
+		var values []json.RawMessage
+		if err := json.Unmarshal(raw, &values); err != nil {
+			return domain.Invalid("invalid field type")
+		}
+		for _, value := range values {
+			nested, err := decodeObject(value)
+			if err != nil {
+				return err
+			}
+			for name := range nested {
+				if !slices.Contains(schema.allowed, name) {
+					return domain.Invalid("unknown JSON field")
+				}
+			}
+			for _, name := range schema.required {
+				if _, ok := nested[name]; !ok {
+					return domain.Invalid("required JSON field missing")
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // decodeResultJSON applies the owner API's strict JSON rules to normalized
-// result payloads, including nested unknown fields and required top-level keys.
+// result payloads, including nulls, nested aliases and required object fields.
 func decodeResultJSON(w http.ResponseWriter, r *http.Request, target any, allowed, required []string) bool {
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBody))
 	if err != nil {
@@ -54,6 +93,10 @@ func decodeResultJSON(w http.ResponseWriter, r *http.Request, target any, allowe
 			publicError(w, domain.Invalid("required JSON field missing"))
 			return false
 		}
+	}
+	if err := validateResultNestedObjects(fields); err != nil {
+		publicError(w, err)
+		return false
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()

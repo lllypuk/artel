@@ -74,6 +74,13 @@ func assertResultsV4Recovery(t *testing.T, path string, before Snapshot) {
 	if err := s.db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil || version != 5 {
 		t.Fatalf("version=%d err=%v", version, err)
 	}
+	var redundant int
+	if err := s.db.QueryRowContext(t.Context(), `SELECT
+		(SELECT count(*) FROM pragma_table_info('task_results') WHERE name='seq') +
+		(SELECT count(*) FROM pragma_table_info('task_reviews') WHERE name='seq') +
+		(SELECT count(*) FROM sqlite_master WHERE type='index' AND name IN ('task_results_task','task_reviews_result'))`).Scan(&redundant); err != nil || redundant != 0 {
+		t.Fatalf("redundant result ordering state=%d err=%v", redundant, err)
+	}
 }
 
 func TestFailedMigrationRollsBackDDL(t *testing.T) {
