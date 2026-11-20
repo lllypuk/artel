@@ -8,6 +8,7 @@ info:
     Domain endpoints are implemented by the transactional application layer.
     No Origin requests, redirects or CORS. Host must match the bound IPv4 address/port.
     JSON bodies are limited to 256 KiB; unknown fields and trailing JSON are rejected.
+    Question and answer bodies have a separate 32 KiB limit; each text is at most 4 KiB UTF-8 without NUL.
     Receipts atomically persist successful mutation responses with domain changes/events.
     Reuse the same key after uncertain outcomes; a changed payload with that key is 409.
 servers:
@@ -60,6 +61,62 @@ paths:
                 properties:
                   messages: {type: array, items: {$ref: '#/components/schemas/DeliveryMessage'}}
                   next_after: {type: integer, minimum: 0}
+        default: {$ref: '#/components/responses/Error'}
+  /delivery/v1/questions:
+    post:
+      servers: [{url: 'http://artel-observer'}]
+      operationId: createOwnerQuestion
+      description: Private delivery-UDS route. Authentication, exact active grant, writer and attach capability are checked before replay.
+      security: [{DeliveryBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateOwnerQuestion'}
+      responses:
+        '200':
+          description: Question ID and stored acknowledgement; exact replay returns the original ID
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OwnerQuestionStored'}
+        default: {$ref: '#/components/responses/DeliveryError'}
+  /v1/tasks/{task_id}/questions:
+    parameters: [{$ref: '#/components/parameters/TaskID'}]
+    get:
+      operationId: listTaskQuestions
+      description: Cursor mode uses after/limit; refresh mode uses up to five ids. The modes are mutually exclusive.
+      parameters:
+        - {$ref: '#/components/parameters/Instance'}
+        - {name: after, in: query, schema: {type: integer, minimum: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 5}}
+        - {name: ids, in: query, description: Comma-separated UUIDs belonging to this task, schema: {type: string}}
+      responses:
+        '200':
+          description: At most five immutable question/answer pairs, no more than 320 KiB
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OwnerQuestionPage'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tasks/{task_id}/questions/{question_id}/answer:
+    parameters:
+      - {$ref: '#/components/parameters/TaskID'}
+      - {name: question_id, in: path, required: true, schema: {$ref: '#/components/schemas/UUID'}}
+    post:
+      operationId: answerTaskQuestion
+      description: One answer and its delivery queue row commit atomically. Replay confirms storage, not live delivery status.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AnswerOwnerQuestion'}
+      responses:
+        '200':
+          description: Stored answer or exact idempotent replay
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OwnerQuestionAnswered'}
         default: {$ref: '#/components/responses/Error'}
   /v1/tasks/{task_id}/delivery:
     parameters: [{$ref: '#/components/parameters/TaskID'}]
@@ -323,6 +380,10 @@ components:
       type: http
       scheme: bearer
       description: 32 random bytes encoded as 64 hex characters, read from private local file.
+    DeliveryBearer:
+      type: http
+      scheme: bearer
+      description: Delivery-only credential on the private Unix socket; never interchangeable with owner or observer credentials.
   parameters:
     ID: {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/UUID'}}
     TaskID: {name: task_id, in: path, required: true, schema: {$ref: '#/components/schemas/UUID'}}
@@ -349,8 +410,82 @@ components:
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
+    DeliveryError:
+      description: Sanitized delivery error; no question text, token or internal detail is echoed.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/DeliveryError'}
   schemas:
     UUID: {type: string, format: uuid}
+    QuestionText:
+      type: string
+      minLength: 1
+      maxLength: 4096
+      pattern: '^[^\x00]+$'
+      description: Non-empty valid UTF-8, at most 4096 bytes (not merely code points), no NUL; preserved exactly.
+    CreateOwnerQuestion:
+      type: object
+      additionalProperties: false
+      required: [instance_id, task_id, writer_id, text]
+      properties:
+        instance_id: {$ref: '#/components/schemas/UUID'}
+        task_id: {$ref: '#/components/schemas/UUID'}
+        writer_id: {$ref: '#/components/schemas/UUID'}
+        text: {$ref: '#/components/schemas/QuestionText'}
+    AnswerOwnerQuestion:
+      type: object
+      additionalProperties: false
+      required: [instance_id, text]
+      properties:
+        instance_id: {$ref: '#/components/schemas/UUID'}
+        text: {$ref: '#/components/schemas/QuestionText'}
+    OwnerQuestionStored:
+      type: object
+      additionalProperties: false
+      required: [id, status]
+      properties:
+        id: {$ref: '#/components/schemas/UUID'}
+        status: {type: string, enum: [stored]}
+    OwnerQuestionAnswered:
+      type: object
+      additionalProperties: false
+      required: [question_id, message_id, status]
+      properties:
+        question_id: {$ref: '#/components/schemas/UUID'}
+        message_id: {$ref: '#/components/schemas/UUID'}
+        status: {type: string, enum: [stored]}
+    OwnerQuestion:
+      type: object
+      additionalProperties: false
+      required: [id, task_id, delivery_binding_id, pi_session_id, text, status, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/UUID'}
+        task_id: {$ref: '#/components/schemas/UUID'}
+        delivery_binding_id: {$ref: '#/components/schemas/UUID'}
+        pi_session_id: {$ref: '#/components/schemas/UUID'}
+        text: {$ref: '#/components/schemas/QuestionText'}
+        status: {type: string, enum: [open, answered, closed]}
+        answer_message_id: {$ref: '#/components/schemas/UUID'}
+        answer_text: {$ref: '#/components/schemas/QuestionText'}
+        answer_status: {type: string, enum: [stored, unknown, observed]}
+        answer_block_reason: {type: string, enum: [task_closed, project_archived, delivery_revoked]}
+        created_at: {type: string, format: date-time}
+        answered_at: {type: string, format: date-time}
+    OwnerQuestionPage:
+      type: object
+      additionalProperties: false
+      required: [questions, next_after]
+      properties:
+        questions: {type: array, maxItems: 5, items: {$ref: '#/components/schemas/OwnerQuestion'}}
+        next_after: {type: integer, minimum: 0}
+    DeliveryError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum: [invalid_request, unsafe_host, origin_forbidden, unauthorized, not_found, not_ready, closed, revoked, owner_conflict, assignment_mismatch, instance_mismatch, capability_required, idempotency_conflict, body_too_large, unavailable]
     Version: {type: integer, minimum: 1}
     Error:
       type: object
@@ -450,7 +585,7 @@ components:
         text: {type: string}
         status: {type: string, enum: [stored, unknown, observed]}
         blocked: {type: boolean}
-        block_reason: {type: string, enum: [task_closed, project_archived]}
+        block_reason: {type: string, enum: [task_closed, project_archived, delivery_revoked]}
         created_at: {type: string, format: date-time}
     DeliveryBinding:
       type: object
@@ -465,6 +600,8 @@ components:
         journal_id: {$ref: '#/components/schemas/UUID'}
         generation: {type: integer, minimum: 0}
         status: {type: string, enum: [pending, active, revoked]}
+        allow_owner_questions: {type: boolean}
+        owner_questions_capability: {type: string, enum: [owner_questions_v1]}
         created_at: {type: string, format: date-time}
     EnableDelivery:
       type: object
@@ -479,6 +616,9 @@ components:
         project_id: {$ref: '#/components/schemas/UUID'}
         pi_session_id: {$ref: '#/components/schemas/UUID'}
         instance_id: {$ref: '#/components/schemas/UUID'}
+        allow_owner_questions:
+          type: boolean
+          description: New grant-only opt-in. False or absent preserves the v3 enable request and receipt hash.
     DeliveryProjection:
       type: object
       additionalProperties: false

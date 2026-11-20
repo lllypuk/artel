@@ -178,6 +178,27 @@ func validateDeliveryOwnerMutation(m DeliveryOwnerMutation) error {
 	return nil
 }
 
+// deliveryMutationHash keeps v3 enable/revoke receipt bytes stable when the
+// owner-questions option is absent or false. Only an opted-in enable uses v4.
+func deliveryMutationHash(m DeliveryOwnerMutation) string {
+	if m.AllowOwnerQuestions {
+		return observerHash(m)
+	}
+	return observerHash(struct {
+		ObserverID  string
+		Key         string
+		Action      string
+		ExpectedVer int64
+		BindingID   string
+		JournalID   string
+		Verifier    string
+		RuntimeID   string
+		ProjectID   string
+		PiSessionID string
+		InstanceID  string
+	}{m.ObserverID, m.Key, m.Action, m.ExpectedVer, m.BindingID, m.JournalID, m.Verifier, m.RuntimeID, m.ProjectID, m.PiSessionID, m.InstanceID})
+}
+
 // MutateDeliveryBinding is owner-only enable/revoke with idempotent receipts.
 // Enable stays pending until a writer with the exact assignment attaches.
 func (s *Store) MutateDeliveryBinding(ctx context.Context, m DeliveryOwnerMutation) (DeliveryBinding, error) {
@@ -185,7 +206,7 @@ func (s *Store) MutateDeliveryBinding(ctx context.Context, m DeliveryOwnerMutati
 	if err := validateDeliveryOwnerMutation(m); err != nil {
 		return result, err
 	}
-	requestHash := observerHash(m)
+	requestHash := deliveryMutationHash(m)
 	s.deliveryMu.Lock()
 	defer s.deliveryMu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)

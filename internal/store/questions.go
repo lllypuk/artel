@@ -22,17 +22,18 @@ const (
 // OwnerQuestion is immutable Pi-authored context plus at most one owner answer.
 // AnswerStatus is derived from the ordinary delivery queue on every read.
 type OwnerQuestion struct {
-	ID              string `json:"id"`
-	TaskID          string `json:"task_id"`
-	BindingID       string `json:"delivery_binding_id"`
-	PiSessionID     string `json:"pi_session_id"`
-	Text            string `json:"text"`
-	Status          string `json:"status"`
-	AnswerMessageID string `json:"answer_message_id,omitempty"`
-	AnswerText      string `json:"answer_text,omitempty"`
-	AnswerStatus    string `json:"answer_status,omitempty"`
-	CreatedAt       string `json:"created_at"`
-	AnsweredAt      string `json:"answered_at,omitempty"`
+	ID                string `json:"id"`
+	TaskID            string `json:"task_id"`
+	BindingID         string `json:"delivery_binding_id"`
+	PiSessionID       string `json:"pi_session_id"`
+	Text              string `json:"text"`
+	Status            string `json:"status"`
+	AnswerMessageID   string `json:"answer_message_id,omitempty"`
+	AnswerText        string `json:"answer_text,omitempty"`
+	AnswerStatus      string `json:"answer_status,omitempty"`
+	AnswerBlockReason string `json:"answer_block_reason,omitempty"`
+	CreatedAt         string `json:"created_at"`
+	AnsweredAt        string `json:"answered_at,omitempty"`
 }
 
 type OwnerQuestionCreate struct {
@@ -343,7 +344,7 @@ func (s *Store) ListOwnerQuestions(ctx context.Context, taskID, instanceID strin
 	if instance != instanceID {
 		return nil, 0, observerError("instance_mismatch")
 	}
-	query := `SELECT q.seq,q.record,coalesce(m.record,''),coalesce(m.blocked,0),
+	query := `SELECT q.seq,q.record,coalesce(m.record,''),coalesce(m.blocked,0),coalesce(m.block_reason,''),
 		coalesce((SELECT a.state FROM delivery_attempts a WHERE a.message_seq=m.seq),'')
 		FROM owner_questions q LEFT JOIN delivery_messages m ON m.id=q.answer_message_id `
 	args := []any{taskID}
@@ -363,9 +364,9 @@ func (s *Store) ListOwnerQuestions(ctx context.Context, taskID, instanceID strin
 	seqs := []int64{}
 	for rows.Next() {
 		var seq int64
-		var data, messageData, attemptState string
+		var data, messageData, blockReason, attemptState string
 		var blocked int
-		if err := rows.Scan(&seq, &data, &messageData, &blocked, &attemptState); err != nil {
+		if err := rows.Scan(&seq, &data, &messageData, &blocked, &blockReason, &attemptState); err != nil {
 			return nil, 0, err
 		}
 		var question OwnerQuestion
@@ -378,6 +379,7 @@ func (s *Store) ListOwnerQuestions(ctx context.Context, taskID, instanceID strin
 				return nil, 0, err
 			}
 			question.AnswerStatus = message.Status
+			question.AnswerBlockReason = blockReason
 			if question.AnswerStatus != "observed" && (blocked != 0 || attemptState != "") {
 				question.AnswerStatus = "unknown"
 			}

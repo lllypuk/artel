@@ -64,11 +64,11 @@
 - Modify: `internal/store/{store,delivery,observer,questions}.go`, `internal/store/questions_schema.sql`, `internal/api/{questions,messages}.go`, `internal/observerapi/{questions,http,delivery}.go`, `api/openapi.yaml`.
 - Create: `internal/store/questions_test.go`, `internal/api/questions_test.go`, `internal/observerapi/questions_test.go`.
 
-- [ ] Довести миграцию и атомарные операции с проверками назначения, single answer, неизменяемой историей и ограниченной выдачей; описать маршрут, типы, ограничения и ошибки в OpenAPI 3.0.
-- [ ] Добавить тесты миграции с существующими поручениями 4a, replay вопроса и ответа после потерянного ACK, пагинации и совпадения ответа с исходным payload при replay.
-- [ ] Добавить тесты одновременных ответов, отказа транзакции между ответом и постановкой в очередь, старой схемы/бинарника, чужого проекта/задачи/БД/токена/writer, устаревшего назначения, закрытия/архива/отзыва и reopen. Проверить лимиты UTF-8/JSON и максимальное экранирование, отказ без записей и валидность контракта.
-- [ ] Проверить swap БД между preflight и POST с совпадающими credential/binding/writer: нет записи или replay. Проверить разделение credentials в обе стороны и отсутствие текста в observer/events. Покрыть unspent/verified/observed при close/revoke, конкурирующую смену назначения, повтор enable/revoke с потерянным ACK на v3 после миграции, rollback миграции, сохранность identity и pending/spent/observed строк и receipts 4a. Проверить wire-лимиты на реальном транспорте. В смешанной очереди проверить все страницы `/messages`, включая границу курсора после отфильтрованных ответов, и refresh по смеси ID поручений и ответов; `next` по-прежнему доставляет оба типа.
-- [ ] Gate: `go test ./internal/store ./internal/api ./internal/observerapi -count=1` и `make lint test build`.
+- [x] Довести миграцию и атомарные операции с проверками назначения, single answer, неизменяемой историей и ограниченной выдачей; описать маршрут, типы, ограничения и ошибки в OpenAPI 3.0.
+- [x] Добавить тесты миграции с существующими поручениями 4a, replay вопроса и ответа после потерянного ACK, пагинации и совпадения ответа с исходным payload при replay.
+- [x] Добавить тесты одновременных ответов, отказа транзакции между ответом и постановкой в очередь, старой схемы/бинарника, чужого проекта/задачи/БД/токена/writer, устаревшего назначения, закрытия/архива/отзыва и reopen. Проверить лимиты UTF-8/JSON и максимальное экранирование, отказ без записей и валидность контракта.
+- [x] Проверить swap БД между preflight и POST с совпадающими credential/binding/writer: нет записи или replay. Проверить разделение credentials в обе стороны и отсутствие текста в observer/events. Покрыть unspent/verified/observed при close/revoke, конкурирующую смену назначения, повтор enable/revoke с потерянным ACK на v3 после миграции, rollback миграции, сохранность identity и pending/spent/observed строк и receipts 4a. Проверить wire-лимиты на реальном транспорте. В смешанной очереди проверить все страницы `/messages`, включая границу курсора после отфильтрованных ответов, и refresh по смеси ID поручений и ответов; `next` по-прежнему доставляет оба типа.
+- [x] Gate: `go test ./internal/store ./internal/api ./internal/observerapi -count=1` и `make lint test build`.
 
 ### Task 3: Закрепить opt-in и доставку в Pi
 

@@ -156,15 +156,16 @@ func taskDeliveryProjection(w http.ResponseWriter, r *http.Request, s *store.Sto
 
 func enableDelivery(w http.ResponseWriter, r *http.Request, s *store.Store) {
 	var body struct {
-		ExpectedVersion     *int64 `json:"expected_version"`
-		BindingID           string `json:"delivery_binding_id"`
-		JournalID           string `json:"journal_id"`
-		Verifier            string `json:"verifier"`
-		RuntimeID           string `json:"runtime_id"`
-		ProjectID           string `json:"project_id"`
-		PiSessionID         string `json:"pi_session_id"`
-		InstanceID          string `json:"instance_id"`
-		AllowOwnerQuestions bool   `json:"allow_owner_questions"`
+		ExpectedVersion *int64 `json:"expected_version"`
+		BindingID       string `json:"delivery_binding_id"`
+		JournalID       string `json:"journal_id"`
+		Verifier        string `json:"verifier"`
+		RuntimeID       string `json:"runtime_id"`
+		ProjectID       string `json:"project_id"`
+		PiSessionID     string `json:"pi_session_id"`
+		InstanceID      string `json:"instance_id"`
+		// New grants only; absent/false preserves the v3 receipt hash.
+		AllowOwnerQuestions bool `json:"allow_owner_questions"`
 	}
 	if !decodeDeliveryJSON(w, r, &body, []string{"expected_version", "delivery_binding_id", "journal_id", "verifier", "runtime_id", "project_id", "pi_session_id", "instance_id", "allow_owner_questions"}) {
 		return
