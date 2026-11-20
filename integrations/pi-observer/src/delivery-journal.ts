@@ -54,7 +54,7 @@ export class DeliveryJournal {
       if ((record.attempt_id !== undefined && !UUID_PATTERN.test(String(record.attempt_id))) ||
           (record.receipt_key !== undefined && !UUID_PATTERN.test(String(record.receipt_key))) ||
           (record.kind !== undefined && record.kind !== "answer") ||
-          (record.kind === "answer" && !UUID_PATTERN.test(String(record.question_id))) ||
+          (record.kind === "answer" && (typeof record.question_id !== "string" || !UUID_PATTERN.test(record.question_id))) ||
           (record.kind !== "answer" && record.question_id !== undefined) ||
           (record.receipt !== undefined && (typeof record.receipt !== "object" || record.receipt === null ||
             (record.receipt as { type?: unknown }).type !== "before_agent_start" ||

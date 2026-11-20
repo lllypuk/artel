@@ -576,6 +576,23 @@ test("journal pins the ID at create and refuses a changed one at open", () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("DeliveryJournal.open rejects a non-string question ID on a pending answer receipt", () => {
+  const dir = mkdtempSync(join(tmpdir(), "artel-delivery-journal-"));
+  try {
+    const path = join(dir, "journal.json");
+    const journalId = randomUUID(), messageId = randomUUID(), questionId = randomUUID();
+    const entry = { attempt_id: randomUUID(), receipt_key: randomUUID(), kind: "answer",
+      receipt: { type: "before_agent_start", message_type: "custom", published: false } };
+    const write = (question_id: unknown) => writeFileSync(path, JSON.stringify({
+      journal_id: journalId, entries: { [messageId]: { ...entry, question_id } },
+    }), { mode: 0o600 });
+    write(questionId);
+    assert.equal(DeliveryJournal.open(path, journalId).entry(messageId)?.question_id, questionId);
+    write([questionId]);
+    assert.throws(() => DeliveryJournal.open(path, journalId), /journal mismatch/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("a stale lock path from a killed writer is probed, removed and rebound", async () => {
   const env = makeEnv();
   try {

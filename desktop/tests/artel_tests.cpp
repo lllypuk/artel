@@ -3366,11 +3366,14 @@ private slots:
   }
   void ownerAnswerClosedRetryRestoresOwnerWrites_data() {
     QTest::addColumn<bool>("firstRejection");
-    QTest::newRow("unknown-retry") << false;
-    QTest::newRow("first-post-and-close-guard") << true;
+    QTest::addColumn<bool>("russian");
+    QTest::newRow("unknown-retry") << false << false;
+    QTest::newRow("first-post-and-close-guard") << true << false;
+    QTest::newRow("first-post-and-close-guard-ru") << true << true;
   }
   void ownerAnswerClosedRetryRestoresOwnerWrites() {
     QFETCH(bool, firstRejection);
+    QFETCH(bool, russian);
     UiFixture fixture;
     const QString question = "44444444-4444-4444-8444-444444444444";
     const QString binding = "55555555-5555-4555-8555-555555555555";
@@ -3457,8 +3460,10 @@ private slots:
     Panel panel(&client);
     QSignalSpy accepted(&client, &ApiClient::answerAccepted);
     QSignalSpy saved(&client, &ApiClient::mutationSucceeded);
-    Appearance appearance(fixture.directory.path(),
-                          fixture.directory.filePath("language"));
+    const auto languagePath = fixture.directory.filePath("language");
+    writeFile(languagePath, russian ? "ru\n" : "en\n");
+    Appearance appearance(fixture.directory.path(), languagePath);
+    QCoreApplication::installTranslator(&appearance);
     QQmlApplicationEngine engine;
     auto *window = load(engine, panel, appearance);
     QVERIFY(window);
@@ -3490,9 +3495,17 @@ private slots:
           panel.questions().size() == 1 &&
           panel.questions().first().toMap().value("canAnswer").toBool());
       QTRY_VERIFY(item(window, "answerField_" + question));
-      QCOMPARE(
-          item(window, "answerField_" + question)->property("text").toString(),
-          draft);
+      auto *field = item(window, "answerField_" + question);
+      QCOMPARE(field->property("text").toString(), draft);
+      auto *label = item(window, "answerLabel_" + question);
+      QVERIFY(label && label->isVisible());
+      QVERIFY(label->y() + label->height() <= field->y());
+      const QString labelText = russian ? QStringLiteral("Ответ для Pi")
+                                        : QStringLiteral("Answer for Pi");
+      QCOMPARE(label->property("text").toString(), labelText);
+      auto *accessible = QAccessible::queryAccessibleInterface(field);
+      QVERIFY(accessible);
+      QCOMPARE(accessible->text(QAccessible::Name), labelText);
       QCOMPARE(fixture.mutations.size(), 0);
       // Another owner already changed the server state; this window still
       // has an open card when the first answer is rejected.
@@ -3501,9 +3514,11 @@ private slots:
       QVERIFY(panel.answerQuestion(question));
       QTRY_VERIFY(!client.pending());
       QCOMPARE(fixture.mutations.size(), 1);
-      QCOMPARE(
-          panel.message(),
-          QString("Question is closed; answer not recorded, draft preserved"));
+      QCOMPARE(panel.message(),
+               russian ? QStringLiteral("Вопрос закрыт. Ответ не записан, "
+                                        "черновик сохранён.")
+                       : QStringLiteral("Question is closed; answer not "
+                                        "recorded, draft preserved"));
     } else {
       QVERIFY(panel.answerQuestion(question));
       QTRY_VERIFY(panel.uncertain() && !client.pending());
@@ -3541,6 +3556,7 @@ private slots:
     const auto verifyClosedDraft = [&] {
       QTRY_VERIFY(visible("answerDraft"));
       QVERIFY(visible("answerDraftLabel"));
+      QVERIFY(!visible("answerLabel"));
       QVERIFY(!visible("answerField"));
       QVERIFY(!visible("answerButton"));
       QVERIFY(!visible("answerText"));

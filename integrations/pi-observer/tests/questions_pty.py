@@ -120,6 +120,7 @@ class SpendDropProxy:
         self.deny_attach = False
         self.attach_started = threading.Event()
         self.release_attach = threading.Event()
+        self.disconnected_attach = threading.Event()
         self.denied_attach = threading.Event()
         self.legacy_refusal = None
         self.drop_next = False
@@ -136,12 +137,29 @@ class SpendDropProxy:
                 if request.startswith(b'GET /delivery/v1/context '):
                     fixture.writer_contexts += 1
                 if fixture.deny_attach and request.startswith(b'POST /delivery/v1/attach '):
-                    fixture.attach_started.set()
-                    assert fixture.release_attach.wait(20), 'attach fixture release deadline'
+                    # Only the first attach can satisfy the barrier. A retry
+                    # must not mask a timeout on the connection we held.
+                    first = not fixture.attach_started.is_set()
+                    if first:
+                        fixture.attach_started.set()
+                        while True:
+                            released = fixture.release_attach.wait(.02)
+                            # The full request was read; readability here is peer EOF.
+                            if select.select([self.request], [], [], 0)[0]:
+                                fixture.disconnected_attach.set()
+                                return
+                            if released:
+                                break
                     body = b'{"error":"owner_conflict"}'
-                    self.request.sendall(b'HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\n'
-                                         + f'Content-Length: {len(body)}\r\nConnection: close\r\n\r\n'.encode() + body)
-                    fixture.denied_attach.set()
+                    try:
+                        self.request.sendall(b'HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\n'
+                                             + f'Content-Length: {len(body)}\r\nConnection: close\r\n\r\n'.encode() + body)
+                    except (BrokenPipeError, ConnectionResetError):
+                        if first:
+                            fixture.disconnected_attach.set()
+                    else:
+                        if first:
+                            fixture.denied_attach.set()
                     return
                 upstream = socket.socket(socket.AF_UNIX)
                 upstream.settimeout(3)
@@ -332,6 +350,20 @@ class Fixture:
 
     def command(self, text):
         os.write(self.master, text.encode() + b'\r')
+
+    def manual_turn(self, prompt):
+        trace = self.root / 'trace.jsonl'
+        offset = trace.stat().st_size
+        self.command(prompt)
+        self.wait(lambda: prompt in Provider.tool_lists, 'provider received ' + prompt)
+
+        def settled():
+            with trace.open('rb') as events:
+                events.seek(offset)
+                return b'"event":"agent_settled"' in events.read()
+
+        self.wait(settled, 'Pi settled after manual turn')
+        return Provider.tool_lists[prompt]
 
     def record(self):
         registry = self.owner_request('GET', '/v1/observers')
@@ -830,20 +862,6 @@ class OwnerQuestions(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='artel-tree-tools-') as tmp:
             fixture = Fixture(Path(tmp), True)
             try:
-                def manual_turn(prompt):
-                    trace = fixture.root / 'trace.jsonl'
-                    offset = trace.stat().st_size
-                    fixture.command(prompt)
-                    fixture.wait(lambda: prompt in Provider.tool_lists, 'provider received ' + prompt)
-
-                    def settled():
-                        with trace.open('rb') as events:
-                            events.seek(offset)
-                            return b'"event":"agent_settled"' in events.read()
-
-                    fixture.wait(settled, 'Pi settled after manual turn')
-                    return Provider.tool_lists[prompt]
-
                 def branch_to(prompt):
                     fixture.output.clear()
                     fixture.command('/tree')
@@ -857,21 +875,42 @@ class OwnerQuestions(unittest.TestCase):
                 fixture.prepare(enable=False)
                 before = 'Fictional branch without Artel tool'
                 active = 'Fictional branch with attached tool'
-                inactive_tools = manual_turn(before)
+                inactive_tools = fixture.manual_turn(before)
                 self.assertNotIn('artel_ask_owner', inactive_tools)
                 fixture.enable_delivery()
-                active_tools = manual_turn(active)
+                active_tools = fixture.manual_turn(active)
                 self.assertEqual(active_tools, inactive_tools | {'artel_ask_owner'})
                 branch_to(before)
-                self.assertEqual(manual_turn('Fictional turn after restoring ungranted branch'), active_tools)
+                self.assertEqual(fixture.manual_turn('Fictional turn after restoring ungranted branch'), active_tools)
 
                 fixture.run([str(ROOT / 'build/bin/artelctl'), 'delivery', 'revoke', '--id', fixture.observer_id,
                              '--binding-id', fixture.binding, '--output', str(fixture.delivery_config),
                              '--endpoint', fixture.endpoint, '--token-file', str(fixture.token_path)])
                 fixture.wait(lambda: b'delivery stopped' in fixture.output, 'writer noticed revocation')
                 branch_to(active)
-                self.assertEqual(manual_turn('Fictional turn after restoring old granted branch'), inactive_tools)
+                self.assertEqual(fixture.manual_turn('Fictional turn after restoring old granted branch'), inactive_tools)
                 self.assertEqual(fixture.questions(), [])
+                fixture.quit_pi()
+            finally:
+                fixture.close()
+
+    def test_revoked_question_tool_stays_hidden_on_registry_refresh(self):
+        with tempfile.TemporaryDirectory(prefix='artel-refresh-tools-') as tmp:
+            fixture = Fixture(Path(tmp), True)
+            try:
+                owner_tool, marker = 'artel_ask_owner', 'fixture_registry_refresh'
+                fixture.tool_selection = f'{owner_tool},{marker}'
+                fixture.prepare()
+                self.assertEqual(fixture.manual_turn('Fictional turn with attached writer'), {owner_tool})
+                fixture.run([str(ROOT / 'build/bin/artelctl'), 'delivery', 'revoke', '--id', fixture.observer_id,
+                             '--binding-id', fixture.binding, '--output', str(fixture.delivery_config),
+                             '--endpoint', fixture.endpoint, '--token-file', str(fixture.token_path)])
+                fixture.wait(lambda: b'delivery stopped' in fixture.output, 'writer noticed revocation')
+                self.assertEqual(fixture.manual_turn('Fictional turn after revoke'), set())
+                fixture.command('/fixture-refresh-tools')
+                self.assertEqual(fixture.manual_turn('Fictional turn after registry refresh'), {marker})
+                fixture.enable_delivery()
+                self.assertEqual(fixture.manual_turn('Fictional turn after new opted-in attach'), {marker, owner_tool})
                 fixture.quit_pi()
             finally:
                 fixture.close()
@@ -912,10 +951,15 @@ class OwnerQuestions(unittest.TestCase):
                 fixture.wait(fixture.spend_proxy.attach_started.is_set, 'opted-in attach held')
                 prompt = 'Manual fictional turn before attach completes'
                 fixture.command(prompt)
-                fixture.wait(lambda: prompt in Provider.tool_lists, 'provider tool list before attach completes')
+                proxy = fixture.spend_proxy
+                fixture.wait(lambda: prompt in Provider.tool_lists or proxy.disconnected_attach.is_set(),
+                             'provider tool list during first attach')
+                self.assertFalse(proxy.disconnected_attach.is_set(), 'first attach ended before the provider sample')
                 self.assertNotIn('artel_ask_owner', Provider.tool_lists[prompt])
-                fixture.spend_proxy.release_attach.set()
-                fixture.wait(fixture.spend_proxy.denied_attach.is_set, 'opted-in attach refused')
+                proxy.release_attach.set()
+                fixture.wait(lambda: proxy.denied_attach.is_set() or proxy.disconnected_attach.is_set(),
+                             'first attach refused or disconnected')
+                self.assertTrue(proxy.denied_attach.is_set(), 'sampled attach disconnected before refusal')
                 prompt = 'Manual fictional turn after attach refusal'
                 fixture.command(prompt)
                 fixture.wait(lambda: prompt in Provider.tool_lists, 'provider tool list after attach refusal')

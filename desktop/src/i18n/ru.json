@@ -226,6 +226,7 @@
   "Answer exceeds the 4,096 UTF-8 byte limit": "Ответ превышает ограничение в 4096 байт UTF-8",
   "Enter an answer": "Введите ответ",
   "Answer rejected; draft preserved": "Ответ отклонён, черновик сохранён",
+  "Question is closed; answer not recorded, draft preserved": "Вопрос закрыт. Ответ не записан, черновик сохранён.",
   "Answer drafts from another database": "Черновики ответов из другой базы данных",
   "You can copy these drafts now. Resolve the unknown save before discarding a draft.": "Черновики можно скопировать сейчас. Прежде чем удалить черновик, разберитесь с неизвестным исходом сохранения.",
   "These drafts belong to their original database and cannot be sent from here.": "Черновики относятся к исходной базе данных, и отсюда их нельзя отправить.",

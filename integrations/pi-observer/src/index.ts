@@ -73,10 +73,17 @@ export default function observer(pi: ExtensionAPI) {
   // A binding that terminated terminally is not restarted for the same grant:
   // the memory clears only when the config starts naming another binding.
   let terminalBinding: string | undefined;
-  let ownerQuestionsRegistered = false;
+  let ownerQuestionsExposure: "direct" | "hidden" | undefined;
   const activateOwnerQuestions = (active: boolean) => {
-    if (active && !ownerQuestionsRegistered) {
+    if (!active && !ownerQuestionsExposure) return;
+    const exposure = active ? "direct" : "hidden";
+    const currentTools = pi.getActiveTools();
+    const exposureChanged = ownerQuestionsExposure !== exposure;
+    if (exposureChanged) {
+      // An inactive direct tool named by --tools can come back on registry
+      // refresh. Pi supports withdrawing a registered tool via hidden exposure.
       pi.registerTool({
+        exposure,
         name: "artel_ask_owner",
         label: "Ask Artel owner",
         defaultActive: false,
@@ -98,12 +105,11 @@ export default function observer(pi: ExtensionAPI) {
           }
         },
       });
-      ownerQuestionsRegistered = true;
+      ownerQuestionsExposure = exposure;
     }
-    if (!ownerQuestionsRegistered) return;
-    const currentTools = pi.getActiveTools();
-    if (currentTools.includes("artel_ask_owner") === active) return;
-    pi.setActiveTools(active ? [...currentTools, "artel_ask_owner"] : currentTools.filter(name => name !== "artel_ask_owner"));
+    if (!exposureChanged && currentTools.includes("artel_ask_owner") === active) return;
+    const otherTools = currentTools.filter(name => name !== "artel_ask_owner");
+    pi.setActiveTools(active ? [...otherTools, "artel_ask_owner"] : otherTools);
   };
   const startDeliveryLoop = (deliveryPath: string, registration: Registration, ctx: ExtensionContext) => {
     stopDeliveryTimer();

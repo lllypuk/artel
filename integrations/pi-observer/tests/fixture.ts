@@ -27,6 +27,13 @@ export default function fixture(pi: ExtensionAPI) {
       },
     });
   }
+  pi.registerCommand("fixture-refresh-tools", { handler: async () => {
+    pi.registerTool({ name: "fixture_registry_refresh", label: "Fixture registry refresh",
+      description: "Deterministic registry refresh marker",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+      async execute() { return { content: [{ type: "text", text: "fictional" }], details: {} }; },
+    });
+  } });
   pi.registerCommand("fixture-wait", { handler: async (_args, ctx) => {
     await ctx.ui.confirm("Fictional private title", "Fictional private body", { timeout: delay || 800 });
   } });

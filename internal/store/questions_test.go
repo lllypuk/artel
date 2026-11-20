@@ -216,8 +216,13 @@ func checkOwnerQuestionAnswerReplay(t *testing.T) {
 	if got := countRows(t, s, "delivery_messages"); got != 1 {
 		t.Fatalf("answer queue rows: %d", got)
 	}
-	if _, err := s.db.ExecContext(t.Context(), "UPDATE owner_questions SET status='open' WHERE id=?", question.ID); err == nil {
-		t.Fatal("SQLite allowed an answered question to reopen")
+	// Keep the status and answer message ID intact so only the terminal-row
+	// trigger can reject this otherwise valid update.
+	if _, err := s.db.ExecContext(t.Context(), `UPDATE owner_questions SET record=json_set(record,'$.answer_text','rewritten') WHERE id=?`, question.ID); err == nil {
+		t.Fatal("SQLite allowed an answered question's text to be rewritten")
+	}
+	if got := questionByID(t, s, e.task.ID, e.instance, question.ID); got.AnswerText != stored.AnswerText {
+		t.Fatalf("saved answer changed: %+v", got)
 	}
 }
 
@@ -516,11 +521,13 @@ func assertQuestionReopenKeepsQueueBlocked(t *testing.T, s *Store, e questionEnv
 	if mode == "revoke" {
 		return
 	}
-	if _, _, err := s.DeliveryNext(t.Context(), e.binding.ID, e.instance, e.writer); err != nil {
-		t.Fatal(err)
+	if message, key, err := s.DeliveryNext(t.Context(), e.binding.ID, e.instance, e.writer); err != nil || message != (DeliveryMessage{}) || key != "" {
+		t.Fatalf("reopen resumed pickup: %+v %q %v", message, key, err)
 	}
-	if _, err := s.DeliverySpend(t.Context(), e.binding.ID, e.instance, e.writer, state.spentAnswer.MessageID); !observerIs(err, "closed") {
-		t.Fatalf("reopen resumed answer: %v", err)
+	for _, id := range []string{state.pendingAnswer.MessageID, state.spentAnswer.MessageID} {
+		if _, err := s.DeliverySpend(t.Context(), e.binding.ID, e.instance, e.writer, id); !observerIs(err, "closed") {
+			t.Fatalf("reopen resumed spend of %s: %v", id, err)
+		}
 	}
 }
 

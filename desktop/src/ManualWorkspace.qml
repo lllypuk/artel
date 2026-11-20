@@ -724,6 +724,12 @@ Item {
                                         severity: "warning"
                                         Layout.fillWidth: true
                                     }
+                                    Caption {
+                                        id: answerLabel
+                                        objectName: "answerLabel_" + questionRow.questionId
+                                        text: qsTr("Answer for Pi")
+                                        visible: answerField.visible
+                                    }
                                     UI.LongText {
                                         id: answerField
                                         theme: manual.theme
@@ -731,8 +737,7 @@ Item {
                                         visible: questionRow.record.status === "open"
                                         enabled: manual.panel.writable && !manual.panel.busy
                                         text: manual.panel.answerText(questionRow.questionId)
-                                        placeholderText: qsTr("Answer for Pi")
-                                        Accessible.name: placeholderText
+                                        Accessible.name: answerLabel.text
                                         Layout.fillWidth: true
                                         Layout.preferredHeight: Math.max(100, implicitHeight)
                                         onTextChanged: {

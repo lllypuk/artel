@@ -253,6 +253,14 @@ most five rows and 320 KiB. Qt polls for new questions when caught up and
 refreshes loaded status rows in batches of five. When a page has a real backlog,
 use **Load more questions** rather than loading the rest in the background.
 Unsent answer drafts are window-local and guarded on close, not written to disk.
+If the daemon switches databases, open **Recover answer drafts** in the sidebar
+and use **Copy answer draft** for the draft tied to the original database. If a
+save is still uncertain, you can copy the draft but cannot discard it. To stop
+tracking that save after a database switch, choose **Abandon old save, keep draft**
+and confirm: the save may already have committed in the original database.
+**Discard answer draft** removes only the local text once no save is pending or
+uncertain. Copying, abandoning, and discarding never resend an answer to the
+replacement database.
 The delivery `next` response remains bounded to
 64 KiB. Text is absent from observer telemetry, domain events/SSE and logs.
 There is no editing, TTL, broadcast, remote access, blocking wait in Pi or

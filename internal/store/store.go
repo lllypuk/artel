@@ -389,14 +389,14 @@ func persist(ctx context.Context, tx *sql.Tx, snap Snapshot) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM queue_entries"); err != nil {
 		return err
 	}
-	// Delivery commissions exist only in schema v3+; raw legacy fixtures may not.
+	// In this domain transaction, close/archive permanently blocks undelivered
+	// commissions and answers and closes unanswered questions. Observed answers
+	// are left alone. Legacy fixtures may lack the v3/v4 tables.
 	var deliveryTables int
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE name='delivery_messages'").Scan(&deliveryTables); err != nil {
 		return err
 	}
 	if deliveryTables != 0 {
-		// Closing a task or archiving a project permanently blocks undelivered
-		// commissions in the same transaction as the domain change.
 		if _, err := tx.ExecContext(ctx, "UPDATE delivery_messages SET blocked=1,block_reason='task_closed' WHERE blocked=0 AND NOT (COALESCE(json_extract(record,'$.kind'),'')='answer' AND json_extract(record,'$.status')='observed') AND task_id IN (SELECT id FROM tasks WHERE state IN ('done','cancelled'))"); err != nil {
 			return err
 		}
