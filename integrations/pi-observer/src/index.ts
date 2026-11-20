@@ -73,6 +73,44 @@ export default function observer(pi: ExtensionAPI) {
   // A binding that terminated terminally is not restarted for the same grant:
   // the memory clears only when the config starts naming another binding.
   let terminalBinding: string | undefined;
+  let ownerQuestionsExposure: "direct" | "hidden" | undefined;
+  const activateOwnerQuestions = (active: boolean) => {
+    if (!active && !ownerQuestionsExposure) return;
+    const exposure = active ? "direct" : "hidden";
+    const currentTools = pi.getActiveTools();
+    const exposureChanged = ownerQuestionsExposure !== exposure;
+    if (exposureChanged) {
+      // An inactive direct tool named by --tools can come back on registry
+      // refresh. Pi supports withdrawing a registered tool via hidden exposure.
+      pi.registerTool({
+        exposure,
+        name: "artel_ask_owner",
+        label: "Ask Artel owner",
+        defaultActive: false,
+        description: "Store one explicit question for the owner of an open Artel task. Returns after storage; the answer arrives later as a separate custom message.",
+        promptSnippet: "Ask the Artel owner about a specific open task UUID",
+        promptGuidelines: ["Use artel_ask_owner only with the exact Artel task UUID explicitly supplied by the owner."],
+        parameters: { type: "object", additionalProperties: false,
+          properties: { task_id: { type: "string", description: "Exact Artel task UUID supplied by the owner" },
+            text: { type: "string", description: "Question for the owner" } }, required: ["task_id", "text"] },
+        async execute(_toolCallId, params: { task_id?: unknown; text?: unknown }, signal) {
+          try {
+            if (!writer || typeof params.task_id !== "string" || typeof params.text !== "string") throw new Error("unavailable");
+            const result = await writer.askOwner(params.task_id, params.text, signal ?? new AbortController().signal);
+            return { content: [{ type: "text", text: `Question ${result.id} stored; do not wait for the answer in this tool call.` }],
+              details: { question_id: result.id, status: result.status } };
+          } catch {
+            return { content: [{ type: "text", text: "Artel owner question was not confirmed as stored." }],
+              details: { question_id: "", status: "unconfirmed" }, isError: true };
+          }
+        },
+      });
+      ownerQuestionsExposure = exposure;
+    }
+    if (!exposureChanged && currentTools.includes("artel_ask_owner") === active) return;
+    const otherTools = currentTools.filter(name => name !== "artel_ask_owner");
+    pi.setActiveTools(active ? [...otherTools, "artel_ask_owner"] : otherTools);
+  };
   const startDeliveryLoop = (deliveryPath: string, registration: Registration, ctx: ExtensionContext) => {
     stopDeliveryTimer();
     deliveryTimer = setInterval(() => {
@@ -80,6 +118,7 @@ export default function observer(pi: ExtensionAPI) {
         if (deliveryShutdown) return;
         if (writer?.terminated()) {
           terminalBinding = writer.bindingId();
+          activateOwnerQuestions(false);
           // Close the dropped writer so its kernel lock and timers are
           // released before a fresh grant activates in this process.
           void writer.stop();
@@ -91,13 +130,15 @@ export default function observer(pi: ExtensionAPI) {
         if (config.delivery_binding_id === terminalBinding) return;
         writer = new DeliveryWriter(config, token, ctx, registration.pi_session_id, registration.runtime_id, status, attempt => {
           if (deliveryShutdown) return;
+          const answer = attempt.kind === "answer";
           pi.sendMessage({
-            customType: "artel-delivery",
-            content: attempt.text,
+            customType: answer ? "artel-owner-answer" : "artel-delivery",
+            content: answer ? `Artel owner answer\n${JSON.stringify({ question_id: attempt.questionId, question: attempt.questionText, answer: attempt.text })}` : attempt.text,
             display: true,
-            details: { message_id: attempt.messageId, attempt_id: attempt.attemptId },
+            details: { message_id: attempt.messageId, attempt_id: attempt.attemptId,
+              ...(answer ? { custom_type: "artel-owner-answer", question_id: attempt.questionId } : {}) },
           }, { triggerTurn: true });
-        });
+        }, undefined, activateOwnerQuestions);
         void writer.start();
       } catch { status("Artel: delivery disabled — config unavailable, pending or unsafe"); }
     }, 2000);
@@ -106,10 +147,15 @@ export default function observer(pi: ExtensionAPI) {
     if (deliveryTimer) clearInterval(deliveryTimer);
     deliveryTimer = undefined;
   };
+  pi.on("session_tree", () => {
+    // Pi has restored this branch's tool list. Only the live writer owns this tool's availability.
+    activateOwnerQuestions(writer?.canAskOwner() === true);
+  });
   pi.on("before_agent_start", (event, ctx) => {
     if (!writer) return;
     const session = ctx.sessionManager.getSessionId();
-    writer.observeStart(event, session, attempt => writer!.publishReceipt(attempt));
+    const observedWriter = writer;
+    observedWriter.observeStart(event, session, attempt => observedWriter.publishReceipt(attempt));
   });
   pi.on("agent_start", (_event, ctx) => { if (client) { current = ctx; working = true; client.changed(); } });
   // agent_end is intentionally not an idle boundary.

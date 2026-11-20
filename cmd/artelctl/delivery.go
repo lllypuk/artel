@@ -20,14 +20,15 @@ import (
 // deliveryEnableRequest is the exact owner PUT body; the pending record keeps
 // it verbatim so a resume retries byte-identical content with the original key.
 type deliveryEnableRequest struct {
-	ExpectedVersion   int64  `json:"expected_version"`
-	DeliveryBindingID string `json:"delivery_binding_id"`
-	JournalID         string `json:"journal_id"`
-	Verifier          string `json:"verifier"`
-	RuntimeID         string `json:"runtime_id"`
-	ProjectID         string `json:"project_id"`
-	PiSessionID       string `json:"pi_session_id"`
-	InstanceID        string `json:"instance_id"`
+	ExpectedVersion     int64  `json:"expected_version"`
+	DeliveryBindingID   string `json:"delivery_binding_id"`
+	JournalID           string `json:"journal_id"`
+	Verifier            string `json:"verifier"`
+	RuntimeID           string `json:"runtime_id"`
+	ProjectID           string `json:"project_id"`
+	PiSessionID         string `json:"pi_session_id"`
+	InstanceID          string `json:"instance_id"`
+	AllowOwnerQuestions bool   `json:"allow_owner_questions,omitempty"`
 }
 
 // deliveryPending is the durable recovery record for one immutable binding ID.
@@ -54,13 +55,14 @@ type deliveryPending struct {
 // deliveryWriterConfig is the confirmed artifact the explicitly loaded
 // extension picks up next to its observer config; it carries no secret.
 type deliveryWriterConfig struct {
-	Status             string `json:"status"`
-	DeliveryBindingID  string `json:"delivery_binding_id"`
-	DatabaseInstanceID string `json:"database_instance_id"`
-	ObserverSocket     string `json:"observer_socket"`
-	TokenFile          string `json:"token_file"`
-	JournalFile        string `json:"journal_file"`
-	JournalID          string `json:"journal_id"`
+	Status              string `json:"status"`
+	DeliveryBindingID   string `json:"delivery_binding_id"`
+	DatabaseInstanceID  string `json:"database_instance_id"`
+	ObserverSocket      string `json:"observer_socket"`
+	TokenFile           string `json:"token_file"`
+	JournalFile         string `json:"journal_file"`
+	JournalID           string `json:"journal_id"`
+	AllowOwnerQuestions bool   `json:"allow_owner_questions,omitempty"`
 }
 
 // deliveryResult is the only CLI output shape: public IDs and file paths, no
@@ -111,8 +113,18 @@ func delivery(args []string, out, errOut io.Writer) int {
 	resume := flags.String("resume", "", "pending record path")
 	version := flags.Int64("expected-version", -1, "observer version CAS")
 	key := flags.String("idempotency-key", "", "UUID retry key")
+	allowOwnerQuestions := flags.Bool("allow-owner-questions", false, "allow Pi to store owner questions")
 	if flags.Parse(args[1:]) != nil || flags.NArg() != 0 || local.Endpoint(*endpoint) != nil {
 		return fail(2, "invalid arguments")
+	}
+	if command == "enable" && *resume != "" {
+		var changesOptIn bool
+		flags.Visit(func(f *flag.Flag) {
+			changesOptIn = changesOptIn || f.Name == "allow-owner-questions"
+		})
+		if changesOptIn {
+			return fail(1, "resume cannot change enable arguments")
+		}
 	}
 	paths, err := local.Resolve("", *tokenPath)
 	if err != nil {
@@ -129,6 +141,7 @@ func delivery(args []string, out, errOut io.Writer) int {
 		return deliveryEnable(client, deliveryEnableArgs{
 			id: *id, runtime: *runtime, project: *project, piSession: *piSession,
 			socket: *socket, output: *output, resume: *resume, version: *version, key: *key,
+			allowOwnerQuestions: *allowOwnerQuestions,
 		}, out, fail)
 	}
 	return deliveryRevoke(client, *id, *binding, *output, *key, out, fail)
@@ -137,6 +150,7 @@ func delivery(args []string, out, errOut io.Writer) int {
 type deliveryEnableArgs struct {
 	id, runtime, project, piSession, socket, output, resume, key string
 	version                                                      int64
+	allowOwnerQuestions                                          bool
 }
 
 func deliveryResultFor(p deliveryPending, status string) deliveryResult {
@@ -205,7 +219,8 @@ func deliveryEnable(client ownerClient, a deliveryEnableArgs, out io.Writer, fai
 		return fail(1, err.Error())
 	}
 	writer := deliveryWriterConfig{Status: "confirmed", DeliveryBindingID: p.DeliveryBindingID, DatabaseInstanceID: p.DatabaseInstanceID,
-		ObserverSocket: p.ObserverSocket, TokenFile: p.TokenFile, JournalFile: p.JournalFile, JournalID: p.JournalID}
+		ObserverSocket: p.ObserverSocket, TokenFile: p.TokenFile, JournalFile: p.JournalFile, JournalID: p.JournalID,
+		AllowOwnerQuestions: p.Request.AllowOwnerQuestions}
 	if err = deliveryPublishConfig(p, writer); err != nil {
 		return fail(1, err.Error())
 	}
@@ -266,7 +281,7 @@ func deliveryPrepare(client ownerClient, a deliveryEnableArgs) (deliveryPending,
 		JournalFile: filepath.Join(filepath.Dir(a.output), "delivery", bindingID, "journal.json"),
 		Request: deliveryEnableRequest{ExpectedVersion: a.version, DeliveryBindingID: bindingID, JournalID: journalID,
 			Verifier: local.TokenVerifier(secret), RuntimeID: a.runtime, ProjectID: a.project, PiSessionID: a.piSession,
-			InstanceID: registry.DatabaseInstanceID},
+			InstanceID: registry.DatabaseInstanceID, AllowOwnerQuestions: a.allowOwnerQuestions},
 	}
 	if err = writeDeliveryPending(p, false); err != nil {
 		return p, err
@@ -345,7 +360,8 @@ func deliveryCheckBinding(p deliveryPending, b store.DeliveryBinding) error {
 		return errors.New("binding is revoked; require a new explicit grant")
 	}
 	if b.ID != p.DeliveryBindingID || b.ObserverID != p.ObserverID || b.RuntimeID != p.RuntimeID ||
-		b.ProjectID != p.ProjectID || b.PiSessionID != p.PiSessionID || b.JournalID != p.JournalID {
+		b.ProjectID != p.ProjectID || b.PiSessionID != p.PiSessionID || b.JournalID != p.JournalID ||
+		b.AllowOwnerQuestions != p.Request.AllowOwnerQuestions {
 		return errors.New("binding identity mismatch; refused to publish")
 	}
 	return nil
@@ -435,7 +451,8 @@ func deliveryVerifyConfirmed(client ownerClient, p deliveryPending) error {
 	var config deliveryWriterConfig
 	if json.Unmarshal(raw, &config) != nil || config.Status != "confirmed" || config.DeliveryBindingID != p.DeliveryBindingID ||
 		config.DatabaseInstanceID != p.DatabaseInstanceID || config.JournalID != p.JournalID ||
-		config.ObserverSocket != p.ObserverSocket || config.TokenFile != p.TokenFile || config.JournalFile != p.JournalFile {
+		config.ObserverSocket != p.ObserverSocket || config.TokenFile != p.TokenFile || config.JournalFile != p.JournalFile ||
+		config.AllowOwnerQuestions != p.Request.AllowOwnerQuestions {
 		return errors.New("confirmed config mismatch; require a new explicit grant")
 	}
 	return nil

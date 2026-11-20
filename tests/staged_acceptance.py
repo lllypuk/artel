@@ -105,7 +105,7 @@ def main(stage):
                     assert not err.strip(), 'packaged QML/resource/icon warnings: ' + err.decode()
         assert daemon.returncode == 0
         with sqlite3.connect(data / 'artel.sqlite') as db:
-            assert db.execute('PRAGMA user_version').fetchone()[0] == 3
+            assert db.execute('PRAGMA user_version').fetchone()[0] == 4
             assert db.execute('SELECT instance_id FROM metadata').fetchone()[0] == identity
     # Public Pi loader supplies the one external API import. Artel's payload has
     # no node_modules, source tree, transpiler, relative checkout imports or secrets.

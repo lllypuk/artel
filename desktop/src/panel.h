@@ -38,6 +38,11 @@ class Panel : public QObject {
                  NOTIFY changed)
   Q_PROPERTY(QVariant assignment READ assignment NOTIFY changed)
   Q_PROPERTY(QVariant messages READ messages NOTIFY changed)
+  Q_PROPERTY(ObjectModel *questionModel READ questionModel CONSTANT)
+  Q_PROPERTY(QVariantList detachedAnswerDrafts READ detachedAnswerDrafts NOTIFY
+                 detachedAnswerDraftsChanged)
+  Q_PROPERTY(bool questionsMore READ questionsMore NOTIFY changed)
+  Q_PROPERTY(bool questionsLoading READ questionsLoading NOTIFY changed)
   Q_PROPERTY(bool messagesMore READ messagesMore NOTIFY changed)
   Q_PROPERTY(bool messagesLoading READ messagesLoading NOTIFY changed)
   Q_PROPERTY(
@@ -62,13 +67,12 @@ public:
   bool canArchive() const;
   bool saveable() const;
   bool dirty() const { return m_client->dirty(); }
+  bool hasAnswerDrafts() const { return !m_answers.isEmpty(); }
   bool uncertain() const { return m_client->uncertain(); }
   bool canAbandon() const { return m_client->canAbandon(); }
   bool conflict() const { return m_client->conflict() && !m_adopted; }
   bool busy() const { return m_client->pending(); }
-  bool retryable() const {
-    return m_client->online() && !busy() && uncertain() && !canAbandon();
-  }
+  bool retryable() const { return m_client->canRetry(); }
   bool historyMore() const { return m_historyMore; }
   bool historyLoading() const { return m_client->historyLoading(); }
   QString commissionText() const { return m_commission; }
@@ -76,6 +80,10 @@ public:
   // Exact assignment, binding state, writer readiness and the blocking reason.
   QVariantMap assignment() const;
   QVariantList messages() const;
+  QVariantList questions() const;
+  ObjectModel *questionModel() { return &m_questions; }
+  bool questionsMore() const { return m_questionsMore; }
+  bool questionsLoading() const { return m_client->questionsLoading(); }
   bool messagesMore() const { return m_messagesMore; }
   bool messagesLoading() const { return m_client->messagesLoading(); }
   bool showArchived() const { return m_archived; }
@@ -97,18 +105,44 @@ public:
   Q_INVOKABLE bool allowed(const QString &state) const;
   Q_INVOKABLE void moreHistory();
   Q_INVOKABLE bool sendCommission();
+  Q_INVOKABLE QString answerText(const QString &question) const;
+  Q_INVOKABLE void setAnswerText(const QString &question, const QString &text);
+  enum AnswerValidation {
+    ValidAnswer = ApiClient::ValidAnswer,
+    InvalidAnswerText = ApiClient::InvalidAnswerText,
+    AnswerTooLong = ApiClient::AnswerTooLong,
+    EmptyAnswer = ApiClient::EmptyAnswer
+  };
+  Q_ENUM(AnswerValidation)
+  Q_INVOKABLE AnswerValidation answerValidation(const QString &text) const {
+    return static_cast<AnswerValidation>(ApiClient::validateAnswer(text));
+  }
+  QVariantList detachedAnswerDrafts() const;
+  Q_INVOKABLE void discardDetachedAnswerDraft(const QString &key);
+  Q_INVOKABLE void discardTerminalAnswerDraft(const QString &question);
+  Q_INVOKABLE bool answerQuestion(const QString &question);
+  Q_INVOKABLE void moreQuestions();
   Q_INVOKABLE void moreMessages();
   Q_INVOKABLE QString stateLabel(const QString &state) const;
 signals:
   void changed();
+  void answerDraftsChanged();
+  void detachedAnswerDraftsChanged();
 
 private:
   void setProjectSelection(const QString &id);
+  void setTaskSelection(const QString &id);
   void resetCommissions();
+  void resetQuestions();
+  void pollQuestions();
+  void updateQuestions(const QVariantList &rows, bool append);
+  QVariantMap questionRow(QVariantMap row) const;
   void resetCommissionView();
   void loadCommissionPage();
   void armStatusPoll();
   QVariantMap messageRow(const QVariantMap &row) const;
+  QString answerKey(const QString &question) const;
+  void discardAnswerDraft(const QString &key);
   QVariantList queueIds() const;
   bool begin(const QString &kind, const QVariantMap &value);
   ApiClient *m_client;
@@ -116,14 +150,16 @@ private:
   QTimer m_statusPoll, m_deliveryPoll;
   QString m_commission, m_messagesTask, m_deliveryTask;
   QVariantList m_messages;
-  QVariantMap m_delivery;
-  qint64 m_messagesCursor = 0;
-  qsizetype m_statusOffset = 0;
-  bool m_messagesMore = false;
+  ObjectModel m_questions;
+  QVariantMap m_delivery, m_answers, m_sentAnswers;
+  qint64 m_messagesCursor = 0, m_questionsCursor = 0;
+  qsizetype m_statusOffset = 0, m_questionStatusOffset = 0;
+  bool m_messagesMore = false, m_questionsMore = false;
   QString m_project, m_task, m_kind, m_editorId, m_editorProject,
       m_historyInstance, m_editorInstance;
   qint64 m_seenSequence = -1;
   qint64 m_version = 0, m_historyCursor = 0;
   QVariantList m_history;
-  bool m_archived = false, m_historyMore = false, m_adopted = false;
+  bool m_archived = false, m_historyMore = false, m_adopted = false,
+       m_wasOnline = false;
 };

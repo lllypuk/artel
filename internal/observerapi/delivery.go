@@ -29,35 +29,39 @@ func mountDelivery(mux *http.ServeMux, s *store.Store) {
 	})
 	mux.HandleFunc("POST /delivery/v1/attach", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
+			InstanceID       string `json:"instance_id"`
 			WriterID         string `json:"writer_id"`
 			ExpectedPrevious string `json:"expected_previous"`
 			JournalID        string `json:"journal_id"`
 			RuntimeID        string `json:"runtime_id"`
 			PiSessionID      string `json:"pi_session_id"`
+			Capability       string `json:"capability"`
 		}
-		if !decode(w, r, &body, []string{"writer_id", "expected_previous", "journal_id", "runtime_id", "pi_session_id"}, "writer_id", "journal_id", "runtime_id", "pi_session_id") {
+		if !decode(w, r, &body, []string{"instance_id", "writer_id", "expected_previous", "journal_id", "runtime_id", "pi_session_id", "capability"}, "writer_id", "journal_id", "runtime_id", "pi_session_id") {
 			return
 		}
-		e := s.DeliveryAttach(r.Context(), deliveryBinding(r), body.WriterID, body.ExpectedPrevious, body.JournalID, body.RuntimeID, body.PiSessionID)
+		e := s.DeliveryAttach(r.Context(), deliveryBinding(r), body.InstanceID, body.WriterID, body.ExpectedPrevious, body.JournalID, body.RuntimeID, body.PiSessionID, body.Capability)
 		reply(w, map[string]string{"status": "attached"}, e)
 	})
 	mux.HandleFunc("POST /delivery/v1/ready", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			WriterID string `json:"writer_id"`
+			InstanceID string `json:"instance_id"`
+			WriterID   string `json:"writer_id"`
 		}
-		if !decode(w, r, &body, []string{"writer_id"}, "writer_id") {
+		if !decode(w, r, &body, []string{"instance_id", "writer_id"}, "writer_id") {
 			return
 		}
-		e := s.DeliveryReady(r.Context(), deliveryBinding(r), body.WriterID)
+		e := s.DeliveryReady(r.Context(), deliveryBinding(r), body.InstanceID, body.WriterID)
 		reply(w, map[string]string{"status": "ready"}, e)
 	})
 	mux.HandleFunc("GET /delivery/v1/next", func(w http.ResponseWriter, r *http.Request) {
 		query, err := url.ParseQuery(r.URL.RawQuery)
-		if err != nil || len(query) != 1 || len(query["writer_id"]) != 1 {
+		if err != nil || len(query["writer_id"]) != 1 ||
+			(len(query) != 1 && (len(query) != 2 || len(query["instance_id"]) != 1)) {
 			failure(w, "invalid_request")
 			return
 		}
-		message, receiptKey, e := s.DeliveryNext(r.Context(), deliveryBinding(r), query.Get("writer_id"))
+		message, receiptKey, e := s.DeliveryNext(r.Context(), deliveryBinding(r), query.Get("instance_id"), query.Get("writer_id"))
 		if e != nil {
 			reply(w, nil, e)
 			return
@@ -75,28 +79,32 @@ func mountDelivery(mux *http.ServeMux, s *store.Store) {
 	})
 	mux.HandleFunc("POST /delivery/v1/spend", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			WriterID  string `json:"writer_id"`
-			MessageID string `json:"message_id"`
+			InstanceID string `json:"instance_id"`
+			WriterID   string `json:"writer_id"`
+			MessageID  string `json:"message_id"`
 		}
-		if !decode(w, r, &body, []string{"writer_id", "message_id"}, "writer_id", "message_id") {
+		if !decode(w, r, &body, []string{"instance_id", "writer_id", "message_id"}, "writer_id", "message_id") {
 			return
 		}
-		v, e := s.DeliverySpend(r.Context(), deliveryBinding(r), body.WriterID, body.MessageID)
+		v, e := s.DeliverySpend(r.Context(), deliveryBinding(r), body.InstanceID, body.WriterID, body.MessageID)
 		reply(w, v, e)
 	})
 	mux.HandleFunc("POST /delivery/v1/verify", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			WriterID  string `json:"writer_id"`
-			AttemptID string `json:"attempt_id"`
+			InstanceID string `json:"instance_id"`
+			WriterID   string `json:"writer_id"`
+			AttemptID  string `json:"attempt_id"`
 		}
-		if !decode(w, r, &body, []string{"writer_id", "attempt_id"}, "writer_id", "attempt_id") {
+		if !decode(w, r, &body, []string{"instance_id", "writer_id", "attempt_id"}, "writer_id", "attempt_id") {
 			return
 		}
-		v, e := s.DeliveryVerify(r.Context(), deliveryBinding(r), body.WriterID, body.AttemptID)
+		v, e := s.DeliveryVerify(r.Context(), deliveryBinding(r), body.InstanceID, body.WriterID, body.AttemptID)
 		reply(w, v, e)
 	})
 	mux.HandleFunc("POST /delivery/v1/receipt", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
+			InstanceID  string         `json:"instance_id"`
+			WriterID    string         `json:"writer_id"`
 			Key         string         `json:"key"`
 			MessageID   string         `json:"message_id"`
 			AttemptID   string         `json:"attempt_id"`
@@ -105,11 +113,11 @@ func mountDelivery(mux *http.ServeMux, s *store.Store) {
 			PiSessionID string         `json:"pi_session_id"`
 			Details     map[string]any `json:"details"`
 		}
-		if !decode(w, r, &body, []string{"key", "message_id", "attempt_id", "type", "message_type", "pi_session_id", "details"},
+		if !decode(w, r, &body, []string{"instance_id", "writer_id", "key", "message_id", "attempt_id", "type", "message_type", "pi_session_id", "details"},
 			"key", "message_id", "attempt_id", "type", "message_type", "pi_session_id", "details") {
 			return
 		}
-		v, e := s.DeliveryReceipt(r.Context(), deliveryBinding(r), body.Key, struct {
+		v, e := s.DeliveryReceipt(r.Context(), deliveryBinding(r), body.InstanceID, body.WriterID, body.Key, struct {
 			MessageID, AttemptID, Type, MessageType, PiSessionID string
 			Details                                              map[string]any
 		}{body.MessageID, body.AttemptID, body.Type, body.MessageType, body.PiSessionID, body.Details})

@@ -526,6 +526,11 @@ Item {
                             text: manual.panel.stateLabel(manual.panel.task.state || "")
                         }
                         CopyText {
+                            objectName: "taskUuid"
+                            text: manual.panel.task.id || ""
+                            Accessible.name: qsTr("Selected task UUID")
+                        }
+                        CopyText {
                             objectName: "taskDescription"
                             text: manual.panel.task.description || ""
                         }
@@ -686,6 +691,145 @@ Item {
                                 visible: manual.panel.messagesMore
                                 enabled: manual.panel.messagesMore && !manual.panel.messagesLoading
                                 onClicked: manual.panel.moreMessages()
+                            }
+                            Caption {
+                                text: qsTr("Owner questions")
+                                font.bold: true
+                                visible: questionCards.count > 0
+                            }
+                            Repeater {
+                                id: questionCards
+                                model: manual.panel.questionModel
+                                delegate: ColumnLayout {
+                                    id: questionRow
+                                    required property var record
+                                    readonly property string questionId: record.id
+                                    Layout.fillWidth: true
+                                    Caption {
+                                        text: qsTr("Question from Pi session %1").arg(questionRow.record.pi_session_id)
+                                        color: theme.muted
+                                        wrapMode: Text.Wrap
+                                        Layout.fillWidth: true
+                                    }
+                                    CopyText {
+                                        objectName: "questionText_" + questionRow.questionId
+                                        text: questionRow.record.text
+                                        Layout.fillWidth: true
+                                    }
+                                    UI.StatusLabel {
+                                        theme: manual.theme
+                                        objectName: "answerProviderWarning_" + questionRow.questionId
+                                        text: qsTr("The text will be sent to the provider configured in Pi as part of the conversation context. It does not confirm delivery to the provider or that Pi completed the turn.")
+                                        visible: questionRow.record.status === "open"
+                                        severity: "warning"
+                                        Layout.fillWidth: true
+                                    }
+                                    Caption {
+                                        id: answerLabel
+                                        objectName: "answerLabel_" + questionRow.questionId
+                                        text: qsTr("Answer for Pi")
+                                        visible: answerField.visible
+                                    }
+                                    UI.LongText {
+                                        id: answerField
+                                        theme: manual.theme
+                                        objectName: "answerField_" + questionRow.questionId
+                                        visible: questionRow.record.status === "open"
+                                        enabled: manual.panel.writable && !manual.panel.busy
+                                        text: manual.panel.answerText(questionRow.questionId)
+                                        Accessible.name: answerLabel.text
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: Math.max(100, implicitHeight)
+                                        onTextChanged: {
+                                            if (activeFocus)
+                                                manual.panel.setAnswerText(questionRow.questionId, text);
+                                        }
+                                        onActiveFocusChanged: manual.revealField(this, cursorRectangle.y)
+                                        onCursorRectangleChanged: manual.revealField(this, cursorRectangle.y)
+                                    }
+                                    UI.StatusLabel {
+                                        id: answerValidation
+                                        theme: manual.theme
+                                        objectName: "answerValidation_" + questionRow.questionId
+                                        readonly property int validation: manual.panel.answerValidation(answerField.text)
+                                        text: {
+                                            switch (validation) {
+                                            case Panel.InvalidAnswerText:
+                                                return qsTr("Answer must be valid text without NUL characters");
+                                            case Panel.AnswerTooLong:
+                                                return qsTr("Answer exceeds the 4,096 UTF-8 byte limit");
+                                            case Panel.EmptyAnswer:
+                                                return qsTr("Enter an answer");
+                                            default:
+                                                return "";
+                                            }
+                                        }
+                                        visible: answerField.visible && answerField.text.length > 0 && text.length > 0
+                                        severity: "warning"
+                                        Layout.fillWidth: true
+                                    }
+                                    PanelButton {
+                                        objectName: "answerButton_" + questionRow.questionId
+                                        visible: questionRow.record.status === "open"
+                                        text: qsTr("Save answer for Pi")
+                                        kind: "primary"
+                                        enabled: questionRow.record.canAnswer && answerValidation.validation === Panel.ValidAnswer
+                                        onClicked: manual.panel.answerQuestion(questionRow.questionId)
+                                    }
+                                    Caption {
+                                        id: answerDraftLabel
+                                        objectName: "answerDraftLabel_" + questionRow.questionId
+                                        text: qsTr("Unsent answer draft")
+                                        color: theme.muted
+                                        visible: answerDraft.visible
+                                    }
+                                    CopyText {
+                                        id: answerDraft
+                                        objectName: "answerDraft_" + questionRow.questionId
+                                        text: questionRow.record.answerDraft || ""
+                                        visible: text.length > 0
+                                        activeFocusOnTab: true
+                                        Accessible.name: answerDraftLabel.text
+                                        onActiveFocusChanged: manual.revealField(this, cursorRectangle.y)
+                                        onCursorRectangleChanged: manual.revealField(this, cursorRectangle.y)
+                                    }
+                                    PanelButton {
+                                        objectName: "discardAnswerDraft_" + questionRow.questionId
+                                        text: qsTr("Discard answer draft")
+                                        kind: "destructive"
+                                        visible: answerDraft.visible
+                                        enabled: !manual.panel.busy && !manual.panel.uncertain
+                                        onClicked: manual.panel.discardTerminalAnswerDraft(questionRow.questionId)
+                                    }
+                                    CopyText {
+                                        objectName: "answerText_" + questionRow.questionId
+                                        visible: questionRow.record.status === "answered"
+                                        text: questionRow.record.answer_text || ""
+                                        Layout.fillWidth: true
+                                    }
+                                    UI.StatusLabel {
+                                        theme: manual.theme
+                                        objectName: "answerStatus_" + questionRow.questionId
+                                        visible: questionRow.record.status === "answered"
+                                        text: questionRow.record.answerStatusLabel
+                                        Layout.fillWidth: true
+                                    }
+                                    UI.StatusLabel {
+                                        theme: manual.theme
+                                        objectName: "answerBlockReason_" + questionRow.questionId
+                                        visible: questionRow.record.status === "answered" && !!questionRow.record.answerBlockReason
+                                        text: questionRow.record.answerBlockReason || ""
+                                        severity: "warning"
+                                        Layout.fillWidth: true
+                                    }
+                                }
+                            }
+                            PanelButton {
+                                objectName: "questionsMoreButton"
+                                text: qsTr("Load more questions")
+                                visible: manual.panel.questionsMore
+                                enabled: manual.panel.questionsMore && !manual.panel.questionsLoading
+                                onClicked: manual.panel.moreQuestions()
                             }
                         }
                         Rectangle {

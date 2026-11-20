@@ -73,10 +73,10 @@ func newDeliveryOwnerEnv(t *testing.T, active bool) *deliveryOwnerEnv {
 		t.Fatal(err)
 	}
 	if active {
-		if err = s.DeliveryAttach(t.Context(), e.binding.ID, e.writerID, "", e.binding.JournalID, e.runtime.RuntimeID, e.runtime.PiSessionID); err != nil {
+		if err = s.DeliveryAttach(t.Context(), e.binding.ID, "", e.writerID, "", e.binding.JournalID, e.runtime.RuntimeID, e.runtime.PiSessionID, ""); err != nil {
 			t.Fatal(err)
 		}
-		if err = s.DeliveryReady(t.Context(), e.binding.ID, e.writerID); err != nil {
+		if err = s.DeliveryReady(t.Context(), e.binding.ID, "", e.writerID); err != nil {
 			t.Fatal(err)
 		}
 		e.binding.Status = "active"

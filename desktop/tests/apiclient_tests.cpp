@@ -582,6 +582,147 @@ private slots:
     QVERIFY(!client.uncertain());
     client.stop();
   }
+  void questionAnswerDoesNotClearAnExistingEditorConflict() {
+    Fixture fixture;
+    const QString question = "66666666-6666-4666-8666-666666666666";
+    bool reject = true;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("POST") && request.contains("/answer ")) {
+        if (reject) {
+          respond(socket, 409,
+                  R"({"code":"already_answered","message":"No new answer"})");
+        } else {
+          respond(socket, 200,
+                  QJsonDocument(QJsonObject{{"question_id", question},
+                                            {"message_id", messageID},
+                                            {"status", "stored"}})
+                      .toJson());
+        }
+      } else {
+        fixture.normal(socket, request);
+      }
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    client.reload();
+    QTRY_VERIFY(client.online());
+    const QVariantMap draft{{"description", "An unrelated project draft"}};
+    client.setDraft(draft);
+    QVERIFY(client.save("PATCH", "/v1/projects/" + projectID,
+                        {{"expected_version", 1},
+                         {"description", draft.value("description")}}));
+    QTRY_VERIFY(client.conflict());
+    QSignalSpy accepted(&client, &ApiClient::answerAccepted);
+    QVERIFY(client.answerQuestion(taskID, question, "Example answer"));
+    QVERIFY(client.conflict());
+    QTRY_VERIFY(!client.pending());
+    QVERIFY(client.conflict());
+    QVERIFY(!client.uncertain());
+    QCOMPARE(accepted.count(), 0);
+    QCOMPARE(client.draft(), draft);
+    reject = false;
+    QVERIFY(client.answerQuestion(taskID, question, "A valid answer"));
+    QTRY_COMPARE(accepted.count(), 1);
+    QVERIFY(client.conflict());
+    QCOMPARE(client.draft(), draft);
+    client.stop();
+  }
+  void questionAnswerUnknownOutcomeReusesExactRequest_data() {
+    QTest::addColumn<bool>("legacy");
+    QTest::newRow("instance-mismatch") << false;
+    QTest::newRow("legacy-missing-route") << true;
+  }
+  void questionAnswerUnknownOutcomeReusesExactRequest() {
+    QFETCH(bool, legacy);
+    const QString question = "66666666-6666-4666-8666-666666666666";
+    Fixture fixture;
+    QList<QByteArray> answers;
+    const QString replacement = "77777777-7777-4777-8777-777777777777";
+    QString serving = instanceID;
+    QPointer<QTcpSocket> delayed;
+    bool holdSnapshot = false;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/snapshot ") && holdSnapshot) {
+        delayed = socket;
+        return;
+      }
+      if (request.startsWith("POST") && request.contains("/answer ")) {
+        answers.append(request);
+        if (answers.size() == 1) {
+          socket->disconnectFromHost();
+          return;
+        }
+        const auto payload = QJsonDocument::fromJson(
+                                 request.mid(request.indexOf("\r\n\r\n") + 4))
+                                 .object();
+        if (serving == replacement && legacy) {
+          respond(
+              socket, 404,
+              "{\"code\":\"not_found\",\"message\":\"endpoint not found\"}");
+          return;
+        }
+        if (payload.value("instance_id").toString() != serving) {
+          respond(socket, 409, "{\"code\":\"instance_mismatch\"}");
+          return;
+        }
+        respond(socket, 200,
+                QJsonDocument(QJsonObject{{"question_id", question},
+                                          {"message_id", messageID},
+                                          {"status", "stored"}})
+                    .toJson(QJsonDocument::Compact));
+        return;
+      }
+      if (request.startsWith("GET") && request.contains("/questions?")) {
+        respond(socket, 200,
+                "{\"questions\":[],\"next_after\":0,\"has_more\":false}");
+        return;
+      }
+      fixture.normal(socket, request);
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QSignalSpy accepted(&client, &ApiClient::answerAccepted);
+    QVERIFY(!client.answerQuestion(taskID, question, QString(QChar(0xd800))));
+    QVERIFY(client.answerQuestion(taskID, question, "line one\nline two"));
+    QTRY_VERIFY(client.uncertain());
+    QVERIFY(!client.answerQuestion(taskID, question, "different"));
+    QCOMPARE(answers.size(), 1);
+    holdSnapshot = true;
+    client.reload(); // An A snapshot was already in flight before the swap.
+    QTRY_VERIFY(delayed);
+    serving = replacement;
+    QVERIFY(client.retry());
+    QTRY_VERIFY(!client.pending());
+    QVERIFY(client.uncertain());
+    QCOMPARE(client.instance(), instanceID);
+    QCOMPARE(accepted.count(), 0);
+    QVERIFY(!client.retry());
+    respond(delayed, 200, snapshot(0, instanceID));
+    delayed = nullptr;
+    QTRY_VERIFY(delayed); // A post-rejection snapshot is required.
+    QCOMPARE(client.instance(), instanceID);
+    QVERIFY(!client.retry());
+    holdSnapshot = false;
+    respond(delayed, 200, snapshot(0, replacement));
+    QTRY_COMPARE(client.instance(), replacement);
+    QVERIFY(client.uncertain());
+    QVERIFY(!client.retry());
+    QCOMPARE(answers.size(), 2);
+    serving = instanceID;
+    client.reload();
+    QTRY_COMPARE(client.instance(), instanceID);
+    QVERIFY(client.retry());
+    QTRY_VERIFY(!client.uncertain());
+    QCOMPARE(accepted.count(), 1);
+    QCOMPARE(answers.size(), 3);
+    QCOMPARE(answers[0], answers[1]);
+    QCOMPARE(answers[0], answers[2]);
+    QVERIFY(answers[0].contains("\"text\":\"line one\\nline two\""));
+    QVERIFY(!idempotencyKey(answers[0]).isEmpty());
+    client.stop();
+  }
   void realTemporaryDaemon() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());

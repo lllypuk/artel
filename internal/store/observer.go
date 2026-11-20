@@ -434,6 +434,9 @@ func deliveryRevokeStaleBindings(ctx context.Context, tx *sql.Tx, o observerReco
 		if _, err := tx.ExecContext(ctx, "UPDATE delivery_bindings SET record=? WHERE id=?", string(encoded), b.ID); err != nil {
 			return nil, err
 		}
+		if err := deliveryBlockOwnerQuestions(ctx, tx, b.ID); err != nil {
+			return nil, err
+		}
 		revoked = append(revoked, b.ID)
 	}
 	return revoked, nil

@@ -97,10 +97,10 @@ func (e deliveryEnv) freshEnable(t *testing.T, s *Store) DeliveryOwnerMutation {
 
 func (e deliveryEnv) mustAttachReady(t *testing.T, s *Store, writerID, expectedPrevious string) {
 	t.Helper()
-	if err := s.DeliveryAttach(t.Context(), e.binding.ID, writerID, expectedPrevious, e.binding.JournalID, e.runtime.RuntimeID, e.runtime.PiSessionID); err != nil {
+	if err := s.DeliveryAttach(t.Context(), e.binding.ID, "", writerID, expectedPrevious, e.binding.JournalID, e.runtime.RuntimeID, e.runtime.PiSessionID, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeliveryReady(t.Context(), e.binding.ID, writerID); err != nil {
+	if err := s.DeliveryReady(t.Context(), e.binding.ID, "", writerID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -122,9 +122,16 @@ func (e deliveryEnv) mustAppend(t *testing.T, s *Store, text string) DeliveryMes
 	return m
 }
 
+func (e deliveryEnv) deliveryPin() string {
+	if e.binding.AllowOwnerQuestions {
+		return e.instance
+	}
+	return ""
+}
+
 func (e deliveryEnv) mustSpend(t *testing.T, s *Store, writerID string, m DeliveryMessage) DeliveryAttemptResult {
 	t.Helper()
-	r, err := s.DeliverySpend(t.Context(), e.binding.ID, writerID, m.ID)
+	r, err := s.DeliverySpend(t.Context(), e.binding.ID, e.deliveryPin(), writerID, m.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +140,7 @@ func (e deliveryEnv) mustSpend(t *testing.T, s *Store, writerID string, m Delive
 
 func (e deliveryEnv) mustVerify(t *testing.T, s *Store, writerID string, a DeliveryAttemptResult) DeliveryAttemptResult {
 	t.Helper()
-	r, err := s.DeliveryVerify(t.Context(), e.binding.ID, writerID, a.AttemptID)
+	r, err := s.DeliveryVerify(t.Context(), e.binding.ID, e.deliveryPin(), writerID, a.AttemptID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +177,7 @@ func (e deliveryEnv) receiptFor(a DeliveryAttemptResult) deliveryReceiptBodyT {
 
 func (e deliveryEnv) mustReceipt(t *testing.T, s *Store, key string, body deliveryReceiptBodyT) DeliveryMessage {
 	t.Helper()
-	m, err := s.DeliveryReceipt(t.Context(), e.binding.ID, key, body)
+	m, err := s.DeliveryReceipt(t.Context(), e.binding.ID, "", "", key, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +371,7 @@ func TestDeliveryV2UpgradePreservesDomainObserverAndReceipts(t *testing.T) {
 		if err := s.db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil {
 			t.Fatal(err)
 		}
-		if version != 3 {
+		if version != 4 {
 			t.Fatal(version)
 		}
 		for table, want := range map[string]int{"delivery_bindings": 0, "delivery_messages": 0, "delivery_attempts": 0} {
@@ -486,7 +493,7 @@ func TestDeliveryV3RefusesDowngradedVersionClaim(t *testing.T) {
 func driveCommission(t *testing.T, s *Store, env deliveryEnv, writerID string) (DeliveryMessage, DeliveryAttemptResult) {
 	t.Helper()
 	m := env.mustAppend(t, s, "commission")
-	next, receiptKey, err := s.DeliveryNext(t.Context(), env.binding.ID, writerID)
+	next, receiptKey, err := s.DeliveryNext(t.Context(), env.binding.ID, "", writerID)
 	if err != nil || next.ID != m.ID || receiptKey == "" {
 		t.Fatalf("next: %+v %q %v", next, receiptKey, err)
 	}
@@ -512,7 +519,7 @@ func TestDeliveryPendingRefusesAppendWithoutRecord(t *testing.T) {
 	if _, err := env.append(t, s, uuid.NewString(), "while pending"); !observerIs(err, "not_ready") {
 		t.Fatalf("pending append: %v", err)
 	}
-	if _, _, err := s.DeliveryNext(t.Context(), env.binding.ID, uuid.NewString()); !observerIs(err, "not_ready") {
+	if _, _, err := s.DeliveryNext(t.Context(), env.binding.ID, "", uuid.NewString()); !observerIs(err, "not_ready") {
 		t.Fatalf("pending next: %v", err)
 	}
 	if countRows(t, s, "delivery_messages") != 0 || deliveryReceiptCount(t, s, "binding:"+env.binding.ID) != 0 {
@@ -604,7 +611,7 @@ func TestDeliveryReopenResetsReadinessAndPreservesState(t *testing.T) {
 	if _, err := env.append(t, s, uuid.NewString(), "before ready"); !observerIs(err, "not_ready") {
 		t.Fatalf("append before ready after reopen: %v", err)
 	}
-	if err := s.DeliveryReady(t.Context(), env.binding.ID, writer); err != nil {
+	if err := s.DeliveryReady(t.Context(), env.binding.ID, "", writer); err != nil {
 		t.Fatal(err)
 	}
 	env.mustAppend(t, s, "after ready")
@@ -710,7 +717,7 @@ func TestDeliveryConcurrentSpendAdmitsExactlyOneWinner(t *testing.T) {
 	var wg sync.WaitGroup
 	for _, target := range []*Store{s, second} {
 		wg.Go(func() {
-			r, err := target.DeliverySpend(t.Context(), env.binding.ID, writer, m.ID)
+			r, err := target.DeliverySpend(t.Context(), env.binding.ID, "", writer, m.ID)
 			if err != nil {
 				errs <- err
 				return
@@ -743,7 +750,7 @@ func TestDeliveryConcurrentSpendAdmitsExactlyOneWinner(t *testing.T) {
 	}
 	// Both sides now observe the committed attempt without any right.
 	for _, target := range []*Store{s, second} {
-		r, err := target.DeliverySpend(t.Context(), env.binding.ID, writer, m.ID)
+		r, err := target.DeliverySpend(t.Context(), env.binding.ID, "", writer, m.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -751,7 +758,7 @@ func TestDeliveryConcurrentSpendAdmitsExactlyOneWinner(t *testing.T) {
 			t.Fatalf("replay reissued a right: %+v", r)
 		}
 	}
-	next, _, err := s.DeliveryNext(t.Context(), env.binding.ID, writer)
+	next, _, err := s.DeliveryNext(t.Context(), env.binding.ID, "", writer)
 	if err != nil || next.ID != "" {
 		t.Fatalf("spent message requeued: %+v %v", next, err)
 	}
@@ -774,7 +781,7 @@ func TestDeliveryReceiptRepublishNeverGrantsASecondRight(t *testing.T) {
 		t.Fatal("attempt not observed")
 	}
 	// Lost ACK: the identical republication replays the committed result.
-	replayed, err := s.DeliveryReceipt(t.Context(), env.binding.ID, key, env.receiptFor(attempt))
+	replayed, err := s.DeliveryReceipt(t.Context(), env.binding.ID, "", "", key, env.receiptFor(attempt))
 	if err != nil || replayed.ID != m.ID || replayed.Status != "observed" {
 		t.Fatalf("republish: %+v %v", replayed, err)
 	}
@@ -785,7 +792,7 @@ func TestDeliveryReceiptRepublishNeverGrantsASecondRight(t *testing.T) {
 	// receipt with the original key, but never acquires the spent right.
 	writer2 := uuid.NewString()
 	env.mustAttachReady(t, s, writer2, writer)
-	republished, err := s.DeliveryReceipt(t.Context(), env.binding.ID, key, env.receiptFor(attempt))
+	republished, err := s.DeliveryReceipt(t.Context(), env.binding.ID, "", "", key, env.receiptFor(attempt))
 	if err != nil || republished.ID != m.ID || republished.Status != "observed" {
 		t.Fatalf("new-writer republish: %+v %v", republished, err)
 	}
@@ -793,7 +800,7 @@ func TestDeliveryReceiptRepublishNeverGrantsASecondRight(t *testing.T) {
 		t.Fatalf("republish reissued a right: %+v", again)
 	}
 	// The republishing writer never owned the spent right, so verify refuses it.
-	if _, err := s.DeliveryVerify(t.Context(), env.binding.ID, writer2, attempt.AttemptID); !observerIs(err, "owner_conflict") {
+	if _, err := s.DeliveryVerify(t.Context(), env.binding.ID, "", writer2, attempt.AttemptID); !observerIs(err, "owner_conflict") {
 		t.Fatalf("foreign verify: %v", err)
 	}
 }
@@ -937,13 +944,13 @@ func TestDeliveryCloseBlocksPermanently(t *testing.T) {
 			t.Fatalf("message not blocked after close: %+v", m)
 		}
 	}
-	if next, _, err := s.DeliveryNext(t.Context(), env.binding.ID, writer); err != nil || next.ID != "" {
+	if next, _, err := s.DeliveryNext(t.Context(), env.binding.ID, "", writer); err != nil || next.ID != "" {
 		t.Fatalf("blocked queue still served: %+v %v", next, err)
 	}
-	if _, err := s.DeliverySpend(t.Context(), env.binding.ID, writer, second.ID); !observerIs(err, "closed") {
+	if _, err := s.DeliverySpend(t.Context(), env.binding.ID, "", writer, second.ID); !observerIs(err, "closed") {
 		t.Fatalf("spend after close: %v", err)
 	}
-	if _, err := s.DeliveryVerify(t.Context(), env.binding.ID, writer, attempt.AttemptID); !observerIs(err, "closed") {
+	if _, err := s.DeliveryVerify(t.Context(), env.binding.ID, "", writer, attempt.AttemptID); !observerIs(err, "closed") {
 		t.Fatalf("verify after close: %v", err)
 	}
 	if _, err := env.append(t, s, uuid.NewString(), "after close"); !observerIs(err, "closed") {
@@ -956,10 +963,10 @@ func TestDeliveryCloseBlocksPermanently(t *testing.T) {
 	}
 	// Reopening the task must not resume the old queue.
 	transitionTask(t, s, env.task.ID, env.project.ID, domain.Backlog)
-	if next, _, err := s.DeliveryNext(t.Context(), env.binding.ID, writer); err != nil || next.ID != "" {
+	if next, _, err := s.DeliveryNext(t.Context(), env.binding.ID, "", writer); err != nil || next.ID != "" {
 		t.Fatalf("reopen resumed queue: %+v %v", next, err)
 	}
-	if _, err := s.DeliverySpend(t.Context(), env.binding.ID, writer, second.ID); !observerIs(err, "closed") {
+	if _, err := s.DeliverySpend(t.Context(), env.binding.ID, "", writer, second.ID); !observerIs(err, "closed") {
 		t.Fatalf("spend after reopen: %v", err)
 	}
 	if countRows(t, s, "delivery_attempts") != 1 {
@@ -984,14 +991,14 @@ func TestDeliveryArchiveBlocksPermanently(t *testing.T) {
 	if _, err := env.append(t, s, uuid.NewString(), "while archived"); !observerIs(err, "closed") {
 		t.Fatalf("append while archived: %v", err)
 	}
-	if _, err := s.DeliverySpend(t.Context(), env.binding.ID, writer, first.ID); !observerIs(err, "closed") {
+	if _, err := s.DeliverySpend(t.Context(), env.binding.ID, "", writer, first.ID); !observerIs(err, "closed") {
 		t.Fatalf("spend while archived: %v", err)
 	}
 	archiveProject(t, s, env.project.ID, false)
-	if next, _, err := s.DeliveryNext(t.Context(), env.binding.ID, writer); err != nil || next.ID != "" {
+	if next, _, err := s.DeliveryNext(t.Context(), env.binding.ID, "", writer); err != nil || next.ID != "" {
 		t.Fatalf("unarchive resumed queue: %+v %v", next, err)
 	}
-	if _, err := s.DeliverySpend(t.Context(), env.binding.ID, writer, first.ID); !observerIs(err, "closed") {
+	if _, err := s.DeliverySpend(t.Context(), env.binding.ID, "", writer, first.ID); !observerIs(err, "closed") {
 		t.Fatalf("spend after unarchive: %v", err)
 	}
 }
@@ -1008,10 +1015,10 @@ func TestDeliveryAssignmentChangeInvalidatesBinding(t *testing.T) {
 	if rebound.Generation == env.binding.Generation {
 		t.Fatal("rebind did not bump generation")
 	}
-	if _, _, err := s.DeliveryNext(t.Context(), env.binding.ID, writer); !observerIs(err, "revoked") {
+	if _, _, err := s.DeliveryNext(t.Context(), env.binding.ID, "", writer); !observerIs(err, "revoked") {
 		t.Fatalf("next after rebind: %v", err)
 	}
-	if _, err := s.DeliverySpend(t.Context(), env.binding.ID, writer, m.ID); !observerIs(err, "revoked") {
+	if _, err := s.DeliverySpend(t.Context(), env.binding.ID, "", writer, m.ID); !observerIs(err, "revoked") {
 		t.Fatalf("spend after rebind: %v", err)
 	}
 	if _, err := env.append(t, s, uuid.NewString(), "stale assignment"); !observerIs(err, "not_ready") {
@@ -1022,10 +1029,10 @@ func TestDeliveryAssignmentChangeInvalidatesBinding(t *testing.T) {
 	}
 	// Revoking the observer invalidates the assignment as well.
 	mustOwner(t, s, env.observer, "revoke", rebound.Version, "", "")
-	if _, _, err := s.DeliveryNext(t.Context(), env.binding.ID, writer); !observerIs(err, "revoked") {
+	if _, _, err := s.DeliveryNext(t.Context(), env.binding.ID, "", writer); !observerIs(err, "revoked") {
 		t.Fatalf("next after observer revoke: %v", err)
 	}
-	if _, err := s.DeliverySpend(t.Context(), env.binding.ID, writer, m.ID); !observerIs(err, "revoked") {
+	if _, err := s.DeliverySpend(t.Context(), env.binding.ID, "", writer, m.ID); !observerIs(err, "revoked") {
 		t.Fatalf("spend after observer revoke: %v", err)
 	}
 }
@@ -1039,13 +1046,13 @@ func TestDeliveryRevokeBeforeAndAfterVerify(t *testing.T) {
 	m := env.mustAppend(t, s, "before revoke")
 	attempt := env.mustSpend(t, s, writer, m)
 	env.revoke(t, s)
-	if _, err := s.DeliveryVerify(t.Context(), env.binding.ID, writer, attempt.AttemptID); !observerIs(err, "revoked") {
+	if _, err := s.DeliveryVerify(t.Context(), env.binding.ID, "", writer, attempt.AttemptID); !observerIs(err, "revoked") {
 		t.Fatalf("verify after revoke: %v", err)
 	}
 	if state := attemptState(t, s, attempt.AttemptID); state != "spent" {
 		t.Fatalf("attempt state changed: %s", state)
 	}
-	if _, err := s.DeliverySpend(t.Context(), env.binding.ID, writer, m.ID); err == nil {
+	if _, err := s.DeliverySpend(t.Context(), env.binding.ID, "", writer, m.ID); err == nil {
 		t.Fatal("spend after revoke succeeded")
 	}
 	if countRows(t, s, "delivery_attempts") != 1 {
@@ -1065,7 +1072,7 @@ func TestDeliveryRevokeBeforeAndAfterVerify(t *testing.T) {
 		t.Fatalf("verify: %+v", verified)
 	}
 	env2.revoke(t, s)
-	if _, err := s.DeliveryVerify(t.Context(), env2.binding.ID, writer2, attempt2.AttemptID); !observerIs(err, "revoked") {
+	if _, err := s.DeliveryVerify(t.Context(), env2.binding.ID, "", writer2, attempt2.AttemptID); !observerIs(err, "revoked") {
 		t.Fatalf("verify after post-verify revoke: %v", err)
 	}
 	if _, err := s.AuthenticateDeliveryBinding(t.Context(), env2.deliveryVerifier); !observerIs(err, "unauthorized") {
@@ -1082,7 +1089,7 @@ func TestDeliveryReceiptAfterRevokeRejectedWithUnknownPreserved(t *testing.T) {
 	attempt := env.mustSpend(t, s, writer, m)
 	env.revoke(t, s)
 	// A first-time receipt with correct details is still refused after revoke.
-	if _, err := s.DeliveryReceipt(t.Context(), env.binding.ID, uuid.NewString(), env.receiptFor(attempt)); !observerIs(err, "revoked") {
+	if _, err := s.DeliveryReceipt(t.Context(), env.binding.ID, "", "", uuid.NewString(), env.receiptFor(attempt)); !observerIs(err, "revoked") {
 		t.Fatalf("receipt after revoke: %v", err)
 	}
 	if deliveryReceiptCount(t, s, env.binding.ID) != 0 {
@@ -1121,7 +1128,7 @@ func TestDeliveryWrongReceiptDetailsRefused(t *testing.T) {
 			body := valid
 			body.Details = map[string]any{"message_id": valid.MessageID, "attempt_id": valid.AttemptID}
 			mutate(&body)
-			if _, err := s.DeliveryReceipt(t.Context(), env.binding.ID, uuid.NewString(), body); !observerIs(err, "invalid_request") {
+			if _, err := s.DeliveryReceipt(t.Context(), env.binding.ID, "", "", uuid.NewString(), body); !observerIs(err, "invalid_request") {
 				t.Fatalf("receipt: %v", err)
 			}
 		})
@@ -1153,7 +1160,7 @@ func TestDeliverySpentAttemptWithoutReceiptStaysOutOfQueue(t *testing.T) {
 	second := env.mustAppend(t, s, "still waiting")
 	attempt := env.mustSpend(t, s, writer, first)
 	env.mustVerify(t, s, writer, attempt)
-	next, _, err := s.DeliveryNext(t.Context(), env.binding.ID, writer)
+	next, _, err := s.DeliveryNext(t.Context(), env.binding.ID, "", writer)
 	if err != nil || next.ID != second.ID {
 		t.Fatalf("spent message requeued: %+v %v", next, err)
 	}
@@ -1180,12 +1187,12 @@ func TestDeliveryLostAckOnObservedNeverDowngrades(t *testing.T) {
 	key := env.receiptKey(t, s, attempt.MessageID)
 	env.mustReceipt(t, s, key, env.receiptFor(attempt))
 	// Lost ACK on the committing response: the retry replays the stored result.
-	if _, err := s.DeliveryReceipt(t.Context(), env.binding.ID, key, env.receiptFor(attempt)); err != nil {
+	if _, err := s.DeliveryReceipt(t.Context(), env.binding.ID, "", "", key, env.receiptFor(attempt)); err != nil {
 		t.Fatalf("lost-ACK republish: %v", err)
 	}
 	// Revoke kills the old token; even then the committed observed stands.
 	env.revoke(t, s)
-	replayed, err := s.DeliveryReceipt(t.Context(), env.binding.ID, key, env.receiptFor(attempt))
+	replayed, err := s.DeliveryReceipt(t.Context(), env.binding.ID, "", "", key, env.receiptFor(attempt))
 	if err != nil || replayed.Status != "observed" {
 		t.Fatalf("observed downgraded after revoke: %+v %v", replayed, err)
 	}
@@ -1262,14 +1269,14 @@ func TestDeliveryVerifyRefusedAfterRebind(t *testing.T) {
 	// Rebind between spend and verify: confirmation must not cross the change.
 	r2 := mustRegister(t, s, env.observerVerifier)
 	mustOwner(t, s, env.observer, "bind", observerView(t, s).Version, r2.RuntimeID, env.project.ID)
-	if _, err := s.DeliveryVerify(t.Context(), env.binding.ID, writer, attempt.AttemptID); !observerIs(err, "revoked") {
+	if _, err := s.DeliveryVerify(t.Context(), env.binding.ID, "", writer, attempt.AttemptID); !observerIs(err, "revoked") {
 		t.Fatalf("verify after rebind: %v", err)
 	}
 	if state := attemptState(t, s, attempt.AttemptID); state != "spent" {
 		t.Fatalf("attempt outcome changed: %s", state)
 	}
 	// The first receipt under the stale assignment is rejected as well.
-	if _, err := s.DeliveryReceipt(t.Context(), env.binding.ID, env.receiptKey(t, s, m.ID), env.receiptFor(attempt)); !observerIs(err, "revoked") {
+	if _, err := s.DeliveryReceipt(t.Context(), env.binding.ID, "", "", env.receiptKey(t, s, m.ID), env.receiptFor(attempt)); !observerIs(err, "revoked") {
 		t.Fatalf("receipt after rebind: %v", err)
 	}
 	page, _, err := s.ListDeliveryMessages(t.Context(), env.task.ID, 0, 50, nil)
@@ -1285,7 +1292,7 @@ func TestDeliveryUnbindFreesSlot(t *testing.T) {
 	env.mustAttachReady(t, s, writer, "")
 	// Unbind (bind with empty runtime/project) revokes the delivery binding.
 	mustOwner(t, s, env.observer, "bind", observerView(t, s).Version, "", "")
-	if _, _, err := s.DeliveryNext(t.Context(), env.binding.ID, writer); !observerIs(err, "revoked") {
+	if _, _, err := s.DeliveryNext(t.Context(), env.binding.ID, "", writer); !observerIs(err, "revoked") {
 		t.Fatalf("next after unbind: %v", err)
 	}
 	enabled := enableSecondObserver(t, s, env)
@@ -1308,14 +1315,14 @@ func TestDeliveryReceiptAfterCloseAcceptsVerifiedTurn(t *testing.T) {
 	// Close the task after the first call was confirmed: the begun turn may
 	// still publish its receipt under the unchanged assignment.
 	transitionTask(t, s, env.task.ID, env.project.ID, domain.Done)
-	published, err := s.DeliveryReceipt(t.Context(), env.binding.ID, env.receiptKey(t, s, m.ID), env.receiptFor(attempt))
+	published, err := s.DeliveryReceipt(t.Context(), env.binding.ID, "", "", env.receiptKey(t, s, m.ID), env.receiptFor(attempt))
 	if err != nil || published.Status != "observed" {
 		t.Fatalf("verified-turn receipt after close: %+v %v", published, err)
 	}
-	if _, err := s.DeliveryVerify(t.Context(), env.binding.ID, writer, spent.AttemptID); !observerIs(err, "closed") {
+	if _, err := s.DeliveryVerify(t.Context(), env.binding.ID, "", writer, spent.AttemptID); !observerIs(err, "closed") {
 		t.Fatalf("verify after close: %v", err)
 	}
-	if _, err := s.DeliveryReceipt(t.Context(), env.binding.ID, env.receiptKey(t, s, late.ID), env.receiptFor(spent)); !observerIs(err, "closed") {
+	if _, err := s.DeliveryReceipt(t.Context(), env.binding.ID, "", "", env.receiptKey(t, s, late.ID), env.receiptFor(spent)); !observerIs(err, "closed") {
 		t.Fatalf("receipt of unverified attempt after close: %v", err)
 	}
 	page, _, err := s.ListDeliveryMessages(t.Context(), env.task.ID, 0, 50, nil)
@@ -1336,7 +1343,7 @@ func TestDeliveryReceiptOfUnverifiedAttemptRefused(t *testing.T) {
 	attempt := env.mustSpend(t, s, writer, m)
 	// A receipt can only follow a confirmed call: spent-but-never-verified
 	// is refused and the message stays unknown.
-	if _, err := s.DeliveryReceipt(t.Context(), env.binding.ID, env.receiptKey(t, s, m.ID), env.receiptFor(attempt)); !observerIs(err, "invalid_request") {
+	if _, err := s.DeliveryReceipt(t.Context(), env.binding.ID, "", "", env.receiptKey(t, s, m.ID), env.receiptFor(attempt)); !observerIs(err, "invalid_request") {
 		t.Fatalf("receipt of spent attempt: %v", err)
 	}
 	page, _, err := s.ListDeliveryMessages(t.Context(), env.task.ID, 0, 50, nil)
@@ -1354,10 +1361,10 @@ func TestDeliveryNextRefusesForeignWriter(t *testing.T) {
 	writer := uuid.NewString()
 	env.mustAttachReady(t, s, writer, "")
 	env.mustAppend(t, s, "commission")
-	if _, _, err := s.DeliveryNext(t.Context(), env.binding.ID, uuid.NewString()); !observerIs(err, "owner_conflict") {
+	if _, _, err := s.DeliveryNext(t.Context(), env.binding.ID, "", uuid.NewString()); !observerIs(err, "owner_conflict") {
 		t.Fatalf("next with foreign writer: %v", err)
 	}
-	next, _, err := s.DeliveryNext(t.Context(), env.binding.ID, writer)
+	next, _, err := s.DeliveryNext(t.Context(), env.binding.ID, "", writer)
 	if err != nil || next.ID == "" {
 		t.Fatalf("next with current writer: %+v %v", next, err)
 	}

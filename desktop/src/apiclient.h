@@ -20,6 +20,8 @@ public:
   QHash<int, QByteArray> roleNames() const override;
   Q_INVOKABLE QVariantMap get(int row) const;
   void replace(const QJsonArray &rows);
+  void update(int row, const QVariantMap &record);
+  void append(const QVariantMap &record);
 
 private:
   QJsonArray m_rows;
@@ -62,11 +64,26 @@ public:
   void loadMessages(const QString &task, qint64 after);
   void refreshMessageStatuses(const QString &task, const QStringList &ids);
   void loadDelivery(const QString &task);
+  bool questionsLoading() const { return m_questionsReply; }
+  bool questionStatusesLoading() const { return m_questionStatusReply; }
+  void loadQuestions(const QString &task, qint64 after = 0);
+  void refreshQuestionStatuses(const QString &task, const QStringList &ids);
+  void cancelQuestions();
   void cancelMessages();
   // One owner commission. An unknown outcome (timeout/5xx/lost reply) keeps
   // the original instance/task/binding/body/key for an explicit same retry.
   Q_INVOKABLE bool sendMessage(const QString &task, const QString &text,
                                const QString &binding);
+  enum AnswerValidation {
+    ValidAnswer,
+    InvalidAnswerText,
+    AnswerTooLong,
+    EmptyAnswer
+  };
+  Q_ENUM(AnswerValidation)
+  static AnswerValidation validateAnswer(const QString &text);
+  Q_INVOKABLE bool answerQuestion(const QString &task, const QString &question,
+                                  const QString &text);
   ObjectModel *projects() { return &m_projects; }
   ObjectModel *tasks() { return &m_tasks; }
   ObjectModel *queues() { return &m_queues; }
@@ -80,6 +97,7 @@ public:
   bool loading() const { return m_snapshot; }
   bool pending() const { return m_mutation; }
   bool uncertain() const { return m_uncertain; }
+  bool canRetry() const;
   bool canAbandon() const {
     return m_uncertain && m_online && !pending() && !m_stopped &&
            !m_instance.isEmpty() && m_mutationInstance != m_instance;
@@ -109,6 +127,10 @@ signals:
   void messageStatusesReceived(const QVariantList &messages);
   void deliveryReceived(const QVariantMap &projection);
   void commissionAccepted(const QVariantMap &message);
+  void questionsReceived(const QVariantList &questions, qint64 after,
+                         qint64 cursor, bool more);
+  void questionStatusesReceived(const QVariantList &questions);
+  void answerAccepted(const QVariantMap &answer);
 
 private:
   QNetworkReply *request(const QByteArray &method, const QString &path,
@@ -121,6 +143,7 @@ private:
   void sendMutation();
   void cancel(QNetworkReply *&reply);
   bool validMessage(const QJsonObject &obj) const;
+  bool validAnswerResult(const QJsonObject &obj) const;
   QNetworkAccessManager m_network;
   ObjectModel m_projects, m_tasks, m_queues;
   QUrl m_endpoint;
@@ -128,16 +151,19 @@ private:
   QNetworkReply *m_snapshot = nullptr, *m_stream = nullptr,
                 *m_mutation = nullptr, *m_historyReply = nullptr,
                 *m_messagesReply = nullptr, *m_statusReply = nullptr,
-                *m_deliveryReply = nullptr;
+                *m_deliveryReply = nullptr, *m_questionsReply = nullptr,
+                *m_questionStatusReply = nullptr;
   QTimer m_reconnect, m_coalesce;
   quint64 m_generation = 0, m_draftRevision = 0, m_sentRevision = 0;
   QString m_instance, m_status = QStringLiteral("disconnected"), m_error,
                       m_historyError, m_messagesError;
-  QString m_messagesTask, m_statusTask, m_deliveryTask;
+  QString m_messagesTask, m_statusTask, m_deliveryTask, m_questionsTask,
+      m_questionStatusTask;
   bool m_messagesPageLoaded = false;
   qint64 m_sequence = 0, m_cursor = 0;
   bool m_online = false, m_uncertain = false, m_conflict = false,
        m_reloadAgain = false, m_stopped = true;
+  bool m_answerRetryNeedsSnapshot = false;
   int m_timeout = 5000;
   QVariantMap m_draft;
   QByteArray m_method, m_body, m_key;

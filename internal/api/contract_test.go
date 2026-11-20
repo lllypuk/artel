@@ -42,7 +42,7 @@ func TestOpenAPIValid(t *testing.T) {
 	for _, p := range doc.Paths.Map() {
 		count += len(p.Operations())
 	}
-	if count != 21 {
+	if count != 24 {
 		t.Fatalf("operations: %d", count)
 	}
 }

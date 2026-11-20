@@ -20,46 +20,52 @@ const (
 
 // DeliveryBinding is the immutable owner-granted assignment for one Pi session.
 type DeliveryBinding struct {
-	ID          string `json:"delivery_binding_id"`
-	ObserverID  string `json:"observer_id"`
-	RuntimeID   string `json:"runtime_id"`
-	ProjectID   string `json:"project_id"`
-	PiSessionID string `json:"pi_session_id"`
-	JournalID   string `json:"journal_id"`
-	Generation  int64  `json:"generation"`
-	Status      string `json:"status"` // pending, active, revoked
-	WriterID    string `json:"writer_id,omitempty"`
-	CreatedAt   string `json:"created_at"`
+	ID                       string `json:"delivery_binding_id"`
+	ObserverID               string `json:"observer_id"`
+	RuntimeID                string `json:"runtime_id"`
+	ProjectID                string `json:"project_id"`
+	PiSessionID              string `json:"pi_session_id"`
+	JournalID                string `json:"journal_id"`
+	Generation               int64  `json:"generation"`
+	Status                   string `json:"status"` // pending, active, revoked
+	WriterID                 string `json:"writer_id,omitempty"`
+	AllowOwnerQuestions      bool   `json:"allow_owner_questions,omitempty"`
+	OwnerQuestionsCapability string `json:"owner_questions_capability,omitempty"`
+	CreatedAt                string `json:"created_at"`
 }
 
-// DeliveryMessage is one owner commission. The stored record keeps the
+// DeliveryMessage is one owner commission or answer queue entry. The stored record keeps the
 // server transition (stored/observed); list reads derive the owner-visible
 // status, mapping an unconfirmed terminal state (blocked, or a spent/verified
 // attempt without a receipt) to unknown.
 type DeliveryMessage struct {
-	ID          string `json:"id"`
-	TaskID      string `json:"task_id"`
-	BindingID   string `json:"delivery_binding_id"`
-	Text        string `json:"text"`
-	Status      string `json:"status"`
-	Blocked     bool   `json:"blocked"`
-	BlockReason string `json:"block_reason,omitempty"`
-	CreatedAt   string `json:"created_at"`
+	ID           string `json:"id"`
+	TaskID       string `json:"task_id"`
+	BindingID    string `json:"delivery_binding_id"`
+	Kind         string `json:"kind,omitempty"`
+	QuestionID   string `json:"question_id,omitempty"`
+	QuestionText string `json:"question_text,omitempty"`
+	Text         string `json:"text"`
+	Status       string `json:"status"`
+	Blocked      bool   `json:"blocked"`
+	BlockReason  string `json:"block_reason,omitempty"`
+	CreatedAt    string `json:"created_at"`
 }
 
 // DeliveryOwnerMutation is owner-only enable/revoke with idempotent receipts.
 type DeliveryOwnerMutation struct {
-	ObserverID  string
-	Key         string
-	Action      string // enable, revoke
-	ExpectedVer int64
-	BindingID   string
-	JournalID   string
-	Verifier    string
-	RuntimeID   string
-	ProjectID   string
-	PiSessionID string
-	InstanceID  string
+	ObserverID          string
+	Key                 string
+	Action              string // enable, revoke
+	ExpectedVer         int64
+	BindingID           string
+	JournalID           string
+	Verifier            string
+	RuntimeID           string
+	ProjectID           string
+	PiSessionID         string
+	InstanceID          string
+	AllowOwnerQuestions bool
 }
 
 // DeliveryAppend is one owner POST /v1/tasks/{id}/messages request.
@@ -172,6 +178,27 @@ func validateDeliveryOwnerMutation(m DeliveryOwnerMutation) error {
 	return nil
 }
 
+// deliveryMutationHash keeps v3 enable/revoke receipt bytes stable when the
+// owner-questions option is absent or false. Only an opted-in enable uses v4.
+func deliveryMutationHash(m DeliveryOwnerMutation) string {
+	if m.AllowOwnerQuestions {
+		return observerHash(m)
+	}
+	return observerHash(struct {
+		ObserverID  string
+		Key         string
+		Action      string
+		ExpectedVer int64
+		BindingID   string
+		JournalID   string
+		Verifier    string
+		RuntimeID   string
+		ProjectID   string
+		PiSessionID string
+		InstanceID  string
+	}{m.ObserverID, m.Key, m.Action, m.ExpectedVer, m.BindingID, m.JournalID, m.Verifier, m.RuntimeID, m.ProjectID, m.PiSessionID, m.InstanceID})
+}
+
 // MutateDeliveryBinding is owner-only enable/revoke with idempotent receipts.
 // Enable stays pending until a writer with the exact assignment attaches.
 func (s *Store) MutateDeliveryBinding(ctx context.Context, m DeliveryOwnerMutation) (DeliveryBinding, error) {
@@ -179,7 +206,7 @@ func (s *Store) MutateDeliveryBinding(ctx context.Context, m DeliveryOwnerMutati
 	if err := validateDeliveryOwnerMutation(m); err != nil {
 		return result, err
 	}
-	requestHash := observerHash(m)
+	requestHash := deliveryMutationHash(m)
 	s.deliveryMu.Lock()
 	defer s.deliveryMu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -274,7 +301,8 @@ func (s *Store) deliveryEnableApply(ctx context.Context, tx *sql.Tx, o observerR
 	}
 	result = DeliveryBinding{ID: m.BindingID, ObserverID: o.ID, RuntimeID: m.RuntimeID, ProjectID: m.ProjectID,
 		PiSessionID: m.PiSessionID, JournalID: m.JournalID, Generation: o.Generation, Status: "pending",
-		CreatedAt: s.observerClock().UTC().Format(time.RFC3339Nano)}
+		AllowOwnerQuestions: m.AllowOwnerQuestions,
+		CreatedAt:           s.observerClock().UTC().Format(time.RFC3339Nano)}
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		return result, err
@@ -295,6 +323,9 @@ func (s *Store) deliveryRevokeApply(ctx context.Context, tx *sql.Tx, o observerR
 	b.Status = "revoked"
 	b.WriterID = ""
 	if err := deliverySave(ctx, tx, b); err != nil {
+		return result, err
+	}
+	if err := deliveryBlockOwnerQuestions(ctx, tx, b.ID); err != nil {
 		return result, err
 	}
 	s.deliveryInvalidate(b.ID)
@@ -443,7 +474,8 @@ func (s *Store) ListDeliveryMessages(ctx context.Context, taskID string, after i
 		}
 		rows, err := tx.QueryContext(ctx, `SELECT m.seq,m.blocked,m.block_reason,m.record,
 			coalesce((SELECT a.state FROM delivery_attempts a WHERE a.message_seq=m.seq),'') FROM delivery_messages m
-			WHERE m.task_id=? AND m.id IN (SELECT value FROM json_each(?)) ORDER BY m.seq`,
+			WHERE m.task_id=? AND coalesce(json_extract(m.record,'$.kind'),'commission')='commission'
+			AND m.id IN (SELECT value FROM json_each(?)) ORDER BY m.seq`,
 			taskID, mustJSON(ids))
 		if err != nil {
 			return nil, 0, err
@@ -457,7 +489,8 @@ func (s *Store) ListDeliveryMessages(ctx context.Context, taskID string, after i
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT m.seq,m.blocked,m.block_reason,m.record,
 		coalesce((SELECT a.state FROM delivery_attempts a WHERE a.message_seq=m.seq),'') FROM delivery_messages m
-		WHERE m.task_id=? AND m.seq>? ORDER BY m.seq LIMIT ?`,
+		WHERE m.task_id=? AND coalesce(json_extract(m.record,'$.kind'),'commission')='commission'
+		AND m.seq>? ORDER BY m.seq LIMIT ?`,
 		taskID, after, limit+1)
 	if err != nil {
 		return nil, 0, err
@@ -485,8 +518,15 @@ func mustJSON(v any) string {
 	return string(data)
 }
 
-// deliveryScan derives the owner-visible status: observed stands; an unobserved
-// commission whose confirmation became impossible reads as unknown.
+// deliveryStatus preserves observed; blocking or an attempt makes any
+// unobserved delivery unknown.
+func deliveryStatus(status string, blocked bool, attemptState string) string {
+	if status != "observed" && (blocked || attemptState != "") {
+		return "unknown"
+	}
+	return status
+}
+
 func deliveryScan(rows *sql.Rows) ([]DeliveryMessage, []int64, error) {
 	messages := []DeliveryMessage{}
 	seqs := []int64{}
@@ -507,9 +547,7 @@ func deliveryScan(rows *sql.Rows) ([]DeliveryMessage, []int64, error) {
 		}
 		m.Blocked = blocked != 0
 		m.BlockReason = reason
-		if m.Status != "observed" && (m.Blocked || attemptState != "") {
-			m.Status = "unknown"
-		}
+		m.Status = deliveryStatus(m.Status, m.Blocked, attemptState)
 		messages = append(messages, m)
 		seqs = append(seqs, seq)
 	}
@@ -569,23 +607,25 @@ func (s *Store) DeliveryContext(ctx context.Context, bindingID string) (map[stri
 		return nil, err
 	}
 	return map[string]any{
-		"database_instance_id": instance,
-		"delivery_binding_id":  b.ID,
-		"status":               b.Status,
-		"observer_id":          b.ObserverID,
-		"runtime_id":           b.RuntimeID,
-		"project_id":           b.ProjectID,
-		"pi_session_id":        b.PiSessionID,
-		"journal_id":           b.JournalID,
-		"generation":           b.Generation,
-		"writer_id":            b.WriterID,
-		"ready":                s.deliveryReadyNow(b.ID),
+		"database_instance_id":       instance,
+		"delivery_binding_id":        b.ID,
+		"status":                     b.Status,
+		"observer_id":                b.ObserverID,
+		"runtime_id":                 b.RuntimeID,
+		"project_id":                 b.ProjectID,
+		"pi_session_id":              b.PiSessionID,
+		"journal_id":                 b.JournalID,
+		"generation":                 b.Generation,
+		"writer_id":                  b.WriterID,
+		"allow_owner_questions":      b.AllowOwnerQuestions,
+		"owner_questions_capability": b.OwnerQuestionsCapability,
+		"ready":                      s.deliveryReadyNow(b.ID),
 	}, tx.Commit()
 }
 
 // DeliveryAttach CAS-registers the writer; polling starts only after success.
 // The writer proves its exact runtime and Pi session identity at attach time.
-func (s *Store) DeliveryAttach(ctx context.Context, bindingID, writerID, expectedPrevious, journalID, runtimeID, piSessionID string) error {
+func (s *Store) DeliveryAttach(ctx context.Context, bindingID, instanceID, writerID, expectedPrevious, journalID, runtimeID, piSessionID, capability string) error {
 	if !observerUUID(bindingID) || !observerUUID(writerID) || !observerUUID(journalID) || !observerUUID(runtimeID) || !observerUUID(piSessionID) {
 		return observerError("invalid_request")
 	}
@@ -609,6 +649,12 @@ func (s *Store) DeliveryAttach(ctx context.Context, bindingID, writerID, expecte
 	if b.JournalID != journalID {
 		return observerError("assignment_mismatch")
 	}
+	if err := deliveryCapabilityValid(b, capability); err != nil {
+		return err
+	}
+	if err := deliveryInstanceCheck(ctx, tx, b, instanceID); err != nil {
+		return err
+	}
 	// Activation requires the observer's current binding to match exactly, so a
 	// writer in any other runtime can never activate this assignment.
 	if err := deliveryAttachChecks(ctx, tx, b, runtimeID, piSessionID); err != nil {
@@ -617,8 +663,12 @@ func (s *Store) DeliveryAttach(ctx context.Context, bindingID, writerID, expecte
 	switch b.WriterID {
 	case writerID:
 		// Re-confirm after a lost ACK; ownership is unchanged.
+		if b.OwnerQuestionsCapability != capability {
+			return observerError("capability_required")
+		}
 	case expectedPrevious:
 		b.WriterID = writerID
+		b.OwnerQuestionsCapability = capability
 		b.Status = "active"
 		if err := deliverySave(ctx, tx, b); err != nil {
 			return err
@@ -630,6 +680,42 @@ func (s *Store) DeliveryAttach(ctx context.Context, bindingID, writerID, expecte
 	return tx.Commit()
 }
 
+// Opted-in writers pin each request, not just the earlier context reply.
+// An absent pin remains valid only on the unchanged 4a wire.
+func deliveryInstanceCheck(ctx context.Context, tx *sql.Tx, b DeliveryBinding, expected string) error {
+	if expected == "" && !b.AllowOwnerQuestions {
+		return nil
+	}
+	if !observerUUID(expected) {
+		return observerError("invalid_request")
+	}
+	instance, err := observerDatabase(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if instance != expected {
+		return observerError("instance_mismatch")
+	}
+	return nil
+}
+
+func deliveryCapabilityValid(b DeliveryBinding, capability string) error {
+	if b.AllowOwnerQuestions && capability != DeliveryOwnerQuestionsCapability {
+		return observerError("capability_required")
+	}
+	if !b.AllowOwnerQuestions && capability != "" {
+		return observerError("invalid_request")
+	}
+	return nil
+}
+
+func deliveryKindAllowed(b DeliveryBinding, kind string) error {
+	if kind == "answer" && !ownerQuestionsCapable(b) {
+		return observerError("capability_required")
+	}
+	return nil
+}
+
 // deliveryAttachChecks verifies the full immutable assignment for the writer.
 func deliveryAttachChecks(ctx context.Context, tx *sql.Tx, b DeliveryBinding, runtimeID, piSessionID string) error {
 	if b.RuntimeID != runtimeID || b.PiSessionID != piSessionID {
@@ -639,7 +725,7 @@ func deliveryAttachChecks(ctx context.Context, tx *sql.Tx, b DeliveryBinding, ru
 }
 
 // DeliveryReady is the writer's bounded liveness confirmation in daemon memory.
-func (s *Store) DeliveryReady(ctx context.Context, bindingID, writerID string) error {
+func (s *Store) DeliveryReady(ctx context.Context, bindingID, instanceID, writerID string) error {
 	if !observerUUID(bindingID) || !observerUUID(writerID) {
 		return observerError("invalid_request")
 	}
@@ -654,6 +740,9 @@ func (s *Store) DeliveryReady(ctx context.Context, bindingID, writerID string) e
 	if err != nil {
 		return err
 	}
+	if err := deliveryInstanceCheck(ctx, tx, b, instanceID); err != nil {
+		return err
+	}
 	if b.Status != "active" || b.WriterID != writerID {
 		return observerError("owner_conflict")
 	}
@@ -666,8 +755,8 @@ func (s *Store) DeliveryReady(ctx context.Context, bindingID, writerID string) e
 	return nil
 }
 
-// DeliveryNext returns the oldest unspent, unblocked commission with its receipt key.
-func (s *Store) DeliveryNext(ctx context.Context, bindingID, writerID string) (DeliveryMessage, string, error) {
+// DeliveryNext returns the oldest eligible unspent, unblocked queue entry with its receipt key.
+func (s *Store) DeliveryNext(ctx context.Context, bindingID, instanceID, writerID string) (DeliveryMessage, string, error) {
 	var result DeliveryMessage
 	var receiptKey string
 	if !observerUUID(bindingID) || !observerUUID(writerID) {
@@ -680,6 +769,9 @@ func (s *Store) DeliveryNext(ctx context.Context, bindingID, writerID string) (D
 	defer func() { _ = tx.Rollback() }()
 	b, err := deliveryLoad(ctx, tx, bindingID)
 	if err != nil {
+		return result, "", err
+	}
+	if err := deliveryInstanceCheck(ctx, tx, b, instanceID); err != nil {
 		return result, "", err
 	}
 	if err := deliveryAssignmentCheck(ctx, tx, b); err != nil {
@@ -703,13 +795,16 @@ func (s *Store) DeliveryNext(ctx context.Context, bindingID, writerID string) (D
 	if err := json.Unmarshal([]byte(data), &result); err != nil {
 		return result, "", err
 	}
+	if err := deliveryKindAllowed(b, result.Kind); err != nil {
+		return result, "", err
+	}
 	result.Blocked = blocked != 0
 	return result, receiptKey, tx.Commit()
 }
 
 // DeliverySpend admits exactly one right per message. A repeated or concurrent
 // spend reports the state without ever returning a right again.
-func (s *Store) DeliverySpend(ctx context.Context, bindingID, writerID, messageID string) (DeliveryAttemptResult, error) {
+func (s *Store) DeliverySpend(ctx context.Context, bindingID, instanceID, writerID, messageID string) (DeliveryAttemptResult, error) {
 	result := DeliveryAttemptResult{MessageID: messageID}
 	if !observerUUID(bindingID) || !observerUUID(writerID) || !observerUUID(messageID) {
 		return result, observerError("invalid_request")
@@ -725,6 +820,9 @@ func (s *Store) DeliverySpend(ctx context.Context, bindingID, writerID, messageI
 	if err != nil {
 		return result, err
 	}
+	if err := deliveryInstanceCheck(ctx, tx, b, instanceID); err != nil {
+		return result, err
+	}
 	if err := deliveryAssignmentCheck(ctx, tx, b); err != nil {
 		return result, err
 	}
@@ -733,7 +831,8 @@ func (s *Store) DeliverySpend(ctx context.Context, bindingID, writerID, messageI
 	}
 	var seq int64
 	var blocked int
-	if err := tx.QueryRowContext(ctx, "SELECT seq,blocked FROM delivery_messages WHERE id=? AND binding_id=?", messageID, bindingID).Scan(&seq, &blocked); err != nil {
+	var messageData string
+	if err := tx.QueryRowContext(ctx, "SELECT seq,blocked,record FROM delivery_messages WHERE id=? AND binding_id=?", messageID, bindingID).Scan(&seq, &blocked, &messageData); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return result, observerError("not_found")
 		}
@@ -741,6 +840,13 @@ func (s *Store) DeliverySpend(ctx context.Context, bindingID, writerID, messageI
 	}
 	if blocked != 0 {
 		return result, observerError("closed")
+	}
+	var message DeliveryMessage
+	if err := json.Unmarshal([]byte(messageData), &message); err != nil {
+		return result, err
+	}
+	if err := deliveryKindAllowed(b, message.Kind); err != nil {
+		return result, err
 	}
 	var attemptID, state, attemptWriter, record string
 	err = tx.QueryRowContext(ctx, "SELECT attempt_id,state,writer_id,record FROM delivery_attempts WHERE message_seq=?", seq).
@@ -770,7 +876,7 @@ func (s *Store) DeliverySpend(ctx context.Context, bindingID, writerID, messageI
 }
 
 // DeliveryVerify confirms the right of the owning writer; it never grants one.
-func (s *Store) DeliveryVerify(ctx context.Context, bindingID, writerID, attemptID string) (DeliveryAttemptResult, error) {
+func (s *Store) DeliveryVerify(ctx context.Context, bindingID, instanceID, writerID, attemptID string) (DeliveryAttemptResult, error) {
 	result := DeliveryAttemptResult{AttemptID: attemptID}
 	if !observerUUID(bindingID) || !observerUUID(writerID) || !observerUUID(attemptID) {
 		return result, observerError("invalid_request")
@@ -786,12 +892,12 @@ func (s *Store) DeliveryVerify(ctx context.Context, bindingID, writerID, attempt
 	if err != nil {
 		return result, err
 	}
-	if b.Status == "revoked" {
-		return result, observerError("revoked")
+	if err := deliveryInstanceCheck(ctx, tx, b, instanceID); err != nil {
+		return result, err
 	}
 	// A stale assignment (rebind, generation change, observer revoke) must not
 	// confirm a call: verification is part of the exact assignment.
-	if err := deliveryAssignmentCurrent(ctx, tx, b); err != nil {
+	if err := deliveryAssignmentCheck(ctx, tx, b); err != nil {
 		return result, err
 	}
 	if b.WriterID != writerID {
@@ -812,14 +918,22 @@ func (s *Store) DeliveryVerify(ctx context.Context, bindingID, writerID, attempt
 	if err := json.Unmarshal([]byte(data), &result); err != nil {
 		return result, err
 	}
+	var blocked int
+	var messageData string
+	if err := tx.QueryRowContext(ctx, "SELECT blocked,record FROM delivery_messages WHERE seq=?", seq).Scan(&blocked, &messageData); err != nil {
+		return result, err
+	}
+	var message DeliveryMessage
+	if err := json.Unmarshal([]byte(messageData), &message); err != nil {
+		return result, err
+	}
+	if err := deliveryKindAllowed(b, message.Kind); err != nil {
+		return result, err
+	}
 	if state == "observed" {
 		result.Verified = true
 		result.Right = false
 		return result, tx.Commit()
-	}
-	var blocked int
-	if err := tx.QueryRowContext(ctx, "SELECT blocked FROM delivery_messages WHERE seq=?", seq).Scan(&blocked); err != nil {
-		return result, err
 	}
 	if blocked != 0 {
 		// Closing after spend forbids confirmation; the attempt stays unknown.
@@ -839,7 +953,7 @@ func (s *Store) DeliveryVerify(ctx context.Context, bindingID, writerID, attempt
 // DeliveryReceipt publishes the observed start idempotently per binding key.
 // A new writer with the unchanged assignment may republish a stored receipt,
 // but never acquires the spent attempt's right.
-func (s *Store) DeliveryReceipt(ctx context.Context, bindingID, key string, receipt struct {
+func (s *Store) DeliveryReceipt(ctx context.Context, bindingID, instanceID, writerID, key string, receipt struct {
 	MessageID, AttemptID, Type, MessageType, PiSessionID string
 	Details                                              map[string]any
 }) (DeliveryMessage, error) {
@@ -855,16 +969,25 @@ func (s *Store) DeliveryReceipt(ctx context.Context, bindingID, key string, rece
 		return result, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	b, err := deliveryLoad(ctx, tx, bindingID)
+	if err != nil {
+		return result, err
+	}
+	if err := deliveryInstanceCheck(ctx, tx, b, instanceID); err != nil {
+		return result, err
+	}
+	if b.AllowOwnerQuestions {
+		if err := ownerQuestionAssignmentGate(ctx, tx, b, writerID); err != nil {
+			return result, err
+		}
+	}
 	principal := "binding:" + bindingID
 	matched, err := deliveryReplayLookup(ctx, tx, principal, key, requestHash, &result)
 	if err != nil || matched {
 		return result, err
 	}
-	seq, attemptState, messageData, err := s.deliveryReceiptGate(ctx, tx, bindingID, key, receipt)
+	seq, attemptState, result, err := deliveryReceiptGate(ctx, tx, b, key, receipt)
 	if err != nil {
-		return result, err
-	}
-	if err := json.Unmarshal([]byte(messageData), &result); err != nil {
 		return result, err
 	}
 	result.Status = "observed"
@@ -873,7 +996,11 @@ func (s *Store) DeliveryReceipt(ctx context.Context, bindingID, key string, rece
 	if err != nil {
 		return result, err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE delivery_messages SET record=? WHERE seq=?", string(encoded), seq); err != nil {
+	update := "UPDATE delivery_messages SET record=? WHERE seq=?"
+	if result.Kind == "answer" {
+		update = "UPDATE delivery_messages SET record=?,blocked=0,block_reason='' WHERE seq=?"
+	}
+	if _, err := tx.ExecContext(ctx, update, string(encoded), seq); err != nil {
 		return result, err
 	}
 	if attemptState != "observed" {
@@ -891,61 +1018,82 @@ func (s *Store) DeliveryReceipt(ctx context.Context, bindingID, key string, rece
 	return result, tx.Commit()
 }
 
-// deliveryReceiptGate validates form, identity, attempt and assignment, and
-// returns the message row position, attempt state and record for publishing.
-func (s *Store) deliveryReceiptGate(ctx context.Context, tx *sql.Tx, bindingID, receiptKey string, receipt struct {
+func deliveryReceiptShapeValid(b DeliveryBinding, receipt struct {
 	MessageID, AttemptID, Type, MessageType, PiSessionID string
 	Details                                              map[string]any
-}) (int64, string, string, error) {
-	b, err := deliveryLoad(ctx, tx, bindingID)
-	if err != nil {
-		return 0, "", "", err
+}) error {
+	if receipt.Type != "before_agent_start" || receipt.MessageType != "custom" || receipt.PiSessionID != b.PiSessionID ||
+		receipt.Details == nil || receipt.Details["message_id"] != receipt.MessageID || receipt.Details["attempt_id"] != receipt.AttemptID {
+		return observerError("invalid_request")
 	}
+	return nil
+}
+
+func deliveryAnswerReceiptValid(b DeliveryBinding, message DeliveryMessage, details map[string]any) error {
+	if message.Kind == "answer" && (!ownerQuestionsCapable(b) ||
+		details["custom_type"] != "artel-owner-answer" || details["question_id"] != message.QuestionID) {
+		return observerError("invalid_request")
+	}
+	return nil
+}
+
+// deliveryReceiptGate validates form, identity, attempt and assignment, and
+// returns the message row position, attempt state and validated message for publishing.
+func deliveryReceiptGate(ctx context.Context, tx *sql.Tx, b DeliveryBinding, receiptKey string, receipt struct {
+	MessageID, AttemptID, Type, MessageType, PiSessionID string
+	Details                                              map[string]any
+}) (int64, string, DeliveryMessage, error) {
 	if b.Status == "revoked" {
-		return 0, "", "", observerError("revoked")
+		return 0, "", DeliveryMessage{}, observerError("revoked")
 	}
 	// A first receipt under a stale assignment (observer revoke, rebind,
 	// generation change) is always rejected; only the exact current assignment
 	// may publish, and only the key handed out with the message is accepted.
 	if err := deliveryAssignmentCurrent(ctx, tx, b); err != nil {
-		return 0, "", "", err
+		return 0, "", DeliveryMessage{}, err
 	}
-	if receipt.Type != "before_agent_start" || receipt.MessageType != "custom" || receipt.PiSessionID != b.PiSessionID ||
-		receipt.Details == nil || receipt.Details["message_id"] != receipt.MessageID || receipt.Details["attempt_id"] != receipt.AttemptID {
-		return 0, "", "", observerError("invalid_request")
+	if err := deliveryReceiptShapeValid(b, receipt); err != nil {
+		return 0, "", DeliveryMessage{}, err
 	}
 	var seq int64
 	var blocked int
 	var storedKey, messageData string
-	if err := tx.QueryRowContext(ctx, "SELECT seq,blocked,receipt_key,record FROM delivery_messages WHERE id=? AND binding_id=?", receipt.MessageID, bindingID).
+	if err := tx.QueryRowContext(ctx, "SELECT seq,blocked,receipt_key,record FROM delivery_messages WHERE id=? AND binding_id=?", receipt.MessageID, b.ID).
 		Scan(&seq, &blocked, &storedKey, &messageData); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return 0, "", "", observerError("not_found")
+			return 0, "", DeliveryMessage{}, observerError("not_found")
 		}
-		return 0, "", "", err
+		return 0, "", DeliveryMessage{}, err
 	}
 	if storedKey != receiptKey {
-		return 0, "", "", observerError("invalid_request")
+		return 0, "", DeliveryMessage{}, observerError("invalid_request")
+	}
+	var message DeliveryMessage
+	if err := json.Unmarshal([]byte(messageData), &message); err != nil {
+		return 0, "", DeliveryMessage{}, err
+	}
+	if err := deliveryAnswerReceiptValid(b, message, receipt.Details); err != nil {
+		return 0, "", DeliveryMessage{}, err
 	}
 	var attemptState string
 	if err := tx.QueryRowContext(ctx, "SELECT state FROM delivery_attempts WHERE attempt_id=? AND message_seq=? AND binding_id=?",
-		receipt.AttemptID, seq, bindingID).Scan(&attemptState); err != nil {
+		receipt.AttemptID, seq, b.ID).Scan(&attemptState); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return 0, "", "", observerError("not_found")
+			return 0, "", DeliveryMessage{}, observerError("not_found")
 		}
-		return 0, "", "", err
+		return 0, "", DeliveryMessage{}, err
 	}
 	if blocked != 0 && attemptState != "verified" {
 		// Closing before the call was confirmed forbids publication; an
 		// already verified turn of an unchanged assignment may still publish.
-		return 0, "", "", observerError("closed")
+		return 0, "", DeliveryMessage{}, observerError("closed")
 	}
 	if attemptState == "spent" {
 		// A receipt can only follow a confirmed call; a merely spent attempt
 		// was never cleared to transmit.
-		return 0, "", "", observerError("invalid_request")
+		return 0, "", DeliveryMessage{}, observerError("invalid_request")
 	}
-	return seq, attemptState, messageData, nil
+	return seq, attemptState, message, nil
 }
 
 func deliveryAttemptState(ctx context.Context, tx *sql.Tx, attemptID, state string) error {

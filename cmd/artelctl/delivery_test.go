@@ -205,6 +205,9 @@ func TestDeliveryEnablePublishesOnlyAfterConfirmation(t *testing.T) {
 	if err := json.Unmarshal(puts[0].body, &request); err != nil || !validCanonicalID(request.DeliveryBindingID) || !validCanonicalID(request.JournalID) {
 		t.Fatal("invalid enable request body")
 	}
+	if bytes.Contains(puts[0].body, []byte("allow_owner_questions")) {
+		t.Fatal("4a enable bytes changed without an explicit 4b opt-in")
+	}
 	p := readPending(t, filepath.Join(filepath.Dir(output), "delivery", request.DeliveryBindingID, "pending.json"))
 	assertConfirmedArtifacts(t, output, p, stdout)
 	if p.IdempotencyKey != puts[0].key {
@@ -275,7 +278,7 @@ func TestDeliveryEnableLostAckResumeSameKey(t *testing.T) {
 		inner.ServeHTTP(w, r)
 	})
 	drop.Store(true)
-	stdout, _ := h.call(t, 1, h.enableArgs(output)...)
+	stdout, _ := h.call(t, 1, append(h.enableArgs(output), "--allow-owner-questions")...)
 	if stdout != "" {
 		t.Fatal("output on failed enable")
 	}
@@ -294,6 +297,7 @@ func TestDeliveryEnableLostAckResumeSameKey(t *testing.T) {
 	if len(puts) < 1 {
 		t.Fatal("no enable request recorded")
 	}
+	initialPuts := len(puts)
 	firstKey, firstBody := puts[0].key, puts[0].body
 	for _, put := range puts {
 		if put.key != firstKey || !bytes.Equal(put.body, firstBody) {
@@ -302,11 +306,17 @@ func TestDeliveryEnableLostAckResumeSameKey(t *testing.T) {
 	}
 	pendingPath := filepath.Join(filepath.Dir(output), "delivery", mustBindingID(t, firstBody), "pending.json")
 	p := readPending(t, pendingPath)
-	if p.Status != "pending" {
-		t.Fatalf("pending status: %s", p.Status)
+	if p.Status != "pending" || !p.Request.AllowOwnerQuestions {
+		t.Fatal("opted-in pending grant did not survive the lost ACK")
 	}
 	mu.Unlock()
 	drop.Store(false)
+	assertDeliveryResumeRejectsExplicitOptIn(t, h, pendingPath, output)
+	mu.Lock()
+	if len(puts) != initialPuts {
+		t.Fatalf("rejected resume retried the enable request: %d PUTs", len(puts))
+	}
+	mu.Unlock()
 	resumeOut, _ := h.call(t, 0, "delivery", "enable", "--resume", pendingPath)
 	mu.Lock()
 	if len(puts) == 0 || puts[len(puts)-1].key != firstKey || !bytes.Equal(puts[len(puts)-1].body, firstBody) {
@@ -320,6 +330,83 @@ func TestDeliveryEnableLostAckResumeSameKey(t *testing.T) {
 	}
 	if !bytes.Contains(confirmed, []byte(p.DeliveryBindingID)) {
 		t.Fatal("confirmed config does not name the resumed binding")
+	}
+}
+
+func assertDeliveryResumeRejectsExplicitOptIn(t *testing.T, h *deliveryHarness, pendingPath, output string) {
+	t.Helper()
+	for _, option := range []string{"--allow-owner-questions=false", "--allow-owner-questions=true"} {
+		_, stderr := h.call(t, 1, "delivery", "enable", "--resume", pendingPath, option)
+		if !strings.Contains(stderr, "resume cannot change enable arguments") {
+			t.Fatalf("unexpected resume rejection: %s", stderr)
+		}
+		if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("rejected resume published config: %v", err)
+		}
+	}
+}
+
+func TestDeliveryOwnerQuestionsOptInAndConfirmedResume(t *testing.T) {
+	h := newDeliveryHarness(t)
+	output := filepath.Join(t.TempDir(), "private", "delivery.json")
+	args := append(h.enableArgs(output), "--allow-owner-questions")
+	h.call(t, 0, args...)
+	pendingPath := filepath.Join(filepath.Dir(output), "delivery", onlyBindingDir(t, output), "pending.json")
+	p := readPending(t, pendingPath)
+	if !p.Request.AllowOwnerQuestions {
+		t.Fatal("durable resume record lost the owner-questions opt-in")
+	}
+	raw, err := local.ReadPrivateFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config deliveryWriterConfig
+	if json.Unmarshal(raw, &config) != nil || !config.AllowOwnerQuestions {
+		t.Fatal("confirmed writer config lost the owner-questions opt-in")
+	}
+	binding, err := h.store.DeliveryBindingStatus(t.Context(), h.observer, p.DeliveryBindingID)
+	if err != nil || !binding.AllowOwnerQuestions {
+		t.Fatalf("server binding lost opt-in: %+v %v", binding, err)
+	}
+	before, err := local.ReadPrivateFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.call(t, 0, "delivery", "enable", "--resume", pendingPath)
+	after, err := local.ReadPrivateFile(output)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("confirmed resume rewrote the writer config")
+	}
+}
+
+func TestDeliveryOwnerQuestionsRejectedEnablePublishesNothing(t *testing.T) {
+	h := newDeliveryHarness(t)
+	output := filepath.Join(t.TempDir(), "private", "delivery.json")
+	inner := h.server.Config.Handler
+	h.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "PUT" && strings.HasSuffix(r.URL.Path, "/delivery") {
+			body := mustRead(r.Body)
+			if !bytes.Contains(body, []byte(`"allow_owner_questions":true`)) {
+				t.Error("opt-in field missing from initial enable request")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":"invalid_request"}`))
+			return
+		}
+		inner.ServeHTTP(w, r)
+	})
+	h.call(t, 1, append(h.enableArgs(output), "--allow-owner-questions")...)
+	if _, err := os.Lstat(output); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("rejected opt-in published a confirmed config")
+	}
+	bindingID := onlyBindingDir(t, output)
+	if _, err := h.store.DeliveryBindingStatus(t.Context(), h.observer, bindingID); err == nil {
+		t.Fatal("rejected opt-in left a server grant")
+	}
+	p := readPending(t, filepath.Join(filepath.Dir(output), "delivery", bindingID, "pending.json"))
+	if _, err := os.Lstat(p.JournalFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("rejected opt-in created a delivery journal")
 	}
 }
 

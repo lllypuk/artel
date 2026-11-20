@@ -164,8 +164,10 @@ func enableDelivery(w http.ResponseWriter, r *http.Request, s *store.Store) {
 		ProjectID       string `json:"project_id"`
 		PiSessionID     string `json:"pi_session_id"`
 		InstanceID      string `json:"instance_id"`
+		// New grants only; absent/false preserves the v3 receipt hash.
+		AllowOwnerQuestions bool `json:"allow_owner_questions"`
 	}
-	if !decodeDeliveryJSON(w, r, &body, []string{"expected_version", "delivery_binding_id", "journal_id", "verifier", "runtime_id", "project_id", "pi_session_id", "instance_id"}) {
+	if !decodeDeliveryJSON(w, r, &body, []string{"expected_version", "delivery_binding_id", "journal_id", "verifier", "runtime_id", "project_id", "pi_session_id", "instance_id", "allow_owner_questions"}) {
 		return
 	}
 	if body.ExpectedVersion == nil {
@@ -176,7 +178,7 @@ func enableDelivery(w http.ResponseWriter, r *http.Request, s *store.Store) {
 		ObserverID: r.PathValue("observer_id"), Key: r.Header.Get("Idempotency-Key"), Action: "enable",
 		ExpectedVer: *body.ExpectedVersion, BindingID: body.BindingID, JournalID: body.JournalID,
 		Verifier: body.Verifier, RuntimeID: body.RuntimeID, ProjectID: body.ProjectID,
-		PiSessionID: body.PiSessionID, InstanceID: body.InstanceID,
+		PiSessionID: body.PiSessionID, InstanceID: body.InstanceID, AllowOwnerQuestions: body.AllowOwnerQuestions,
 	})
 	if err != nil {
 		deliveryError(w, err)
@@ -218,19 +220,18 @@ func deliveryBindingStatus(w http.ResponseWriter, r *http.Request, s *store.Stor
 // storePublicErr builds a fixed-code error for pre-store validation failures.
 func storePublicErr(code string) error { return &store.ObserverError{Code: code} }
 
-func readBody(w http.ResponseWriter, r *http.Request) []byte {
-	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBody))
-	if err != nil {
-		Error(w, 413, "body_too_large", "request body exceeds limit")
-		return nil
-	}
-	return data
-}
-
 // decodeDeliveryJSON rejects unknown fields, nulls, invalid UTF-8 and trailing
 // JSON like the observer decode, but reports through the owner API error shape.
 func decodeDeliveryJSON(w http.ResponseWriter, r *http.Request, target any, allowed []string) bool {
-	data := readBody(w, r)
+	return decodeDeliveryJSONLimit(w, r, target, MaxBody, allowed)
+}
+
+func decodeDeliveryJSONLimit(w http.ResponseWriter, r *http.Request, target any, limit int64, allowed []string) bool {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+	if err != nil {
+		Error(w, 413, "body_too_large", "request body exceeds limit")
+		return false
+	}
 	if data == nil {
 		return false
 	}

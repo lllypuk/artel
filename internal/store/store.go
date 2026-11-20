@@ -29,7 +29,10 @@ var observerSchema string
 //go:embed delivery_schema.sql
 var deliverySchema string
 
-const schemaVersion = 3
+//go:embed questions_schema.sql
+var questionsSchema string
+
+const schemaVersion = 4
 
 type Store struct {
 	db              *sql.DB
@@ -198,10 +201,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("upgrade observer schema: %w", err)
 		}
 	}
-	if version < 3 {
-		if _, err := tx.ExecContext(ctx, deliverySchema); err != nil {
-			return fmt.Errorf("upgrade delivery schema: %w", err)
-		}
+	if err := migrateDeliverySchemas(ctx, tx, version); err != nil {
+		return err
 	}
 	if err := requireSchemaQueries(ctx, tx, []string{
 		"SELECT id,verifier,record FROM observers LIMIT 0",
@@ -215,12 +216,27 @@ func (s *Store) migrate(ctx context.Context) error {
 	return commitAfterSchemaCheck(ctx, tx)
 }
 
+func migrateDeliverySchemas(ctx context.Context, tx *sql.Tx, version int) error {
+	if version < 3 {
+		if _, err := tx.ExecContext(ctx, deliverySchema); err != nil {
+			return fmt.Errorf("upgrade delivery schema: %w", err)
+		}
+	}
+	if version < 4 {
+		if _, err := tx.ExecContext(ctx, questionsSchema); err != nil {
+			return fmt.Errorf("upgrade owner questions schema: %w", err)
+		}
+	}
+	return nil
+}
+
 func commitAfterSchemaCheck(ctx context.Context, tx *sql.Tx) error {
 	if err := requireSchemaQueries(ctx, tx, []string{
 		"SELECT id,verifier,record FROM delivery_bindings LIMIT 0",
 		"SELECT seq,id,task_id,binding_id,receipt_key,blocked,record FROM delivery_messages LIMIT 0",
 		"SELECT attempt_id,message_seq,binding_id,writer_id,state,record FROM delivery_attempts LIMIT 0",
 		"SELECT principal,key,request_hash,result FROM delivery_receipts LIMIT 0",
+		"SELECT seq,id,task_id,binding_id,status,answer_message_id,record FROM owner_questions LIMIT 0",
 	}, "invalid delivery schema"); err != nil {
 		return err
 	}
@@ -373,18 +389,28 @@ func persist(ctx context.Context, tx *sql.Tx, snap Snapshot) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM queue_entries"); err != nil {
 		return err
 	}
-	// Delivery commissions exist only in schema v3+; raw legacy fixtures may not.
+	// In this domain transaction, close/archive permanently blocks undelivered
+	// commissions and answers and closes unanswered questions. Observed answers
+	// are left alone. Legacy fixtures may lack the v3/v4 tables.
 	var deliveryTables int
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE name='delivery_messages'").Scan(&deliveryTables); err != nil {
 		return err
 	}
 	if deliveryTables != 0 {
-		// Closing a task or archiving a project permanently blocks undelivered
-		// commissions in the same transaction as the domain change.
-		if _, err := tx.ExecContext(ctx, "UPDATE delivery_messages SET blocked=1,block_reason='task_closed' WHERE blocked=0 AND task_id IN (SELECT id FROM tasks WHERE state IN ('done','cancelled'))"); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE delivery_messages SET blocked=1,block_reason='task_closed' WHERE blocked=0 AND NOT (COALESCE(json_extract(record,'$.kind'),'')='answer' AND json_extract(record,'$.status')='observed') AND task_id IN (SELECT id FROM tasks WHERE state IN ('done','cancelled'))"); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE delivery_messages SET blocked=1,block_reason='project_archived' WHERE blocked=0 AND task_id IN (SELECT id FROM tasks WHERE project_id IN (SELECT id FROM projects WHERE archived=1))"); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE delivery_messages SET blocked=1,block_reason='project_archived' WHERE blocked=0 AND NOT (COALESCE(json_extract(record,'$.kind'),'')='answer' AND json_extract(record,'$.status')='observed') AND task_id IN (SELECT id FROM tasks WHERE project_id IN (SELECT id FROM projects WHERE archived=1))"); err != nil {
+			return err
+		}
+	}
+	var questionTables int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE name='owner_questions'").Scan(&questionTables); err != nil {
+		return err
+	}
+	if questionTables != 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE owner_questions SET status='closed',record=json_set(record,'$.status','closed')
+			WHERE status='open' AND task_id IN (SELECT id FROM tasks WHERE state IN ('done','cancelled') OR project_id IN (SELECT id FROM projects WHERE archived=1))`); err != nil {
 			return err
 		}
 	}

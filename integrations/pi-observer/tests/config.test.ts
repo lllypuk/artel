@@ -4,7 +4,33 @@ import { mkdtempSync, writeFileSync, rmSync, chmodSync, symlinkSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
-import { readConfirmedConfig } from "../src/config.ts";
+import { readConfirmedConfig, readDeliveryConfig } from "../src/config.ts";
+
+test("delivery config preserves 4a absence and accepts only an explicit boolean 4b opt-in", () => {
+  const dir = mkdtempSync(join(tmpdir(), "artel-delivery-config-"));
+  chmodSync(dir, 0o700);
+  const path = join(dir, "delivery.json"), tokenPath = join(dir, "token");
+  const config: { status: string; delivery_binding_id: string; database_instance_id: string; observer_socket: string;
+    token_file: string; journal_file: string; journal_id: string; allow_owner_questions?: unknown } = {
+    status: "confirmed", delivery_binding_id: randomUUID(), database_instance_id: randomUUID(),
+    observer_socket: join(dir, "observer.sock"), token_file: tokenPath,
+    journal_file: join(dir, "journal.json"), journal_id: randomUUID(),
+  };
+  try {
+    writeFileSync(tokenPath, "ab".repeat(32) + "\n", { mode: 0o600 });
+    writeFileSync(path, JSON.stringify(config), { mode: 0o600 });
+    assert.equal(readDeliveryConfig(path).config.allow_owner_questions, undefined);
+    config.allow_owner_questions = false;
+    writeFileSync(path, JSON.stringify(config), { mode: 0o600 });
+    assert.equal(readDeliveryConfig(path).config.allow_owner_questions, false);
+    config.allow_owner_questions = true;
+    writeFileSync(path, JSON.stringify(config), { mode: 0o600 });
+    assert.equal(readDeliveryConfig(path).config.allow_owner_questions, true);
+    config.allow_owner_questions = "true";
+    writeFileSync(path, JSON.stringify(config), { mode: 0o600 });
+    assert.throws(() => readDeliveryConfig(path), /pending or unsafe/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test("consumer rejects pending/unsafe provisioning artifacts before runtime startup", () => {
   const dir = mkdtempSync(join(tmpdir(), "artel-config-"));
