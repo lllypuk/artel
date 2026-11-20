@@ -318,7 +318,7 @@ all open window trees and complete session/pane UUIDs, with bounded output/deadl
 unknown/unrealized/ambiguous targets refuse navigation. Hints can be inherited and
 are unverified, not proof of process location. Session-only selection promises
 neither exact pane focus nor Wayland foreground activation. No shell, restore,
-restart, message delivery or automatic agent launch. Observation works without agterm.
+restart, message delivery or automatic agent launch. Observation, opt-in task delivery and question/answer exchange use the Pi extension, not terminal automation. A running, explicitly connected Pi session in the owner's usual terminal does not need an agterm hint. Without agterm there is no shortcut to its window. This separation is not a claim of macOS or Windows support.
 
 Contracts: [owner API](../api/openapi.yaml), [observer API](../api/observer-openapi.yaml).
 Implementation evidence lives in [observer experiments](experiments/pi-observer/README.md)

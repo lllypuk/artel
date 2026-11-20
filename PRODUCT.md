@@ -8,7 +8,7 @@ Native Linux desktop on Omarchy, implemented in Qt Quick/QML and C++17. This is 
 
 ## Users
 
-The owner is the primary user: a developer managing a personal AI development team and several projects from a local computer. Agents work in Pi and their terminals live primarily in agterm. Other product audiences have not been established.
+The owner is the primary user: a developer managing a personal AI development team and several projects from a local computer. Agents work in Pi in the owner's preferred terminal; agterm is optional. Other product audiences have not been established.
 
 ## Product Purpose
 
@@ -18,7 +18,7 @@ The long-term intent includes communication, owner decisions and an end-to-end d
 
 ## Positioning
 
-Artel combines owner-managed persistent project/task state with explicitly connected Pi observations. It complements rather than replaces agterm. It distinguishes reported activity, connection freshness and owner manual task state; a terminal event is not proof of completed work.
+Artel combines owner-managed persistent project/task state with explicitly connected Pi observations. It does not manage terminals. Only the shortcut to an existing agterm session needs agterm. It distinguishes reported activity, connection freshness and owner manual task state; a terminal event is not proof of completed work.
 
 ## Operating Context
 
@@ -31,7 +31,11 @@ Artel combines owner-managed persistent project/task state with explicitly conne
 
 Implemented: manual project/task create/edit/archive, criteria, ordered queues, explicit manual state transitions, audit history, concurrent-edit conflict handling, uncertain-request recovery; opt-in Pi registration/candidates, explicit project/runtime binding, activity and freshness, revocation/pruning, best-effort navigation to a claimed agterm session.
 
-Not implemented: prompt delivery, task assignment to an agent, agent launch/control, automated queue execution, approval inbox, MR/CI orchestration, remote access, Android, macOS implementation. Do not invent timelines, token budgets, productivity metrics or completed-task evidence from telemetry.
+Separate from observation, the owner can enable task-message delivery to one bound Pi session (4a) and opt into task questions and asynchronous answers (4b). The agent is already running; delivery does not prove execution.
+
+Next proposed MVP slice: link the reviewed Git candidate and an external revmux result to the task. The owner decides whether to accept it. See the [roadmap](docs/roadmap.md).
+
+Not implemented: automatic assignment, agent launch/control, automated queue execution, approval inbox, MR/CI orchestration, remote access, Android, macOS implementation. Do not invent timelines, token budgets, productivity metrics or completed-task evidence from telemetry.
 
 Observer registrations are not the complete logical team roster: an agent can have multiple runtime candidates, and a runtime can be superseded or revoked. Unbound candidates must not inflate the number of working team members. No heartbeat means lost observation, not permission to start a replacement writer. Idle is not task acceptance. Manual task states remain visibly manual.
 
