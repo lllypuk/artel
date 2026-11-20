@@ -156,13 +156,15 @@ Select the exact observer/runtime/project/session UUIDs from
   --endpoint "$ARTEL_ENDPOINT" --token-file "$ARTEL_TOKEN"
 ```
 
-Enable persists a private pending record (original request, retry key, secret
-references) before the first HTTP request; a lost response is recovered with
+Enable persists a private pending record (original request, retry key, and a
+reference to the delivery token it writes next to the config directory) before
+the first HTTP request; a lost response is recovered with
 `delivery enable --resume PENDING_PATH` using the original key — never regenerate
-a credential to retry. The confirmed writer config and delivery token land in the same private
-directory as the observer config (the writer discovers `delivery.json` next to
-its `ARTEL_OBSERVER_CONFIG`) only after server confirmation; the extension picks them
-up without restarting the bound runtime. JSON output is public IDs/paths only.
+a credential to retry. The confirmed writer config and the delivery token land
+in the same private directory as the observer config (the writer discovers
+`delivery.json` next to its `ARTEL_OBSERVER_CONFIG`) only after server
+confirmation; the extension picks them up without restarting the bound runtime.
+JSON output is public IDs/paths only.
 
 In the desktop task screen the owner types a commission, sees the exact
 assignment and a warning that the text goes to the provider configured in Pi as

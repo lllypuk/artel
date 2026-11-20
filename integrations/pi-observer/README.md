@@ -64,8 +64,10 @@ Owner commissions (stage 4a), a separate opt-in mode from observation: it
 delivers one owner's task message into the exactly bound Pi session and needs
 its own confirmed `delivery.json` plus delivery token written by
 `artelctl delivery enable` next to the observer config; observation config
-alone never activates it, and disabling observation does not disable or
-enable commissions — each mode has its own credential and config. The writer takes a
+alone never activates it. The two modes are independent: disabling observation
+leaves a confirmed delivery grant active (the writer talks to the daemon
+directly), and disabling delivery never affects telemetry — each mode has its
+own credential and config. The writer takes a
 kernel-exclusive lock (unix bind), CAS-attaches, spends one delivery right,
 transmits synchronously only while idle, and publishes the observed receipt
 idempotently. Busy sessions are never prompted, manual input is never replaced,

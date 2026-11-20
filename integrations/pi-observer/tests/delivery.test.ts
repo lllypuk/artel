@@ -594,3 +594,26 @@ test("a stale lock path from a killed writer is probed, removed and rebound", as
     await w.stop();
   } finally { delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true }); }
 });
+
+test("a manual turn starting while next is in flight never spends the right", async () => {
+  const env = makeEnv();
+  try {
+    const message = commission("Fictional commission");
+    let idle = true;
+    const { transport, calls } = stub({
+      ...contextRoute(env),
+      "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
+      "POST /delivery/v1/ready": () => ({}),
+      // The owner starts a manual turn while next is in flight.
+      "GET /delivery/v1/next": (_b, s) => { if (!s.writer) return { message: null }; idle = false; return { message, receipt_key: (message as { receipt_key: string }).receipt_key }; },
+      "POST /delivery/v1/spend": () => { throw new Error("spend must not be asked while busy"); },
+    }, {});
+    const w = writer(env, transport, () => idle);
+    await w.start();
+    await until(() => calls.some(c => c.path.startsWith("/delivery/v1/next")) && !idle, "manual turn during next");
+    await sleep(100);
+    assert.equal(env.hooks.sends, 0, "no Pi call while busy");
+    assert.equal(calls.filter(c => c.path === "/delivery/v1/spend").length, 0, "the delivery right is not consumed");
+    await w.stop();
+  } finally { delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true }); }
+});

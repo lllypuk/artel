@@ -518,6 +518,7 @@ void ApiClient::cancelMessages() {
   cancel(m_messagesReply);
   cancel(m_statusReply);
   cancel(m_deliveryReply);
+  m_messagesPageLoaded = false;
 }
 void ApiClient::loadMessages(const QString &task, qint64 after) {
   cancel(m_messagesReply);
@@ -528,6 +529,8 @@ void ApiClient::loadMessages(const QString &task, qint64 after) {
                                    QString::number(after) + "&limit=20");
   m_messagesReply = reply;
   m_messagesTask = task;
+  if (after == 0)
+    m_messagesPageLoaded = false;
   connect(reply, &QIODevice::readyRead, this, [reply] {
     auto bytes = reply->property("bytes").toByteArray() + reply->readAll();
     if (bytes.size() > responseLimit) {

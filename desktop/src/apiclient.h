@@ -134,6 +134,7 @@ private:
   QString m_instance, m_status = QStringLiteral("disconnected"), m_error,
                       m_historyError, m_messagesError;
   QString m_messagesTask, m_statusTask, m_deliveryTask;
+  bool m_messagesPageLoaded = false;
   qint64 m_sequence = 0, m_cursor = 0;
   bool m_online = false, m_uncertain = false, m_conflict = false,
        m_reloadAgain = false, m_stopped = true;

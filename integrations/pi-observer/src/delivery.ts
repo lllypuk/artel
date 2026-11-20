@@ -98,6 +98,10 @@ export class DeliveryWriter {
     return this.stopped;
   }
 
+  bindingId(): string {
+    return this.config.delivery_binding_id;
+  }
+
   // before_agent_start observation: only the exact custom start of a spent
   // attempt becomes a receipt; provider and completion events cannot.
   observeStart(event: { messageType?: string; message?: { details?: unknown } },
@@ -250,6 +254,15 @@ export class DeliveryWriter {
       this.transmit(attempt);
     } catch (error) {
       if (this.closed || this.stopped) return;
+      // Journal integrity failures are terminal: after a spend consumed the
+      // right, retrying would burn the next commission the same way.
+      if (error instanceof Error && error.message.startsWith("journal")) {
+        this.stopped = true;
+        this.attempts.clear();
+        this.releaseLock();
+        this.status(`Artel: delivery stopped — ${error.message}`);
+        return;
+      }
       const code = error instanceof ObserverFailure ? error.code : "offline";
       if (!["offline", "unavailable", "rate_limited", "not_ready", "closed"].includes(code)) {
         this.stopped = true;

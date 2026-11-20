@@ -70,12 +70,16 @@ export default function observer(pi: ExtensionAPI) {
   // an owner enable after binding activates without restarting the runtime.
   let deliveryTimer: ReturnType<typeof setInterval> | undefined;
   let deliveryShutdown = false;
+  // A binding that terminated terminally is not restarted for the same grant:
+  // the memory clears only when the config starts naming another binding.
+  let terminalBinding: string | undefined;
   const startDeliveryLoop = (deliveryPath: string, registration: Registration, ctx: ExtensionContext) => {
     stopDeliveryTimer();
     deliveryTimer = setInterval(() => {
       try {
         if (deliveryShutdown) return;
         if (writer?.terminated()) {
+          terminalBinding = writer.bindingId();
           // Close the dropped writer so its kernel lock and timers are
           // released before a fresh grant activates in this process.
           void writer.stop();
@@ -84,6 +88,7 @@ export default function observer(pi: ExtensionAPI) {
         if (writer || !existsSync(deliveryPath)) return;
         if (client?.boundRuntime() !== registration.runtime_id) return;
         const { config, token } = readDeliveryConfig(deliveryPath);
+        if (config.delivery_binding_id === terminalBinding) return;
         writer = new DeliveryWriter(config, token, ctx, registration.pi_session_id, registration.runtime_id, status, attempt => {
           if (deliveryShutdown) return;
           pi.sendMessage({

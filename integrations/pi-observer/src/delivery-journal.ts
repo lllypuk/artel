@@ -42,7 +42,10 @@ export class DeliveryJournal {
     return journal;
   }
   static open(path: string, journalId: string): DeliveryJournal {
-    const raw = JSON.parse(readPrivate(path)) as { journal_id?: string; entries?: Record<string, JournalEntry> };
+    // Content and identity come from one open session: validating one file
+    // while recording another file's timestamps would admit a swap.
+    const { content, mtimeMs, ino } = readPrivateStamped(path);
+    const raw = JSON.parse(content) as { journal_id?: string; entries?: Record<string, JournalEntry> };
     if (raw.journal_id !== journalId || typeof raw.entries !== "object" || raw.entries === null || Array.isArray(raw.entries))
       throw new Error("journal mismatch");
     for (const [id, entry] of Object.entries(raw.entries)) {
@@ -59,7 +62,8 @@ export class DeliveryJournal {
       }
     }
     const journal = new DeliveryJournal(path, journalId, new Map(Object.entries(raw.entries)));
-    journal.stamp();
+    journal.lastMtimeMs = mtimeMs;
+    journal.lastIno = ino;
     return journal;
   }
 
@@ -128,7 +132,7 @@ export class DeliveryJournal {
   }
 }
 
-function readPrivate(path: string): string {
+function readPrivateStamped(path: string): { content: string; mtimeMs: number; ino: number } {
   // O_NONBLOCK keeps a FIFO or device from blocking the Pi event loop; the
   // fstat check refuses anything but a regular owned file.
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -143,7 +147,7 @@ function readPrivate(path: string): string {
       if (n === 0) break;
       chunks.push(Buffer.from(buffer.subarray(0, n)));
     }
-    return Buffer.concat(chunks).toString("utf8");
+    return { content: Buffer.concat(chunks).toString("utf8"), mtimeMs: info.mtimeMs, ino: info.ino };
   } finally {
     closeSync(fd);
   }

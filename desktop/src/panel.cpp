@@ -447,15 +447,18 @@ bool Panel::selectTask(const QString &id) {
   const auto row = find(m_client->tasks(), id);
   if (row.value("project_id").toString() != m_project)
     return false;
+  const bool sameTask = m_task == id;
   m_task = id;
   m_client->cancelHistory();
   m_history.clear();
   m_historyCursor = 0;
   m_historyMore = true;
-  // The commission draft survives re-selection and snapshot refreshes: the
-  // view resets, the typed text is cleared only on a real recipient change
-  // (project/task switch via resetCommissionView).
-  resetCommissions();
+  // Same-task reselection and snapshot refreshes keep the typed commission;
+  // only a real recipient change (another task or project) clears it.
+  if (sameTask)
+    resetCommissions();
+  else
+    resetCommissionView();
   moreHistory();
   loadCommissionPage();
   emit changed();

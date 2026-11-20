@@ -193,12 +193,12 @@ func deliveryEnable(client ownerClient, a deliveryEnableArgs, out io.Writer, fai
 	if err = deliveryCheckBinding(p, confirmed); err != nil {
 		return fail(1, err.Error())
 	}
-	// Journal creation is allowed only while no confirmed config exists: an
-	// interrupted bootstrap that already published the config must never
-	// recreate a lost journal under it.
+	// Journal creation is allowed only for a not-yet-active grant with no
+	// confirmed config: an active grant's lost journal must never be silently
+	// recreated, and neither must one under an already-published config.
 	_, configErr := os.Lstat(p.Output)
-	allowCreate := errors.Is(configErr, os.ErrNotExist)
-	if configErr != nil && !allowCreate {
+	allowCreate := errors.Is(configErr, os.ErrNotExist) && confirmed.Status == "pending"
+	if configErr != nil && !errors.Is(configErr, os.ErrNotExist) {
 		return fail(1, errDeliveryUnsafe.Error())
 	}
 	if err = deliveryEnsureJournal(p, allowCreate); err != nil {
