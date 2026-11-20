@@ -3,9 +3,11 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
+	"github.com/lllypuk/artel/internal/jsonwire"
 	"github.com/lllypuk/artel/internal/store"
 )
 
@@ -45,7 +47,10 @@ func parseQuestionIDs(value string, present bool) ([]string, bool) {
 
 func parseQuestionListQuery(r *http.Request) (questionListQuery, bool) {
 	var parsed questionListQuery
-	query := r.URL.Query()
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return parsed, false
+	}
 	for name, values := range query {
 		if (name != "instance_id" && name != "after" && name != "limit" && name != "ids") || len(values) != 1 {
 			return parsed, false
@@ -55,7 +60,6 @@ func parseQuestionListQuery(r *http.Request) (questionListQuery, bool) {
 	if !validUUID(parsed.instance) || (query.Has("ids") && (query.Has("after") || query.Has("limit"))) {
 		return parsed, false
 	}
-	var err error
 	if query.Has("after") {
 		parsed.after, err = strconv.ParseInt(query.Get("after"), 10, 64)
 		if err != nil || parsed.after < 0 {
@@ -100,14 +104,14 @@ func answerTaskQuestion(w http.ResponseWriter, r *http.Request, s *store.Store) 
 		return
 	}
 	var body struct {
-		InstanceID string `json:"instance_id"`
-		Text       string `json:"text"`
+		InstanceID string        `json:"instance_id"`
+		Text       jsonwire.Text `json:"text"`
 	}
 	if !decodeDeliveryJSONLimit(w, r, &body, maxQuestionBody, []string{"instance_id", "text"}) {
 		return
 	}
 	result, err := s.AnswerOwnerQuestion(r.Context(), taskID, questionID, store.OwnerQuestionAnswer{
-		Key: r.Header.Get("Idempotency-Key"), InstanceID: body.InstanceID, Text: body.Text,
+		Key: r.Header.Get("Idempotency-Key"), InstanceID: body.InstanceID, Text: string(body.Text),
 	})
 	if err != nil {
 		deliveryError(w, err)

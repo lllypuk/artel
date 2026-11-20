@@ -57,6 +57,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
     tool_calls = 0
     answer_turns = 0
     fresh = []
+    tool_lists = {}
     forbidden = []
     hold_started = threading.Event()
     hold_release = threading.Event()
@@ -74,6 +75,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
         last = payload['messages'][-1]
         content = text_content(last)
         type(self).fresh.append(content)
+        type(self).tool_lists[content] = {tool['function']['name'] for tool in payload.get('tools', [])}
         delta = {'role': 'assistant', 'content': 'Fictional completion'}
         reason = 'stop'
         if 'HOLD_BUSY' in content and last.get('role') == 'user':
@@ -115,6 +117,8 @@ class UnixConnection(http.client.HTTPConnection):
 class SpendDropProxy:
     """Private UDS proxy that loses exactly one real spend response."""
     def __init__(self, listen_path, target_path):
+        self.deny_attach = False
+        self.denied_attach = threading.Event()
         self.drop_next = False
         self.dropped = 0
         fixture = self
@@ -125,6 +129,12 @@ class SpendDropProxy:
         class Handler(socketserver.BaseRequestHandler):
             def handle(self):
                 request = self._read(self.request)
+                if fixture.deny_attach and request.startswith(b'POST /delivery/v1/attach '):
+                    body = b'{"error":"owner_conflict"}'
+                    self.request.sendall(b'HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\n'
+                                         + f'Content-Length: {len(body)}\r\nConnection: close\r\n\r\n'.encode() + body)
+                    fixture.denied_attach.set()
+                    return
                 upstream = socket.socket(socket.AF_UNIX)
                 upstream.settimeout(3)
                 upstream.connect(target_path)
@@ -202,6 +212,7 @@ class Fixture:
         Provider.task_id = ''
         Provider.calls = Provider.tool_calls = Provider.answer_turns = 0
         Provider.fresh = []
+        Provider.tool_lists = {}
         Provider.forbidden = []
         Provider.hold_started = threading.Event()
         Provider.hold_release = threading.Event()
@@ -358,7 +369,7 @@ class Fixture:
             args.append('--allow-owner-questions')
         return args
 
-    def enable_delivery(self):
+    def enable_delivery(self, wait_ready=True):
         self.run(self.delivery_args())
         config = json.loads(self.delivery_config.read_text())
         self.binding = config['delivery_binding_id']
@@ -369,11 +380,13 @@ class Fixture:
         def active():
             row = self.owner_request('GET', f'/v1/observers/{self.observer_id}/delivery/{self.binding}')
             return row['status'] == 'active'
+        if not wait_ready:
+            return
         self.wait(active, 'writer attach')
         self.wait(lambda: self.delivery_request('GET', '/delivery/v1/context')['ready'], 'writer ready')
 
     def start_qml(self, question, answer, commission='', observed=True, total=1, trace=False,
-                  stop_directory=None):
+                  stop_directory=None, history_reason=None):
         env = self.env.copy()
         env.update({'ARTEL_QUESTION_ENDPOINT': self.endpoint,
                     'ARTEL_QUESTION_OWNER_TOKEN': str(self.token_path),
@@ -386,6 +399,8 @@ class Fixture:
             env['ARTEL_QUESTION_TRACE'] = str(self.root / 'trace.jsonl')
         if stop_directory is not None:
             env['ARTEL_QUESTION_STOP_DIRECTORY'] = str(stop_directory)
+        if history_reason is not None:
+            env['ARTEL_QUESTION_HISTORY_REASON'] = history_reason
         child = subprocess.Popen([sys.executable, '-B', __file__, '--owned-child', str(os.getpid()),
                                   str(ROOT / 'desktop/build/e2e/acceptance'), 'ownerQuestionRoundTrip', '-maxwarnings', '0'],
                                  env=env, start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -455,8 +470,8 @@ class Fixture:
         self.delivery_request('POST', '/delivery/v1/attach', {
             'writer_id': capable_writer, 'expected_previous': '', 'journal_id': journal_id,
             'runtime_id': self.runtime, 'pi_session_id': self.pi_session,
-            'capability': 'owner_questions_v1'})
-        self.delivery_request('POST', '/delivery/v1/ready', {'writer_id': capable_writer})
+            'instance_id': self.instance, 'capability': 'owner_questions_v1'})
+        self.delivery_request('POST', '/delivery/v1/ready', {'writer_id': capable_writer, 'instance_id': self.instance})
         question = self.delivery_request('POST', '/delivery/v1/questions', {
             'instance_id': self.instance, 'task_id': self.task, 'writer_id': capable_writer,
             'text': 'BASE_WRITER_MUST_NOT_READ'}, key=uid())
@@ -529,6 +544,7 @@ class OwnerQuestions(unittest.TestCase):
                 commission = f'ASK_OWNER FIRST_QUESTION for Artel task {fixture.task}'
                 fixture.qml('FIRST_QUESTION', 'FIRST_ANSWER', commission, True, 1, True)
                 self.assertEqual(Provider.answer_turns, 1)
+                self.assertIn('artel_ask_owner', Provider.tool_lists[commission])
                 rows = fixture.questions()
                 self.assertEqual(len(rows), 1)
                 self.assertEqual(rows[0]['answer_status'], 'observed')
@@ -563,6 +579,8 @@ class OwnerQuestions(unittest.TestCase):
                 second = next(row for row in fixture.questions() if row['text'] == 'SECOND_QUESTION')
                 self.assertEqual(second['answer_text'], 'SECOND_ANSWER')
                 self.assertEqual(second['answer_status'], 'unknown')
+                fixture.wait_qml(fixture.start_qml('SECOND_QUESTION', 'SECOND_ANSWER',
+                                                  history_reason='delivery_revoked'))
                 fixture.quit_pi()
             finally:
                 fixture.close()
@@ -624,14 +642,14 @@ class OwnerQuestions(unittest.TestCase):
                     'writer_id': replacement_writer, 'expected_previous': context['writer_id'],
                     'journal_id': config['journal_id'], 'runtime_id': fixture.runtime,
                     'pi_session_id': fixture.pi_session,
-                    'capability': 'owner_questions_v1'}, status=409)
+                    'instance_id': fixture.instance, 'capability': 'owner_questions_v1'}, status=409)
                 self.assertEqual(denied['error'], 'assignment_mismatch')
                 denied = fixture.delivery_request(
-                    'GET', f'/delivery/v1/next?writer_id={replacement_writer}', status=409)
+                    'GET', f'/delivery/v1/next?writer_id={replacement_writer}&instance_id={fixture.instance}', status=409)
                 self.assertEqual(denied['error'], 'owner_conflict')
                 self.assertNotIn('ANSWER_AFTER_STOP', json.dumps(denied))
                 denied = fixture.delivery_request('POST', '/delivery/v1/spend', {
-                    'writer_id': replacement_writer, 'message_id': row['answer_message_id']}, status=409)
+                    'instance_id': fixture.instance, 'writer_id': replacement_writer, 'message_id': row['answer_message_id']}, status=409)
                 self.assertEqual(denied['error'], 'owner_conflict')
                 self.assertEqual(Provider.answer_turns, 0)
                 row = next(row for row in fixture.questions() if row['id'] == question['id'])
@@ -651,14 +669,27 @@ class OwnerQuestions(unittest.TestCase):
                     'delivery_binding_id': fixture.binding, 'instance_id': fixture.instance})
                 question = fixture.wait(lambda: next((row for row in fixture.questions()
                                                       if row['text'] == 'FIRST_QUESTION'), None), 'question before manual turn')
-                fixture.command('MANUAL_BEFORE_ANSWER')
-                fixture.wait(lambda: 'MANUAL_BEFORE_ANSWER' in Provider.fresh, 'manual provider turn')
-                fixture.owner_request('POST', f"/v1/tasks/{fixture.task}/questions/{question['id']}/answer", {
+                manual = 'HOLD_BUSY MANUAL_BEFORE_ANSWER'
+                fixture.command(manual)
+                fixture.wait(Provider.hold_started.is_set, 'manual provider turn held open')
+                answered = fixture.owner_request('POST', f"/v1/tasks/{fixture.task}/questions/{question['id']}/answer", {
                     'instance_id': fixture.instance, 'text': 'ANSWER_AFTER_MANUAL'}, key=uid())
-                fixture.wait(lambda: Provider.answer_turns == 1, 'answer after manual turn')
-                self.assertLess(Provider.fresh.index('MANUAL_BEFORE_ANSWER'),
-                                next(i for i, text in enumerate(Provider.fresh) if 'ANSWER_AFTER_MANUAL' in text))
-                self.assertIn('FIRST_QUESTION', Provider.fresh[-1])
+                time.sleep(3)  # More than two production writer polls while the provider barrier holds.
+                self.assertFalse(Provider.hold_release.is_set())
+                self.assertEqual(Provider.answer_turns, 0)
+                self.assertFalse(any('ANSWER_AFTER_MANUAL' in text for text in Provider.fresh))
+                with sqlite3.connect(f"file:{fixture.root / 'db/artel.sqlite'}?mode=ro", uri=True) as db:
+                    self.assertEqual(db.execute('SELECT count(*) FROM delivery_attempts a JOIN delivery_messages m '
+                                                'ON m.seq=a.message_seq WHERE m.id=?',
+                                                (answered['message_id'],)).fetchone()[0], 0)
+                Provider.hold_release.set()
+                fixture.wait(lambda: Provider.answer_turns == 1, 'answer after held manual turn')
+                fixture.wait(lambda: any(row.get('answer_status') == 'observed' for row in fixture.questions()),
+                             'matching receipt after manual turn')
+                answer_turns = [text for text in Provider.fresh if 'ANSWER_AFTER_MANUAL' in text]
+                self.assertEqual(len(answer_turns), 1)
+                self.assertIn('FIRST_QUESTION', answer_turns[0])
+                self.assertLess(Provider.fresh.index(manual), Provider.fresh.index(answer_turns[0]))
                 fixture.quit_pi()
             finally:
                 fixture.close()
@@ -688,6 +719,29 @@ class OwnerQuestions(unittest.TestCase):
                 fixture.close()
         self.assertFalse(Path(tmp).exists())
 
+    def assert_base_daemon_refuses_v4(self, fixture, old_daemon):
+        fixture.stop(fixture.daemon)
+        db_path = fixture.root / 'db/artel.sqlite'
+
+        def database_identity():
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as db:
+                return (db.execute('PRAGMA user_version').fetchone()[0],
+                        db.execute('SELECT instance_id FROM metadata WHERE id=1').fetchone()[0])
+
+        before = database_identity()
+        self.assertEqual(before, (4, fixture.instance))
+        child = fixture.spawn([str(old_daemon), '--listen', '127.0.0.1:0',
+                               '--data-dir', str(fixture.root / 'db'), '--token-file', str(fixture.token_path),
+                               '--observer-socket', fixture.daemon_socket],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = child.communicate(timeout=10)
+        self.assertEqual(child.returncode, 1)
+        self.assertNotIn(b'listening', out)
+        # The real base binary deliberately masks the store's unsupported-version
+        # error. Its v3 startup is the positive control in the same test.
+        self.assertEqual(err.strip(), b'arteld: cannot initialize database')
+        self.assertEqual(database_identity(), before)
+
     def test_actual_base_extension_and_old_daemon_compatibility(self):
         with tempfile.TemporaryDirectory(prefix='artel-base-artifacts-') as artifacts:
             old_daemon, old_extension = build_base_artifacts(Path(artifacts))
@@ -715,9 +769,10 @@ class OwnerQuestions(unittest.TestCase):
                     row = next(row for row in fixture.questions() if row['id'] == question_id)
                     self.assertEqual(row['answer_message_id'], answer_id)
                     self.assertEqual(row['answer_status'], 'stored')
-                    pending = fixture.delivery_request('GET', f'/delivery/v1/next?writer_id={capable_writer}')
+                    pending = fixture.delivery_request('GET', f'/delivery/v1/next?writer_id={capable_writer}&instance_id={fixture.instance}')
                     self.assertEqual(pending['message']['id'], answer_id, 'old writer read or spent the 4b answer')
                     fixture.quit_pi()
+                    self.assert_base_daemon_refuses_v4(fixture, old_daemon)
                 finally:
                     fixture.close()
             self.assertFalse(Path(tmp).exists())
@@ -751,6 +806,8 @@ class OwnerQuestions(unittest.TestCase):
                 fixture.wait(lambda: Provider.tool_calls == 1, 'provider attempted unavailable tool')
                 fixture.wait(lambda: len(Provider.fresh) >= 2, 'unknown tool turn completed')
                 self.assertEqual(fixture.questions(), [])
+                prompt = f'ASK_OWNER FIRST_QUESTION for Artel task {fixture.task}'
+                self.assertNotIn('artel_ask_owner', Provider.tool_lists[prompt])
                 context = fixture.delivery_request('GET', '/delivery/v1/context')
                 error = fixture.delivery_request('POST', '/delivery/v1/questions', {
                     'instance_id': fixture.instance, 'task_id': fixture.task,
@@ -758,6 +815,24 @@ class OwnerQuestions(unittest.TestCase):
                 self.assertEqual(error['error'], 'capability_required')
                 self.assertEqual(fixture.questions(), [])
                 self.assertEqual(Provider.answer_turns, 0)
+                fixture.quit_pi()
+            finally:
+                fixture.close()
+        self.assertFalse(Path(tmp).exists())
+
+    def test_opted_in_tool_stays_hidden_when_attach_is_refused(self):
+        with tempfile.TemporaryDirectory(prefix='artel-attach-refused-') as tmp:
+            fixture = Fixture(Path(tmp), True, spend_proxy=True)
+            try:
+                fixture.prepare(enable=False)
+                fixture.spend_proxy.deny_attach = True
+                fixture.enable_delivery(wait_ready=False)
+                fixture.wait(fixture.spend_proxy.denied_attach.is_set, 'opted-in attach refused')
+                prompt = 'Manual fictional turn after attach refusal'
+                fixture.command(prompt)
+                fixture.wait(lambda: prompt in Provider.tool_lists, 'provider tool list after attach refusal')
+                self.assertNotIn('artel_ask_owner', Provider.tool_lists[prompt])
+                self.assertEqual(fixture.questions(), [])
                 fixture.quit_pi()
             finally:
                 fixture.close()

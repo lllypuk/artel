@@ -1,7 +1,7 @@
 // Delivery writer and journal recovery proofs against stub transports only.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -288,32 +288,32 @@ test("lost spend response never reaches Pi and keeps polling", async () => {
   } finally { delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true }); }
 });
 
-test("journal write failure after spend keeps the right from Pi", async () => {
+test("journal persistence failure leaves the original intact and stops before a second spend", async () => {
   const env = makeEnv();
+  env.config.allow_owner_questions = true;
+  const message = { ...commission("Fictional answer"), kind: "answer", question_id: randomUUID(), question_text: "Fictional question" };
+  const original = readFileSync(env.config.journal_file, "utf8");
+  const { transport, calls } = stub({
+    ...ownerQuestionsRoutes(env),
+    "GET /delivery/v1/next": () => ({ message, receipt_key: message.receipt_key }),
+    "POST /delivery/v1/spend": () => {
+      // Fail the native temporary-file open before rename, even as root.
+      mkdirSync(join(env.dir, `.journal.json.${process.pid}.tmp`), { recursive: true });
+      return { attempt_id: randomUUID(), right: true };
+    },
+    "POST /delivery/v1/verify": () => ({ verified: true }),
+  }, {});
+  const w = writer(env, transport);
   try {
-    const message = commission("Fictional commission");
-    const attemptId = randomUUID();
-    const { transport, calls, state } = stub({
-      ...contextRoute(env),
-      "POST /delivery/v1/attach": (body, s) => { s.writer = body.writer_id; return {}; },
-      "POST /delivery/v1/ready": () => ({}),
-      "GET /delivery/v1/next": (_b, s) => s.allow && !s.spent ? { message, receipt_key: (message as { receipt_key: string }).receipt_key } : { message: null },
-      "POST /delivery/v1/spend": (_b, s) => s.spent ? { attempt_id: attemptId, right: false } : (s.spent = true, { attempt_id: attemptId, right: true }),
-      "POST /delivery/v1/verify": () => ({ verified: true }),
-    }, {});
-    const w = writer(env, transport);
     await w.start();
-    await until(() => calls.some(c => c.path === "/delivery/v1/attach"), "attached before the write failure");
-    chmodSync(env.dir, 0o500);
-    state.allow = true;
-    await until(() => calls.some(c => c.path === "/delivery/v1/spend"), "spend attempted against the failed journal");
-    await sleep(200);
-    assert.equal(env.hooks.sends, 0, "write failure prevents the Pi call");
+    await until(() => w.terminated(), "terminal journal persistence failure");
+    await sleep(100);
+    assert.equal(readFileSync(env.config.journal_file, "utf8"), original);
+    assert.equal(calls.filter(c => c.path === "/delivery/v1/spend").length, 1);
     assert.equal(calls.filter(c => c.path === "/delivery/v1/verify").length, 0);
-    chmodSync(env.dir, 0o700);
-    await w.stop();
+    assert.equal(env.hooks.sends, 0);
   } finally {
-    try { chmodSync(env.dir, 0o700); } catch { /* cleaned up */ }
+    await w.stop();
     delete (globalThis as Record<symbol, unknown>)[TEST_HOOK];
     rmSync(env.dir, { recursive: true, force: true });
   }
@@ -631,6 +631,7 @@ function ownerQuestionsRoutes(env: Env): Record<string, Handler> {
     }),
     "POST /delivery/v1/attach": (body, s) => {
       assert.equal(body.capability, "owner_questions_v1");
+      assert.equal(body.instance_id, env.config.database_instance_id);
       s.writer = body.writer_id;
       return {};
     },
@@ -769,7 +770,7 @@ test("answer receipt recovery uses journal type and original session without any
   } finally { delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true }); }
 });
 
-for (const stage of ["before-spend", "after-spend", "after-verify"] as const) {
+for (const stage of ["before-spend", "after-spend", "after-verify", "mode-before-spend", "mode-after-verify"] as const) {
   test(`journal loss ${stage} fences the right and never calls Pi`, async () => {
     const env = makeEnv();
     try {
@@ -781,6 +782,7 @@ for (const stage of ["before-spend", "after-spend", "after-verify"] as const) {
         "GET /delivery/v1/next": (_b, s) => {
           if (s.spent) return { message: null };
           if (stage === "before-spend") rmSync(env.config.journal_file);
+          if (stage === "mode-before-spend") chmodSync(env.config.journal_file, 0o644);
           return { message, receipt_key: (message as { receipt_key: string }).receipt_key };
         },
         "POST /delivery/v1/spend": (_b, s) => {
@@ -790,6 +792,7 @@ for (const stage of ["before-spend", "after-spend", "after-verify"] as const) {
         },
         "POST /delivery/v1/verify": () => {
           if (stage === "after-verify") rmSync(env.config.journal_file);
+          if (stage === "mode-after-verify") chmodSync(env.config.journal_file, 0o644);
           return { verified: true };
         },
       }, {});
@@ -797,8 +800,8 @@ for (const stage of ["before-spend", "after-spend", "after-verify"] as const) {
       await w.start();
       await until(() => env.statuses.some(s => s.includes("stopped") && s.includes("journal")), "terminal journal fence");
       assert.equal(env.hooks.sends, 0);
-      assert.equal(calls.filter(c => c.path === "/delivery/v1/spend").length, stage === "before-spend" ? 0 : 1);
-      assert.equal(calls.filter(c => c.path === "/delivery/v1/verify").length, stage === "after-verify" ? 1 : 0);
+      assert.equal(calls.filter(c => c.path === "/delivery/v1/spend").length, stage.endsWith("before-spend") ? 0 : 1);
+      assert.equal(calls.filter(c => c.path === "/delivery/v1/verify").length, stage.endsWith("after-verify") ? 1 : 0);
       await w.stop();
     } finally { delete (globalThis as Record<symbol, unknown>)[TEST_HOOK]; rmSync(env.dir, { recursive: true, force: true }); }
   });

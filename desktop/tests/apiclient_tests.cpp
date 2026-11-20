@@ -586,11 +586,26 @@ private slots:
     const QString question = "66666666-6666-4666-8666-666666666666";
     Fixture fixture;
     QList<QByteArray> answers;
+    const QString replacement = "77777777-7777-4777-8777-777777777777";
+    QString serving = instanceID;
+    QPointer<QTcpSocket> delayed;
+    bool holdSnapshot = false;
     fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/snapshot ") && holdSnapshot) {
+        delayed = socket;
+        return;
+      }
       if (request.startsWith("POST") && request.contains("/answer ")) {
         answers.append(request);
         if (answers.size() == 1) {
           socket->disconnectFromHost();
+          return;
+        }
+        const auto payload = QJsonDocument::fromJson(
+                                 request.mid(request.indexOf("\r\n\r\n") + 4))
+                                 .object();
+        if (payload.value("instance_id").toString() != serving) {
+          respond(socket, 409, "{\"code\":\"instance_mismatch\"}");
           return;
         }
         respond(socket, 200,
@@ -610,14 +625,31 @@ private slots:
     QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
     client.reload();
     QTRY_VERIFY(client.online());
+    QVERIFY(!client.answerQuestion(taskID, question, QString(QChar(0xd800))));
     QVERIFY(client.answerQuestion(taskID, question, "line one\nline two"));
     QTRY_VERIFY(client.uncertain());
     QVERIFY(!client.answerQuestion(taskID, question, "different"));
     QCOMPARE(answers.size(), 1);
+    serving = replacement;
+    holdSnapshot = true;
+    QVERIFY(client.retry());
+    QTRY_VERIFY(delayed);
+    QVERIFY(client.uncertain());
+    QCOMPARE(client.instance(), instanceID);
+    QVERIFY(!client.retry());
+    holdSnapshot = false;
+    respond(delayed, 200, snapshot(0, replacement));
+    QTRY_COMPARE(client.instance(), replacement);
+    QVERIFY(client.uncertain());
+    QVERIFY(!client.retry());
+    serving = instanceID;
+    client.reload();
+    QTRY_COMPARE(client.instance(), instanceID);
     QVERIFY(client.retry());
     QTRY_VERIFY(!client.uncertain());
-    QCOMPARE(answers.size(), 2);
+    QCOMPARE(answers.size(), 3);
     QCOMPARE(answers[0], answers[1]);
+    QCOMPARE(answers[0], answers[2]);
     QVERIFY(answers[0].contains("\"text\":\"line one\\nline two\""));
     QCOMPARE(idempotencyKey(answers[0]), idempotencyKey(answers[1]));
     client.stop();

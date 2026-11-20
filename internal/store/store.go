@@ -397,10 +397,10 @@ func persist(ctx context.Context, tx *sql.Tx, snap Snapshot) error {
 	if deliveryTables != 0 {
 		// Closing a task or archiving a project permanently blocks undelivered
 		// commissions in the same transaction as the domain change.
-		if _, err := tx.ExecContext(ctx, "UPDATE delivery_messages SET blocked=1,block_reason='task_closed' WHERE blocked=0 AND task_id IN (SELECT id FROM tasks WHERE state IN ('done','cancelled'))"); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE delivery_messages SET blocked=1,block_reason='task_closed' WHERE blocked=0 AND NOT (COALESCE(json_extract(record,'$.kind'),'')='answer' AND json_extract(record,'$.status')='observed') AND task_id IN (SELECT id FROM tasks WHERE state IN ('done','cancelled'))"); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE delivery_messages SET blocked=1,block_reason='project_archived' WHERE blocked=0 AND task_id IN (SELECT id FROM tasks WHERE project_id IN (SELECT id FROM projects WHERE archived=1))"); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE delivery_messages SET blocked=1,block_reason='project_archived' WHERE blocked=0 AND NOT (COALESCE(json_extract(record,'$.kind'),'')='answer' AND json_extract(record,'$.status')='observed') AND task_id IN (SELECT id FROM tasks WHERE project_id IN (SELECT id FROM projects WHERE archived=1))"); err != nil {
 			return err
 		}
 	}

@@ -620,7 +620,7 @@ func (s *Store) DeliveryContext(ctx context.Context, bindingID string) (map[stri
 
 // DeliveryAttach CAS-registers the writer; polling starts only after success.
 // The writer proves its exact runtime and Pi session identity at attach time.
-func (s *Store) DeliveryAttach(ctx context.Context, bindingID, writerID, expectedPrevious, journalID, runtimeID, piSessionID, capability string) error {
+func (s *Store) DeliveryAttach(ctx context.Context, bindingID, instanceID, writerID, expectedPrevious, journalID, runtimeID, piSessionID, capability string) error {
 	if !observerUUID(bindingID) || !observerUUID(writerID) || !observerUUID(journalID) || !observerUUID(runtimeID) || !observerUUID(piSessionID) {
 		return observerError("invalid_request")
 	}
@@ -647,6 +647,9 @@ func (s *Store) DeliveryAttach(ctx context.Context, bindingID, writerID, expecte
 	if err := deliveryCapabilityValid(b, capability); err != nil {
 		return err
 	}
+	if err := deliveryInstanceCheck(ctx, tx, b, instanceID); err != nil {
+		return err
+	}
 	// Activation requires the observer's current binding to match exactly, so a
 	// writer in any other runtime can never activate this assignment.
 	if err := deliveryAttachChecks(ctx, tx, b, runtimeID, piSessionID); err != nil {
@@ -670,6 +673,25 @@ func (s *Store) DeliveryAttach(ctx context.Context, bindingID, writerID, expecte
 		return observerError("owner_conflict")
 	}
 	return tx.Commit()
+}
+
+// Opted-in writers pin each request, not just the earlier context reply.
+// An absent pin remains valid only on the unchanged 4a wire.
+func deliveryInstanceCheck(ctx context.Context, tx *sql.Tx, b DeliveryBinding, expected string) error {
+	if expected == "" && !b.AllowOwnerQuestions {
+		return nil
+	}
+	if !observerUUID(expected) {
+		return observerError("invalid_request")
+	}
+	instance, err := observerDatabase(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if instance != expected {
+		return observerError("instance_mismatch")
+	}
+	return nil
 }
 
 func deliveryCapabilityValid(b DeliveryBinding, capability string) error {
@@ -698,7 +720,7 @@ func deliveryAttachChecks(ctx context.Context, tx *sql.Tx, b DeliveryBinding, ru
 }
 
 // DeliveryReady is the writer's bounded liveness confirmation in daemon memory.
-func (s *Store) DeliveryReady(ctx context.Context, bindingID, writerID string) error {
+func (s *Store) DeliveryReady(ctx context.Context, bindingID, instanceID, writerID string) error {
 	if !observerUUID(bindingID) || !observerUUID(writerID) {
 		return observerError("invalid_request")
 	}
@@ -711,6 +733,9 @@ func (s *Store) DeliveryReady(ctx context.Context, bindingID, writerID string) e
 	defer func() { _ = tx.Rollback() }()
 	b, err := deliveryLoad(ctx, tx, bindingID)
 	if err != nil {
+		return err
+	}
+	if err := deliveryInstanceCheck(ctx, tx, b, instanceID); err != nil {
 		return err
 	}
 	if b.Status != "active" || b.WriterID != writerID {
@@ -726,7 +751,7 @@ func (s *Store) DeliveryReady(ctx context.Context, bindingID, writerID string) e
 }
 
 // DeliveryNext returns the oldest unspent, unblocked commission with its receipt key.
-func (s *Store) DeliveryNext(ctx context.Context, bindingID, writerID string) (DeliveryMessage, string, error) {
+func (s *Store) DeliveryNext(ctx context.Context, bindingID, instanceID, writerID string) (DeliveryMessage, string, error) {
 	var result DeliveryMessage
 	var receiptKey string
 	if !observerUUID(bindingID) || !observerUUID(writerID) {
@@ -739,6 +764,9 @@ func (s *Store) DeliveryNext(ctx context.Context, bindingID, writerID string) (D
 	defer func() { _ = tx.Rollback() }()
 	b, err := deliveryLoad(ctx, tx, bindingID)
 	if err != nil {
+		return result, "", err
+	}
+	if err := deliveryInstanceCheck(ctx, tx, b, instanceID); err != nil {
 		return result, "", err
 	}
 	if err := deliveryAssignmentCheck(ctx, tx, b); err != nil {
@@ -771,7 +799,7 @@ func (s *Store) DeliveryNext(ctx context.Context, bindingID, writerID string) (D
 
 // DeliverySpend admits exactly one right per message. A repeated or concurrent
 // spend reports the state without ever returning a right again.
-func (s *Store) DeliverySpend(ctx context.Context, bindingID, writerID, messageID string) (DeliveryAttemptResult, error) {
+func (s *Store) DeliverySpend(ctx context.Context, bindingID, instanceID, writerID, messageID string) (DeliveryAttemptResult, error) {
 	result := DeliveryAttemptResult{MessageID: messageID}
 	if !observerUUID(bindingID) || !observerUUID(writerID) || !observerUUID(messageID) {
 		return result, observerError("invalid_request")
@@ -785,6 +813,9 @@ func (s *Store) DeliverySpend(ctx context.Context, bindingID, writerID, messageI
 	defer func() { _ = tx.Rollback() }()
 	b, err := deliveryLoad(ctx, tx, bindingID)
 	if err != nil {
+		return result, err
+	}
+	if err := deliveryInstanceCheck(ctx, tx, b, instanceID); err != nil {
 		return result, err
 	}
 	if err := deliveryAssignmentCheck(ctx, tx, b); err != nil {
@@ -840,7 +871,7 @@ func (s *Store) DeliverySpend(ctx context.Context, bindingID, writerID, messageI
 }
 
 // DeliveryVerify confirms the right of the owning writer; it never grants one.
-func (s *Store) DeliveryVerify(ctx context.Context, bindingID, writerID, attemptID string) (DeliveryAttemptResult, error) {
+func (s *Store) DeliveryVerify(ctx context.Context, bindingID, instanceID, writerID, attemptID string) (DeliveryAttemptResult, error) {
 	result := DeliveryAttemptResult{AttemptID: attemptID}
 	if !observerUUID(bindingID) || !observerUUID(writerID) || !observerUUID(attemptID) {
 		return result, observerError("invalid_request")
@@ -856,12 +887,12 @@ func (s *Store) DeliveryVerify(ctx context.Context, bindingID, writerID, attempt
 	if err != nil {
 		return result, err
 	}
-	if b.Status == "revoked" {
-		return result, observerError("revoked")
+	if err := deliveryInstanceCheck(ctx, tx, b, instanceID); err != nil {
+		return result, err
 	}
 	// A stale assignment (rebind, generation change, observer revoke) must not
 	// confirm a call: verification is part of the exact assignment.
-	if err := deliveryAssignmentCurrent(ctx, tx, b); err != nil {
+	if err := deliveryAssignmentCheck(ctx, tx, b); err != nil {
 		return result, err
 	}
 	if b.WriterID != writerID {
@@ -882,11 +913,6 @@ func (s *Store) DeliveryVerify(ctx context.Context, bindingID, writerID, attempt
 	if err := json.Unmarshal([]byte(data), &result); err != nil {
 		return result, err
 	}
-	if state == "observed" {
-		result.Verified = true
-		result.Right = false
-		return result, tx.Commit()
-	}
 	var blocked int
 	var messageData string
 	if err := tx.QueryRowContext(ctx, "SELECT blocked,record FROM delivery_messages WHERE seq=?", seq).Scan(&blocked, &messageData); err != nil {
@@ -898,6 +924,11 @@ func (s *Store) DeliveryVerify(ctx context.Context, bindingID, writerID, attempt
 	}
 	if err := deliveryKindAllowed(b, message.Kind); err != nil {
 		return result, err
+	}
+	if state == "observed" {
+		result.Verified = true
+		result.Right = false
+		return result, tx.Commit()
 	}
 	if blocked != 0 {
 		// Closing after spend forbids confirmation; the attempt stays unknown.
@@ -917,7 +948,7 @@ func (s *Store) DeliveryVerify(ctx context.Context, bindingID, writerID, attempt
 // DeliveryReceipt publishes the observed start idempotently per binding key.
 // A new writer with the unchanged assignment may republish a stored receipt,
 // but never acquires the spent attempt's right.
-func (s *Store) DeliveryReceipt(ctx context.Context, bindingID, key string, receipt struct {
+func (s *Store) DeliveryReceipt(ctx context.Context, bindingID, instanceID, writerID, key string, receipt struct {
 	MessageID, AttemptID, Type, MessageType, PiSessionID string
 	Details                                              map[string]any
 }) (DeliveryMessage, error) {
@@ -933,12 +964,24 @@ func (s *Store) DeliveryReceipt(ctx context.Context, bindingID, key string, rece
 		return result, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	b, err := deliveryLoad(ctx, tx, bindingID)
+	if err != nil {
+		return result, err
+	}
+	if err := deliveryInstanceCheck(ctx, tx, b, instanceID); err != nil {
+		return result, err
+	}
+	if b.AllowOwnerQuestions {
+		if err := ownerQuestionAssignmentGate(ctx, tx, b, writerID); err != nil {
+			return result, err
+		}
+	}
 	principal := "binding:" + bindingID
 	matched, err := deliveryReplayLookup(ctx, tx, principal, key, requestHash, &result)
 	if err != nil || matched {
 		return result, err
 	}
-	seq, attemptState, messageData, err := s.deliveryReceiptGate(ctx, tx, bindingID, key, receipt)
+	seq, attemptState, messageData, err := deliveryReceiptGate(ctx, tx, b, key, receipt)
 	if err != nil {
 		return result, err
 	}
@@ -951,7 +994,11 @@ func (s *Store) DeliveryReceipt(ctx context.Context, bindingID, key string, rece
 	if err != nil {
 		return result, err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE delivery_messages SET record=? WHERE seq=?", string(encoded), seq); err != nil {
+	update := "UPDATE delivery_messages SET record=? WHERE seq=?"
+	if result.Kind == "answer" {
+		update = "UPDATE delivery_messages SET record=?,blocked=0,block_reason='' WHERE seq=?"
+	}
+	if _, err := tx.ExecContext(ctx, update, string(encoded), seq); err != nil {
 		return result, err
 	}
 	if attemptState != "observed" {
@@ -990,14 +1037,10 @@ func deliveryAnswerReceiptValid(b DeliveryBinding, message DeliveryMessage, deta
 
 // deliveryReceiptGate validates form, identity, attempt and assignment, and
 // returns the message row position, attempt state and record for publishing.
-func (s *Store) deliveryReceiptGate(ctx context.Context, tx *sql.Tx, bindingID, receiptKey string, receipt struct {
+func deliveryReceiptGate(ctx context.Context, tx *sql.Tx, b DeliveryBinding, receiptKey string, receipt struct {
 	MessageID, AttemptID, Type, MessageType, PiSessionID string
 	Details                                              map[string]any
 }) (int64, string, string, error) {
-	b, err := deliveryLoad(ctx, tx, bindingID)
-	if err != nil {
-		return 0, "", "", err
-	}
 	if b.Status == "revoked" {
 		return 0, "", "", observerError("revoked")
 	}
@@ -1013,7 +1056,7 @@ func (s *Store) deliveryReceiptGate(ctx context.Context, tx *sql.Tx, bindingID, 
 	var seq int64
 	var blocked int
 	var storedKey, messageData string
-	if err := tx.QueryRowContext(ctx, "SELECT seq,blocked,receipt_key,record FROM delivery_messages WHERE id=? AND binding_id=?", receipt.MessageID, bindingID).
+	if err := tx.QueryRowContext(ctx, "SELECT seq,blocked,receipt_key,record FROM delivery_messages WHERE id=? AND binding_id=?", receipt.MessageID, b.ID).
 		Scan(&seq, &blocked, &storedKey, &messageData); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, "", "", observerError("not_found")
@@ -1032,7 +1075,7 @@ func (s *Store) deliveryReceiptGate(ctx context.Context, tx *sql.Tx, bindingID, 
 	}
 	var attemptState string
 	if err := tx.QueryRowContext(ctx, "SELECT state FROM delivery_attempts WHERE attempt_id=? AND message_seq=? AND binding_id=?",
-		receipt.AttemptID, seq, bindingID).Scan(&attemptState); err != nil {
+		receipt.AttemptID, seq, b.ID).Scan(&attemptState); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, "", "", observerError("not_found")
 		}

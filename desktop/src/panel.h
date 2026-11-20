@@ -38,7 +38,7 @@ class Panel : public QObject {
                  NOTIFY changed)
   Q_PROPERTY(QVariant assignment READ assignment NOTIFY changed)
   Q_PROPERTY(QVariant messages READ messages NOTIFY changed)
-  Q_PROPERTY(QVariant questions READ questions NOTIFY changed)
+  Q_PROPERTY(ObjectModel *questionModel READ questionModel CONSTANT)
   Q_PROPERTY(bool questionsMore READ questionsMore NOTIFY changed)
   Q_PROPERTY(bool questionsLoading READ questionsLoading NOTIFY changed)
   Q_PROPERTY(bool messagesMore READ messagesMore NOTIFY changed)
@@ -69,9 +69,7 @@ public:
   bool canAbandon() const { return m_client->canAbandon(); }
   bool conflict() const { return m_client->conflict() && !m_adopted; }
   bool busy() const { return m_client->pending(); }
-  bool retryable() const {
-    return m_client->online() && !busy() && uncertain() && !canAbandon();
-  }
+  bool retryable() const { return m_client->canRetry(); }
   bool historyMore() const { return m_historyMore; }
   bool historyLoading() const { return m_client->historyLoading(); }
   QString commissionText() const { return m_commission; }
@@ -80,6 +78,7 @@ public:
   QVariantMap assignment() const;
   QVariantList messages() const;
   QVariantList questions() const;
+  ObjectModel *questionModel() { return &m_questions; }
   bool questionsMore() const { return m_questionsMore; }
   bool questionsLoading() const { return m_client->questionsLoading(); }
   bool messagesMore() const { return m_messagesMore; }
@@ -115,6 +114,10 @@ signals:
 private:
   void setProjectSelection(const QString &id);
   void resetCommissions();
+  void resetQuestions();
+  void pollQuestions();
+  void updateQuestions(const QVariantList &rows, bool append);
+  QVariantMap questionRow(QVariantMap row) const;
   void resetCommissionView();
   void loadCommissionPage();
   void armStatusPoll();
@@ -126,9 +129,9 @@ private:
   ObserverClient m_observers;
   QTimer m_statusPoll, m_deliveryPoll;
   QString m_commission, m_messagesTask, m_deliveryTask;
-  QVariantList m_messages, m_questions;
+  QVariantList m_messages;
+  ObjectModel m_questions;
   QVariantMap m_delivery, m_answers, m_sentAnswers;
-  QString m_questionsTask;
   qint64 m_messagesCursor = 0, m_questionsCursor = 0;
   qsizetype m_statusOffset = 0, m_questionStatusOffset = 0;
   bool m_messagesMore = false, m_questionsMore = false;

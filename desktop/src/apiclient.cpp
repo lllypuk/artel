@@ -139,6 +139,19 @@ void ObjectModel::replace(const QJsonArray &rows) {
   m_rows = rows;
   endResetModel();
 }
+void ObjectModel::update(int row, const QVariantMap &record) {
+  const auto value = QJsonObject::fromVariantMap(record);
+  if (m_rows[row] == value)
+    return;
+  m_rows[row] = value;
+  emit dataChanged(index(row, 0), index(row, 0), {Qt::UserRole + 1});
+}
+void ObjectModel::append(const QVariantMap &record) {
+  const int row = m_rows.size();
+  beginInsertRows({}, row, row);
+  m_rows.append(QJsonObject::fromVariantMap(record));
+  endInsertRows();
+}
 ApiClient::ApiClient(QObject *parent) : QObject(parent) {
   setObjectName("apiClient");
   m_projects.setObjectName("projectsModel");
@@ -334,6 +347,8 @@ void ApiClient::snapshotFinished(QNetworkReply *reply, quint64 generation) {
     m_cursor = 0;
   }
   m_instance = instance;
+  if (!reply->property("beforeAnswerMismatch").toBool())
+    m_answerRetryNeedsSnapshot = false;
   m_sequence = sequence;
   m_projects.replace(obj.value("projects").toArray());
   m_tasks.replace(obj.value("tasks").toArray());
@@ -780,12 +795,9 @@ void ApiClient::loadQuestions(const QString &task, qint64 after) {
               valid = valid && validQuestion(row.toObject()) &&
                       row.toObject().value("task_id").toString() == task;
             if (valid) {
-              m_messagesError.clear();
               emit questionsReceived(rows.toVariantList(), after,
                                      obj.value("next_after").toInteger(),
                                      rows.size() == 5);
-            } else {
-              m_messagesError = tr("Owner questions unavailable or invalid");
             }
             emit changed();
           });
@@ -835,10 +847,7 @@ void ApiClient::refreshQuestionStatuses(const QString &task,
       valid = valid && validQuestion(row.toObject()) &&
               row.toObject().value("task_id").toString() == task;
     if (valid) {
-      m_messagesError.clear();
       emit questionStatusesReceived(rows.toVariantList());
-    } else {
-      m_messagesError = tr("Owner question status unavailable or invalid");
     }
     emit changed();
   });
@@ -851,16 +860,16 @@ bool ApiClient::validAnswerResult(const QJsonObject &obj) const {
 bool ApiClient::answerQuestion(const QString &task, const QString &question,
                                const QString &text) {
   if (!m_online || m_stopped || pending() || m_uncertain || !uuid(task) ||
-      !uuid(question))
+      !uuid(question) || !text.isValidUtf16())
     return false;
   const QByteArray body = text.toUtf8();
-  if (body.isEmpty() || body.size() > 4096 || body.contains('\0'))
+  if (text.trimmed().isEmpty() || body.size() > 4096 || body.contains('\0'))
     return false;
   m_method = "POST";
   m_path = "/v1/tasks/" + task + "/questions/" + question + "/answer";
-  m_body = QJsonDocument(QJsonObject{{"instance_id", m_instance},
-                                     {"text", QString::fromUtf8(body)}})
-               .toJson(QJsonDocument::Compact);
+  m_body =
+      QJsonDocument(QJsonObject{{"instance_id", m_instance}, {"text", text}})
+          .toJson(QJsonDocument::Compact);
   m_key = QUuid::createUuid().toString(QUuid::WithoutBraces).toLatin1();
   m_mutationInstance = m_instance;
   m_conflict = false;
@@ -923,9 +932,12 @@ bool ApiClient::save(const QString &method, const QString &path,
   sendMutation();
   return true;
 }
+bool ApiClient::canRetry() const {
+  return m_uncertain && m_online && !pending() && !m_stopped &&
+         !m_answerRetryNeedsSnapshot && m_mutationInstance == m_instance;
+}
 bool ApiClient::retry() {
-  if (!m_uncertain || !m_online || pending() || m_stopped ||
-      m_mutationInstance != m_instance)
+  if (!canRetry())
     return false;
   sendMutation();
   return true;
@@ -940,6 +952,7 @@ bool ApiClient::abandonUncertain() {
   m_body.clear();
   m_key.clear();
   m_mutationInstance.clear();
+  m_answerRetryNeedsSnapshot = false;
   m_error.clear();
   emit changed();
   return true;
@@ -1011,16 +1024,15 @@ void ApiClient::sendMutation() {
       }
     } else {
       // A transport error, 5xx, redirect or unusable success can follow commit.
-      m_uncertain = staleInstance || code == 0 || code >= 500 ||
-                    (code >= 200 && code < 400) ||
+      const auto detail = obj.value("code").toString();
+      const bool answerMismatch =
+          answerRoute && code == 409 && detail == "instance_mismatch";
+      const bool unresolvedRetry = answerMismatch && m_uncertain;
+      m_uncertain = unresolvedRetry || staleInstance || code == 0 ||
+                    code >= 500 || (code >= 200 && code < 400) ||
                     reply->error() == QNetworkReply::OperationCanceledError;
       m_conflict = code == 409;
       if (deliveryMutation) {
-        const auto detail =
-            QJsonDocument::fromJson(reply->property("bytes").toByteArray())
-                .object()
-                .value("code")
-                .toString();
         m_error =
             m_uncertain ? tr("Send outcome unknown; retry the same request "
                              "with the same key")
@@ -1042,6 +1054,12 @@ void ApiClient::sendMutation() {
                             "again")
                        : tr("Conflict; reload before trying the action again"))
                 : tr("Save rejected; draft preserved");
+      }
+      if (answerMismatch) {
+        m_answerRetryNeedsSnapshot = unresolvedRetry;
+        if (m_snapshot)
+          m_snapshot->setProperty("beforeAnswerMismatch", true);
+        reload();
       }
       if (code == 401) {
         fail(deliveryMutation

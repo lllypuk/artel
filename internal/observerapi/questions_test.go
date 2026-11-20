@@ -56,7 +56,7 @@ func newQuestionChannelFixture(t *testing.T) *questionChannelFixture {
 		map[string]string{"Idempotency-Key": uuid.NewString()}, 200)
 	attach := `{"writer_id":"` + d.writerID + `","journal_id":"` + questionJournalID(t, f.s, d.bindingID) +
 		`","runtime_id":"` + runtime.RuntimeID + `","pi_session_id":"` + runtime.PiSessionID +
-		`","capability":"` + store.DeliveryOwnerQuestionsCapability + `"}`
+		`","capability":"` + store.DeliveryOwnerQuestionsCapability + `","instance_id":"` + d.instanceID(t) + `"}`
 	d.exchange(t, true, http.MethodPost, "/delivery/v1/attach", d.deliveryToken, attach, nil, 200)
 	return d
 }
@@ -135,6 +135,27 @@ func TestDeliveryQuestionChannelAuthenticationReplayAndStrictJSON(t *testing.T) 
 	}
 }
 
+func TestDeliveryQuestionExactJSONUnicode(t *testing.T) {
+	d := newQuestionChannelFixture(t)
+	instance, key := d.instanceID(t), uuid.NewString()
+	post := func(raw string, status int) string {
+		return d.exchange(t, true, http.MethodPost, "/delivery/v1/questions", d.deliveryToken,
+			fmt.Sprintf(`{"instance_id":%q,"task_id":%q,"writer_id":%q,"text":%s}`, instance, d.taskID, d.writerID, raw),
+			map[string]string{"Idempotency-Key": key}, status)
+	}
+	for _, malformed := range []string{`"\ud800"`, `"\udc00"`, `"\ud800x"`, `"\ud800\u0041"`} {
+		post(malformed, 400)
+	}
+	ack := post(`"pair=\ud83d\ude00 replacement=� slash=\\ud800"`, 200)
+	if replay := post(`"pair=😀 replacement=\ufffd slash=\\ud800"`, 200); replay != ack {
+		t.Fatal("equivalent valid Unicode did not replay")
+	}
+	rows, _, err := d.s.ListOwnerQuestions(t.Context(), d.taskID, instance, 0, 5, nil)
+	if err != nil || len(rows) != 1 || rows[0].Text != `pair=😀 replacement=� slash=\ud800` {
+		t.Fatalf("question text changed: %+v %v", rows, err)
+	}
+}
+
 func TestDeliveryQuestionRequiresOptIn(t *testing.T) {
 	d := newDeliveryChannelFixture(t)
 	writer := uuid.NewString()
@@ -204,9 +225,9 @@ func postQuestionUDS(t *testing.T, client *http.Client, body []byte, token, key 
 	return response.StatusCode, data
 }
 
-func nextQuestionUDS(t *testing.T, client *http.Client, token, writerID string) []byte {
+func nextQuestionUDS(t *testing.T, client *http.Client, token, writerID, instance string) []byte {
 	t.Helper()
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://artel-observer/delivery/v1/next?writer_id="+writerID, nil)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://artel-observer/delivery/v1/next?writer_id="+writerID+"&instance_id="+instance, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +278,7 @@ func TestDeliveryQuestionRealUDSWireLimitsAndNext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nextBody := nextQuestionUDS(t, client, d.deliveryToken, d.writerID)
+	nextBody := nextQuestionUDS(t, client, d.deliveryToken, d.writerID, instance)
 	var next struct {
 		Message store.DeliveryMessage `json:"message"`
 	}
@@ -333,7 +354,7 @@ func TestDeliveryQuestionSwappedDatabaseDoesNotWriteOrReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := replacementStore.DeliveryAttach(t.Context(), original.bindingID, original.writerID, "", oldBinding.JournalID,
+	if err := replacementStore.DeliveryAttach(t.Context(), original.bindingID, replacementSnapshot.InstanceID, original.writerID, "", oldBinding.JournalID,
 		original.runtime.RuntimeID, original.runtime.PiSessionID, store.DeliveryOwnerQuestionsCapability); err != nil {
 		t.Fatal(err)
 	}
@@ -356,4 +377,64 @@ func TestDeliveryQuestionSwappedDatabaseDoesNotWriteOrReplay(t *testing.T) {
 		t.Fatalf("replacement wrote or replayed question: %+v %v", questions, err)
 	}
 	_ = question
+	assertReplacementAnswerChain(t, original, replacementStore, replacementSnapshot.InstanceID, instance)
+}
+
+// This handler represents the replacement daemon after the original writer's
+// context check. Each stage must check the pin independently on the wire.
+func assertReplacementAnswerChain(t *testing.T, d *questionChannelFixture, replacement *store.Store, instance, foreign string) {
+	t.Helper()
+	copyFixture := *d.fixture
+	copyFixture.observer = observerapi.New(replacement)
+	channel := &deliveryChannelFixture{fixture: &copyFixture, deliveryToken: d.deliveryToken}
+	call := func(method, route, pin string, body map[string]any, status int) string {
+		t.Helper()
+		path := "/delivery/v1/" + route
+		var data []byte
+		if method == http.MethodGet {
+			path += "?writer_id=" + d.writerID + "&instance_id=" + pin
+		} else {
+			body["instance_id"], body["writer_id"] = pin, d.writerID
+			data, _ = json.Marshal(body)
+		}
+		return channel.exchange(t, true, method, path, d.deliveryToken, string(data), nil, status)
+	}
+	check := func(method, route string, body map[string]any) string {
+		t.Helper()
+		if denied := call(method, route, foreign, body, 409); denied != "{\"error\":\"instance_mismatch\"}\n" {
+			t.Fatalf("%s did not fence the old database: %s", route, denied)
+		}
+		return call(method, route, instance, body, 200)
+	}
+	q, err := replacement.CreateOwnerQuestion(t.Context(), d.bindingID, store.OwnerQuestionCreate{
+		Key: uuid.NewString(), InstanceID: instance, TaskID: d.taskID, WriterID: d.writerID, Text: "Replacement private question",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := replacement.AnswerOwnerQuestion(t.Context(), d.taskID, q.ID, store.OwnerQuestionAnswer{
+		Key: uuid.NewString(), InstanceID: instance, Text: "Replacement private answer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var next struct {
+		Message store.DeliveryMessage `json:"message"`
+		Key     string                `json:"receipt_key"`
+	}
+	if err := json.Unmarshal([]byte(check(http.MethodGet, "next", nil)), &next); err != nil || next.Message.ID != a.MessageID || next.Message.Text != "Replacement private answer" {
+		t.Fatalf("replacement next: %+v %v", next, err)
+	}
+	var attempt store.DeliveryAttemptResult
+	if err := json.Unmarshal([]byte(check(http.MethodPost, "spend", map[string]any{"message_id": a.MessageID})), &attempt); err != nil || !attempt.Right {
+		t.Fatalf("old pin consumed the right: %+v %v", attempt, err)
+	}
+	check(http.MethodPost, "verify", map[string]any{"attempt_id": attempt.AttemptID})
+	body := map[string]any{"key": next.Key, "message_id": a.MessageID, "attempt_id": attempt.AttemptID,
+		"type": "before_agent_start", "message_type": "custom", "pi_session_id": d.runtime.PiSessionID,
+		"details": map[string]any{"message_id": a.MessageID, "attempt_id": attempt.AttemptID, "custom_type": "artel-owner-answer", "question_id": q.ID}}
+	first := check(http.MethodPost, "receipt", body)
+	if replay := check(http.MethodPost, "receipt", body); replay != first || !strings.Contains(replay, `"status":"observed"`) {
+		t.Fatal("valid receipt did not replay")
+	}
 }

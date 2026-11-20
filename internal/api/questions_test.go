@@ -37,13 +37,13 @@ func newQuestionAPIEnv(t *testing.T, ready bool) *deliveryOwnerEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.s.DeliveryAttach(t.Context(), e.binding.ID, e.writerID, "", e.binding.JournalID,
+	if err := e.s.DeliveryAttach(t.Context(), e.binding.ID, mustOwnerInstance(t, e.s), e.writerID, "", e.binding.JournalID,
 		e.runtime.RuntimeID, e.runtime.PiSessionID, store.DeliveryOwnerQuestionsCapability); err != nil {
 		t.Fatal(err)
 	}
 	e.binding.Status = "active"
 	if ready {
-		if err := e.s.DeliveryReady(t.Context(), e.binding.ID, e.writerID); err != nil {
+		if err := e.s.DeliveryReady(t.Context(), e.binding.ID, e.instance, e.writerID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -247,6 +247,29 @@ func TestOwnerQuestionHTTPStrictJSONAndTextLimits(t *testing.T) {
 	}
 }
 
+func TestOwnerAnswerExactJSONUnicode(t *testing.T) {
+	e := newQuestionAPIEnv(t, false)
+	question := e.createQuestion(t, uuid.NewString(), e.task.ID, e.writerID, e.instance, "Unicode answer fixture", 200)
+	path := "/v1/tasks/" + e.task.ID + "/questions/" + question.ID + "/answer"
+	key := uuid.NewString()
+	post := func(raw string, status int) []byte {
+		return e.ownerQuestionRequest(t, http.MethodPost, path, key, fmt.Sprintf(`{"instance_id":%q,"text":%s}`, e.instance, raw), status)
+	}
+	for _, malformed := range []string{`"\ud800"`, `"\udc00"`, `"\ud800x"`, `"\ud800\u0041"`} {
+		post(malformed, 400)
+	}
+	ack := post(`"pair=\ud83d\ude00 replacement=� slash=\\ud800"`, 200)
+	replay := post(`"pair=😀 replacement=\ufffd slash=\\ud800"`, 200)
+	if string(ack) != string(replay) {
+		t.Fatal("equivalent valid Unicode did not replay")
+	}
+	rows, _ := e.listQuestions(t, e.task.ID, "?instance_id="+e.instance+"&ids="+question.ID, 200)
+	if len(rows) != 1 || rows[0].AnswerText != `pair=😀 replacement=� slash=\ud800` {
+		t.Fatalf("answer text changed: %+v", rows)
+	}
+	e.listQuestions(t, e.task.ID, "?instance_id="+e.instance+"&ids=%XX", 400)
+}
+
 func TestOwnerQuestionHTTPRealWireAndAuthentication(t *testing.T) {
 	e := newQuestionAPIEnv(t, false)
 	token := strings.Repeat("5e", 32)
@@ -357,7 +380,7 @@ func seedQuestionReplacement(t *testing.T, e *deliveryOwnerEnv) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.s.DeliveryAttach(t.Context(), e.binding.ID, e.writerID, "", e.binding.JournalID, e.runtime.RuntimeID, e.runtime.PiSessionID, store.DeliveryOwnerQuestionsCapability); err != nil {
+	if err := e.s.DeliveryAttach(t.Context(), e.binding.ID, mustOwnerInstance(t, e.s), e.writerID, "", e.binding.JournalID, e.runtime.RuntimeID, e.runtime.PiSessionID, store.DeliveryOwnerQuestionsCapability); err != nil {
 		t.Fatal(err)
 	}
 }

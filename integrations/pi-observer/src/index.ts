@@ -121,7 +121,6 @@ export default function observer(pi: ExtensionAPI) {
           });
           ownerQuestionsRegistered = true;
         }
-        activateOwnerQuestions(config.allow_owner_questions === true);
         writer = new DeliveryWriter(config, token, ctx, registration.pi_session_id, registration.runtime_id, status, attempt => {
           if (deliveryShutdown) return;
           const answer = attempt.kind === "answer";
@@ -132,7 +131,7 @@ export default function observer(pi: ExtensionAPI) {
             details: { message_id: attempt.messageId, attempt_id: attempt.attemptId,
               ...(answer ? { custom_type: "artel-owner-answer", question_id: attempt.questionId } : {}) },
           }, { triggerTurn: true });
-        });
+        }, undefined, activateOwnerQuestions);
         void writer.start();
       } catch { status("Artel: delivery disabled — config unavailable, pending or unsafe"); }
     }, 2000);
@@ -144,7 +143,8 @@ export default function observer(pi: ExtensionAPI) {
   pi.on("before_agent_start", (event, ctx) => {
     if (!writer) return;
     const session = ctx.sessionManager.getSessionId();
-    writer.observeStart(event, session, attempt => writer!.publishReceipt(attempt));
+    const observedWriter = writer;
+    observedWriter.observeStart(event, session, attempt => observedWriter.publishReceipt(attempt));
   });
   pi.on("agent_start", (_event, ctx) => { if (client) { current = ctx; working = true; client.changed(); } });
   // agent_end is intentionally not an idle boundary.

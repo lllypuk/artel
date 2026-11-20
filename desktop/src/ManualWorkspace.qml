@@ -695,77 +695,79 @@ Item {
                             Caption {
                                 text: qsTr("Owner questions")
                                 font.bold: true
-                                visible: manual.panel.questions.length > 0
+                                visible: questionCards.count > 0
                             }
                             Repeater {
-                                model: manual.panel.questions
+                                id: questionCards
+                                model: manual.panel.questionModel
                                 delegate: ColumnLayout {
                                     id: questionRow
-                                    required property var modelData
+                                    required property var record
+                                    readonly property string questionId: record.id
                                     Layout.fillWidth: true
                                     Caption {
-                                        text: qsTr("Question from Pi session %1").arg(questionRow.modelData.pi_session_id)
+                                        text: qsTr("Question from Pi session %1").arg(questionRow.record.pi_session_id)
                                         color: theme.muted
                                         wrapMode: Text.Wrap
                                         Layout.fillWidth: true
                                     }
                                     CopyText {
-                                        objectName: "questionText_" + questionRow.modelData.id
-                                        text: questionRow.modelData.text
+                                        objectName: "questionText_" + questionRow.questionId
+                                        text: questionRow.record.text
                                         Layout.fillWidth: true
                                     }
                                     UI.StatusLabel {
                                         theme: manual.theme
-                                        objectName: "answerProviderWarning_" + questionRow.modelData.id
+                                        objectName: "answerProviderWarning_" + questionRow.questionId
                                         text: qsTr("The text will be sent to the provider configured in Pi as part of the conversation context. It does not confirm delivery to the provider or that Pi completed the turn.")
-                                        visible: questionRow.modelData.status === "open"
+                                        visible: questionRow.record.status === "open"
                                         severity: "warning"
                                         Layout.fillWidth: true
                                     }
                                     UI.LongText {
                                         id: answerField
                                         theme: manual.theme
-                                        objectName: "answerField_" + questionRow.modelData.id
-                                        visible: questionRow.modelData.status === "open"
+                                        objectName: "answerField_" + questionRow.questionId
+                                        visible: questionRow.record.status === "open"
                                         enabled: manual.panel.writable && !manual.panel.busy
-                                        text: manual.panel.answerText(questionRow.modelData.id)
+                                        text: manual.panel.answerText(questionRow.questionId)
                                         placeholderText: qsTr("Answer for Pi")
                                         Accessible.name: placeholderText
                                         Layout.fillWidth: true
                                         Layout.preferredHeight: Math.max(100, implicitHeight)
                                         onTextChanged: {
                                             if (activeFocus)
-                                                manual.panel.setAnswerText(questionRow.modelData.id, text);
+                                                manual.panel.setAnswerText(questionRow.questionId, text);
                                         }
                                         onActiveFocusChanged: manual.revealField(this, cursorRectangle.y)
                                         onCursorRectangleChanged: manual.revealField(this, cursorRectangle.y)
                                     }
                                     PanelButton {
-                                        objectName: "answerButton_" + questionRow.modelData.id
-                                        visible: questionRow.modelData.status === "open"
+                                        objectName: "answerButton_" + questionRow.questionId
+                                        visible: questionRow.record.status === "open"
                                         text: qsTr("Save answer for Pi")
                                         kind: "primary"
-                                        enabled: questionRow.modelData.canAnswer && !manual.panel.busy
-                                        onClicked: manual.panel.answerQuestion(questionRow.modelData.id)
+                                        enabled: questionRow.record.canAnswer && answerField.text.trim().length > 0
+                                        onClicked: manual.panel.answerQuestion(questionRow.questionId)
                                     }
                                     CopyText {
-                                        objectName: "answerText_" + questionRow.modelData.id
-                                        visible: questionRow.modelData.status === "answered"
-                                        text: questionRow.modelData.answer_text || ""
+                                        objectName: "answerText_" + questionRow.questionId
+                                        visible: questionRow.record.status === "answered"
+                                        text: questionRow.record.answer_text || ""
                                         Layout.fillWidth: true
                                     }
                                     UI.StatusLabel {
                                         theme: manual.theme
-                                        objectName: "answerStatus_" + questionRow.modelData.id
-                                        visible: questionRow.modelData.status === "answered"
-                                        text: questionRow.modelData.answerStatusLabel
+                                        objectName: "answerStatus_" + questionRow.questionId
+                                        visible: questionRow.record.status === "answered"
+                                        text: questionRow.record.answerStatusLabel
                                         Layout.fillWidth: true
                                     }
                                     UI.StatusLabel {
                                         theme: manual.theme
-                                        objectName: "answerBlockReason_" + questionRow.modelData.id
-                                        visible: questionRow.modelData.status === "answered" && !!questionRow.modelData.answerBlockReason
-                                        text: questionRow.modelData.answerBlockReason || ""
+                                        objectName: "answerBlockReason_" + questionRow.questionId
+                                        visible: questionRow.record.status === "answered" && !!questionRow.record.answerBlockReason
+                                        text: questionRow.record.answerBlockReason || ""
                                         severity: "warning"
                                         Layout.fillWidth: true
                                     }

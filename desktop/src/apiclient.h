@@ -20,6 +20,8 @@ public:
   QHash<int, QByteArray> roleNames() const override;
   Q_INVOKABLE QVariantMap get(int row) const;
   void replace(const QJsonArray &rows);
+  void update(int row, const QVariantMap &record);
+  void append(const QVariantMap &record);
 
 private:
   QJsonArray m_rows;
@@ -63,6 +65,7 @@ public:
   void refreshMessageStatuses(const QString &task, const QStringList &ids);
   void loadDelivery(const QString &task);
   bool questionsLoading() const { return m_questionsReply; }
+  bool questionStatusesLoading() const { return m_questionStatusReply; }
   void loadQuestions(const QString &task, qint64 after = 0);
   void refreshQuestionStatuses(const QString &task, const QStringList &ids);
   void cancelMessages();
@@ -85,6 +88,7 @@ public:
   bool loading() const { return m_snapshot; }
   bool pending() const { return m_mutation; }
   bool uncertain() const { return m_uncertain; }
+  bool canRetry() const;
   bool canAbandon() const {
     return m_uncertain && m_online && !pending() && !m_stopped &&
            !m_instance.isEmpty() && m_mutationInstance != m_instance;
@@ -151,6 +155,7 @@ private:
   qint64 m_sequence = 0, m_cursor = 0;
   bool m_online = false, m_uncertain = false, m_conflict = false,
        m_reloadAgain = false, m_stopped = true;
+  bool m_answerRetryNeedsSnapshot = false;
   int m_timeout = 5000;
   QVariantMap m_draft;
   QByteArray m_method, m_body, m_key;

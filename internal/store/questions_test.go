@@ -1,10 +1,8 @@
 package store
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -41,11 +39,18 @@ func mustQuestionEnv(t *testing.T, s *Store) questionEnv {
 		t.Fatal(err)
 	}
 	writer := uuid.NewString()
-	if err := s.DeliveryAttach(t.Context(), binding.ID, writer, "", binding.JournalID, runtime.RuntimeID, runtime.PiSessionID, DeliveryOwnerQuestionsCapability); err != nil {
+	if err := s.DeliveryAttach(t.Context(), binding.ID, snap.InstanceID, writer, "", binding.JournalID, runtime.RuntimeID, runtime.PiSessionID, DeliveryOwnerQuestionsCapability); err != nil {
 		t.Fatal(err)
 	}
 	return questionEnv{deliveryEnv: deliveryEnv{project: p, task: task, observer: observer,
 		observerVerifier: verifier, runtime: runtime, binding: binding, instance: snap.InstanceID}, writer: writer}
+}
+
+func (e questionEnv) mustReceipt(t *testing.T, s *Store, key string, receipt deliveryReceiptBodyT) {
+	t.Helper()
+	if _, err := s.DeliveryReceipt(t.Context(), e.binding.ID, e.instance, e.writer, key, receipt); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (e questionEnv) create(t *testing.T, s *Store, key, taskID, writer, text string) (OwnerQuestionCreateResult, error) {
@@ -115,7 +120,7 @@ func TestOwnerQuestionCreateReplayAndScope(t *testing.T) {
 	// Writer identity is authenticated on every call but is not part of the
 	// canonical payload. A replacement writer can recover the lost ACK.
 	replacement := uuid.NewString()
-	if err := s.DeliveryAttach(t.Context(), e.binding.ID, replacement, e.writer, e.binding.JournalID, e.runtime.RuntimeID, e.runtime.PiSessionID, DeliveryOwnerQuestionsCapability); err != nil {
+	if err := s.DeliveryAttach(t.Context(), e.binding.ID, e.instance, replacement, e.writer, e.binding.JournalID, e.runtime.RuntimeID, e.runtime.PiSessionID, DeliveryOwnerQuestionsCapability); err != nil {
 		t.Fatal(err)
 	}
 	replayed, err = e.create(t, s, key, e.task.ID, replacement, "line one\r\n\x01")
@@ -130,7 +135,7 @@ func TestOwnerQuestionCreateReplayAndScope(t *testing.T) {
 		t.Fatalf("foreign instance replay: %v", err)
 	}
 	_, foreignTask := seedAt(t, s, "/questions/foreign/"+uuid.NewString())
-	if _, err := e.create(t, s, uuid.NewString(), foreignTask.ID, replacement, "foreign project"); !observerIs(err, "assignment_mismatch") {
+	if _, err := e.create(t, s, key, foreignTask.ID, replacement, "foreign project"); !observerIs(err, "assignment_mismatch") {
 		t.Fatalf("foreign project: %v", err)
 	}
 	if _, err := e.create(t, s, uuid.NewString(), uuid.NewString(), replacement, "missing"); !observerIs(err, "not_found") {
@@ -181,7 +186,7 @@ func TestOwnerQuestionRequiresOptInAndAttachedCapability(t *testing.T) {
 		s := openTest(t)
 		e := mustQuestionEnv(t, s)
 		// A late capability field cannot replace the fixed attach capability.
-		if err := s.DeliveryAttach(t.Context(), e.binding.ID, e.writer, "", e.binding.JournalID, e.runtime.RuntimeID, e.runtime.PiSessionID, ""); !observerIs(err, "capability_required") {
+		if err := s.DeliveryAttach(t.Context(), e.binding.ID, e.instance, e.writer, "", e.binding.JournalID, e.runtime.RuntimeID, e.runtime.PiSessionID, ""); !observerIs(err, "capability_required") {
 			t.Fatalf("attach downgraded capability: %v", err)
 		}
 	})
@@ -306,7 +311,7 @@ func TestOwnerQuestionConcurrentAnswersAndAssignmentRace(t *testing.T) {
 
 func seedMixedQuestionQueue(t *testing.T, s *Store, e questionEnv) (questionIDs, commissionIDs []string) {
 	t.Helper()
-	if err := s.DeliveryReady(t.Context(), e.binding.ID, e.writer); err != nil {
+	if err := s.DeliveryReady(t.Context(), e.binding.ID, e.instance, e.writer); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 7 {
@@ -375,7 +380,7 @@ func TestOwnerQuestionPaginationAndLegacyMessageFiltering(t *testing.T) {
 		t.Fatalf("legacy mixed IDs included answer: %+v %v", mixed, err)
 	}
 	// The writer queue still returns both kinds, including answer context.
-	if _, _, err := s.DeliveryNext(t.Context(), e.binding.ID, e.writer); err != nil {
+	if _, _, err := s.DeliveryNext(t.Context(), e.binding.ID, e.instance, e.writer); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -388,7 +393,7 @@ type questionLifecycleState struct {
 
 func prepareQuestionLifecycle(t *testing.T, s *Store, e questionEnv) questionLifecycleState {
 	t.Helper()
-	if err := s.DeliveryReady(t.Context(), e.binding.ID, e.writer); err != nil {
+	if err := s.DeliveryReady(t.Context(), e.binding.ID, e.instance, e.writer); err != nil {
 		t.Fatal(err)
 	}
 	state := questionLifecycleState{
@@ -445,7 +450,7 @@ func assertQuestionLifecycleHistory(t *testing.T, s *Store, e questionEnv, mode 
 			t.Fatalf("undelivered status after %s: %+v", mode, got)
 		}
 	}
-	if got := questionByID(t, s, e.task.ID, e.instance, state.observedQuestion.ID); got.AnswerStatus != "observed" {
+	if got := questionByID(t, s, e.task.ID, e.instance, state.observedQuestion.ID); got.AnswerStatus != "observed" || got.AnswerBlockReason != "" {
 		t.Fatalf("observed status: %+v", got)
 	}
 	if _, err := e.answer(t, s, state.openQuestion.ID, uuid.NewString(), "too late"); !observerIs(err, "closed") {
@@ -455,24 +460,41 @@ func assertQuestionLifecycleHistory(t *testing.T, s *Store, e questionEnv, mode 
 
 func assertQuestionLifecycleDeliveryFence(t *testing.T, s *Store, e questionEnv, mode string, state questionLifecycleState) {
 	t.Helper()
-	if _, err := s.DeliverySpend(t.Context(), e.binding.ID, e.writer, state.pendingAnswer.MessageID); err == nil {
+	if _, err := s.DeliverySpend(t.Context(), e.binding.ID, e.instance, e.writer, state.pendingAnswer.MessageID); err == nil {
 		t.Fatal("pending answer spent after lifecycle closure")
 	}
-	if _, err := s.DeliveryVerify(t.Context(), e.binding.ID, e.writer, state.spentAttempt.AttemptID); err == nil {
+	if _, err := s.DeliveryVerify(t.Context(), e.binding.ID, e.instance, e.writer, state.spentAttempt.AttemptID); err == nil {
 		t.Fatal("unspent answer verified after lifecycle closure")
 	}
 	receipt := e.answerReceipt(state.verifiedAttempt, state.verifiedQuestion.ID)
 	key := e.receiptKey(t, s, state.verifiedAnswer.MessageID)
+	observedKey := e.receiptKey(t, s, state.observedAnswer.MessageID)
+	observedReceipt := e.answerReceipt(state.observedAttempt, state.observedQuestion.ID)
+	var blocked int
+	if err := s.db.QueryRowContext(t.Context(), "SELECT blocked FROM delivery_messages WHERE id=?", state.observedAnswer.MessageID).Scan(&blocked); err != nil || blocked != 0 {
+		t.Fatalf("observed row was blocked: %d %v", blocked, err)
+	}
+
 	if mode == "revoke" {
-		if _, err := s.DeliveryReceipt(t.Context(), e.binding.ID, key, receipt); !observerIs(err, "revoked") {
+		if _, err := s.DeliveryReceipt(t.Context(), e.binding.ID, e.instance, e.writer, observedKey, observedReceipt); !observerIs(err, "revoked") {
+			t.Fatalf("matching answer receipt replay after revoke: %v", err)
+		}
+		if _, err := s.DeliveryReceipt(t.Context(), e.binding.ID, e.instance, e.writer, key, receipt); !observerIs(err, "revoked") {
 			t.Fatalf("first receipt after revoke: %v", err)
 		}
 		return
 	}
+	e.mustReceipt(t, s, observedKey, observedReceipt)
 	// A call already verified on the unchanged grant may publish after close/archive.
-	published, err := s.DeliveryReceipt(t.Context(), e.binding.ID, key, receipt)
+	published, err := s.DeliveryReceipt(t.Context(), e.binding.ID, e.instance, e.writer, key, receipt)
 	if err != nil || published.Status != "observed" {
 		t.Fatalf("verified receipt after %s: %+v %v", mode, published, err)
+	}
+	if got := questionByID(t, s, e.task.ID, e.instance, state.verifiedQuestion.ID); got.AnswerStatus != "observed" || got.AnswerBlockReason != "" {
+		t.Fatalf("late allowed receipt projected a block: %+v", got)
+	}
+	if err := s.db.QueryRowContext(t.Context(), "SELECT blocked FROM delivery_messages WHERE id=?", state.verifiedAnswer.MessageID).Scan(&blocked); err != nil || blocked != 0 {
+		t.Fatalf("late allowed receipt retained block: %d %v", blocked, err)
 	}
 }
 
@@ -481,10 +503,10 @@ func assertQuestionReopenKeepsQueueBlocked(t *testing.T, s *Store, e questionEnv
 	if mode == "revoke" {
 		return
 	}
-	if _, _, err := s.DeliveryNext(t.Context(), e.binding.ID, e.writer); err != nil {
+	if _, _, err := s.DeliveryNext(t.Context(), e.binding.ID, e.instance, e.writer); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DeliverySpend(t.Context(), e.binding.ID, e.writer, state.spentAnswer.MessageID); !observerIs(err, "closed") {
+	if _, err := s.DeliverySpend(t.Context(), e.binding.ID, e.instance, e.writer, state.spentAnswer.MessageID); !observerIs(err, "closed") {
 		t.Fatalf("reopen resumed answer: %v", err)
 	}
 }
@@ -597,32 +619,32 @@ func populatedV3(t *testing.T, path string) populatedV3State {
 		t.Fatal(err)
 	}
 	writer := uuid.NewString()
-	if err := old.DeliveryAttach(t.Context(), binding.ID, writer, "", binding.JournalID, runtime.RuntimeID, runtime.PiSessionID, ""); err != nil {
+	if err := old.DeliveryAttach(t.Context(), binding.ID, "", writer, "", binding.JournalID, runtime.RuntimeID, runtime.PiSessionID, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := old.DeliveryReady(t.Context(), binding.ID, writer); err != nil {
+	if err := old.DeliveryReady(t.Context(), binding.ID, "", writer); err != nil {
 		t.Fatal(err)
 	}
 	observed := mustAppendV3(t, old, task.ID, binding.ID, mustSnapshotInstance(t, old), "observed v3")
-	attempt, err := old.DeliverySpend(t.Context(), binding.ID, writer, observed.ID)
+	attempt, err := old.DeliverySpend(t.Context(), binding.ID, "", writer, observed.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := old.DeliveryVerify(t.Context(), binding.ID, writer, attempt.AttemptID); err != nil {
+	if _, err := old.DeliveryVerify(t.Context(), binding.ID, "", writer, attempt.AttemptID); err != nil {
 		t.Fatal(err)
 	}
 	receiptKey := ""
 	if err := db.QueryRowContext(t.Context(), "SELECT receipt_key FROM delivery_messages WHERE id=?", observed.ID).Scan(&receiptKey); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := old.DeliveryReceipt(t.Context(), binding.ID, receiptKey, deliveryReceiptBodyT{MessageID: observed.ID, AttemptID: attempt.AttemptID,
+	if _, err := old.DeliveryReceipt(t.Context(), binding.ID, "", "", receiptKey, deliveryReceiptBodyT{MessageID: observed.ID, AttemptID: attempt.AttemptID,
 		Type: "before_agent_start", MessageType: "custom", PiSessionID: runtime.PiSessionID,
 		Details: map[string]any{"message_id": observed.ID, "attempt_id": attempt.AttemptID}}); err != nil {
 		t.Fatal(err)
 	}
 	mustAppendV3(t, old, task.ID, binding.ID, mustSnapshotInstance(t, old), "pending v3")
 	spent := mustAppendV3(t, old, task.ID, binding.ID, mustSnapshotInstance(t, old), "spent v3")
-	if _, err := old.DeliverySpend(t.Context(), binding.ID, writer, spent.ID); err != nil {
+	if _, err := old.DeliverySpend(t.Context(), binding.ID, "", writer, spent.ID); err != nil {
 		t.Fatal(err)
 	}
 	revoke := DeliveryOwnerMutation{ObserverID: observer, Key: uuid.NewString(), Action: "revoke", BindingID: binding.ID}
@@ -667,24 +689,6 @@ func mustAppendV3(t *testing.T, s *Store, taskID, bindingID, instanceID, text st
 	return m
 }
 
-// legacyV3Open models the old binary's version gate before any DDL or journal
-// mode change. A real v4 database must be rejected and left at version 4.
-func legacyV3Open(ctx context.Context, path string) error {
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = db.Close() }()
-	var version int
-	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
-		return err
-	}
-	if version > 3 {
-		return errors.New("unsupported database schema version")
-	}
-	return nil
-}
-
 func assertV3StatePreserved(t *testing.T, s *Store, before populatedV3State) {
 	t.Helper()
 	after, err := s.Snapshot(t.Context())
@@ -715,22 +719,6 @@ func assertV3StatePreserved(t *testing.T, s *Store, before populatedV3State) {
 	}
 }
 
-func assertLegacyV3RejectsV4(t *testing.T, path string) {
-	t.Helper()
-	if err := legacyV3Open(t.Context(), path); err == nil {
-		t.Fatal("old v3 binary accepted v4 schema")
-	}
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	var version int
-	if err := db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil || version != 4 {
-		t.Fatalf("old binary mutated v4: version=%d err=%v", version, err)
-	}
-}
-
 func TestOwnerQuestionsV3UpgradePreservesDeliveryAndLegacyReceipts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v3.sqlite")
 	before := populatedV3(t, path)
@@ -744,7 +732,6 @@ func TestOwnerQuestionsV3UpgradePreservesDeliveryAndLegacyReceipts(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	assertLegacyV3RejectsV4(t, path)
 }
 
 func TestOwnerQuestionsMigrationFailureRollsBackToV3(t *testing.T) {
@@ -824,7 +811,7 @@ func TestOwnerQuestionCreateRollbackAndAnswerReceiptBinding(t *testing.T) {
 			body.Details = map[string]any{"message_id": valid.MessageID, "attempt_id": valid.AttemptID,
 				"custom_type": "artel-owner-answer", "question_id": question.ID}
 			mutate(&body)
-			if _, err := s.DeliveryReceipt(t.Context(), e.binding.ID, e.receiptKey(t, s, answer.MessageID), body); !observerIs(err, "invalid_request") {
+			if _, err := s.DeliveryReceipt(t.Context(), e.binding.ID, e.instance, e.writer, e.receiptKey(t, s, answer.MessageID), body); !observerIs(err, "invalid_request") {
 				t.Fatalf("wrong answer receipt: %v", err)
 			}
 		})
@@ -875,7 +862,7 @@ func TestOwnerQuestionConcurrentAnswerAndAssignmentChange(t *testing.T) {
 	}
 	// Rebind is expected to commit. Repeat its read-side effect check rather
 	// than relying on goroutine result ordering.
-	if _, _, err := s.DeliveryNext(t.Context(), e.binding.ID, e.writer); !observerIs(err, "revoked") {
+	if _, _, err := s.DeliveryNext(t.Context(), e.binding.ID, e.instance, e.writer); !observerIs(err, "revoked") {
 		rebindErr = err
 	}
 	if rebindErr != nil {

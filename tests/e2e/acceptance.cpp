@@ -418,6 +418,21 @@ private slots:
     // The selected, initially empty task polls in the new question without a
     // task reselection. The original tool turn must settle before answering.
     QTRY_VERIFY_WITH_TIMEOUT(!question().isEmpty(), 20000);
+    const auto historyReason =
+        qEnvironmentVariable("ARTEL_QUESTION_HISTORY_REASON");
+    if (!historyReason.isEmpty()) {
+      QCOMPARE(question().value("status").toString(), QString("answered"));
+      QCOMPARE(question().value("answer_text").toString(), answerText);
+      QCOMPARE(question().value("answer_status").toString(),
+               QString("unknown"));
+      QCOMPARE(question().value("answer_block_reason").toString(),
+               historyReason);
+      const auto id = question().value("id").toString();
+      const auto *warning = item(ui.window, "answerBlockReason_" + id);
+      QVERIFY(warning && warning->isVisible());
+      QVERIFY(!ui.panel.assignment().value("enabled").toBool());
+      return;
+    }
     const auto tracePath = qEnvironmentVariable("ARTEL_QUESTION_TRACE");
     if (!tracePath.isEmpty()) {
       auto toolTurnSettled = [&] {

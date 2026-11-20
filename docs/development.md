@@ -259,15 +259,18 @@ and receipts; a failed migration rolls back to v3. After a successful migration,
 an old v3 binary refuses the database: in-place downgrade is unsupported.
 Absent/false `allow_owner_questions` preserves the v3 enable/revoke wire and
 receipt hashes and ordinary stage-4a delivery. The base extension can continue
-ordinary commissions but cannot ask questions or receive answer text. A new
+ordinary commissions but cannot ask questions or receive answer text. Opted-in
+writer requests pin the database in every step, and a receipt replay checks
+the current writer and assignment. A new
 opted-in CLI request to an old daemon is rejected without a server grant or
 confirmed writer config.
 
 Contract: [owner and delivery API](../api/openapi.yaml). The isolated real-Pi /
 daemon / production-QML oracle is
-`python3 -B integrations/pi-observer/tests/questions_pty.py`; current evidence
-and the remaining final-candidate gates are recorded in
-[owner-questions evidence](experiments/pi-bridge-delivery/owner-questions-evidence.md).
+`python3 -B integrations/pi-observer/tests/questions_pty.py`. Both local final
+gates passed on the previously recorded candidate; those results do not cover
+review fixes, re-review, manual acceptance or a pilot. See
+[owner-questions evidence](experiments/pi-bridge-delivery/owner-questions-evidence.md#task-6-повтор-после-двух-исправлений-в-тестах).
 
 Identity separates database UUID, credential-scoped observer UUID, Pi session UUID,
 fresh runtime UUID and server generation. New/reload/resume/fork requires a new

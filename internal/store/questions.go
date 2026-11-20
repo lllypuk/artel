@@ -84,16 +84,23 @@ func ownerQuestionWriterGate(ctx context.Context, tx *sql.Tx, bindingID, writerI
 	if err != nil {
 		return b, err
 	}
-	if err := deliveryAssignmentCheck(ctx, tx, b); err != nil {
+	if err := ownerQuestionAssignmentGate(ctx, tx, b, writerID); err != nil {
 		return b, err
 	}
+	return b, nil
+}
+
+func ownerQuestionAssignmentGate(ctx context.Context, tx *sql.Tx, b DeliveryBinding, writerID string) error {
+	if err := deliveryAssignmentCheck(ctx, tx, b); err != nil {
+		return err
+	}
 	if b.WriterID != writerID {
-		return b, observerError("owner_conflict")
+		return observerError("owner_conflict")
 	}
 	if !ownerQuestionsCapable(b) {
-		return b, observerError("capability_required")
+		return observerError("capability_required")
 	}
-	return b, nil
+	return nil
 }
 
 func questionTaskOpen(ctx context.Context, tx *sql.Tx, taskID, projectID string) error {
@@ -145,14 +152,6 @@ func (s *Store) CreateOwnerQuestion(ctx context.Context, bindingID string, in Ow
 	if err != nil {
 		return result, err
 	}
-	requestHash := observerHash(struct {
-		Instance, Task, Text string
-	}{in.InstanceID, in.TaskID, in.Text})
-	principal := "question.create:" + bindingID
-	matched, err := deliveryReplayLookup(ctx, tx, principal, in.Key, requestHash, &result)
-	if err != nil || matched {
-		return result, err
-	}
 	var projectID string
 	if err := tx.QueryRowContext(ctx, "SELECT project_id FROM tasks WHERE id=?", in.TaskID).Scan(&projectID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -162,6 +161,14 @@ func (s *Store) CreateOwnerQuestion(ctx context.Context, bindingID string, in Ow
 	}
 	if projectID != b.ProjectID {
 		return result, observerError("assignment_mismatch")
+	}
+	requestHash := observerHash(struct {
+		Instance, Task, Text string
+	}{in.InstanceID, in.TaskID, in.Text})
+	principal := "question.create:" + bindingID
+	matched, err := deliveryReplayLookup(ctx, tx, principal, in.Key, requestHash, &result)
+	if err != nil || matched {
+		return result, err
 	}
 	if err := questionTaskOpen(ctx, tx, in.TaskID, projectID); err != nil {
 		return result, err
@@ -379,7 +386,9 @@ func (s *Store) ListOwnerQuestions(ctx context.Context, taskID, instanceID strin
 				return nil, 0, err
 			}
 			question.AnswerStatus = message.Status
-			question.AnswerBlockReason = blockReason
+			if question.AnswerStatus != "observed" {
+				question.AnswerBlockReason = blockReason
+			}
 			if question.AnswerStatus != "observed" && (blocked != 0 || attemptState != "") {
 				question.AnswerStatus = "unknown"
 			}
@@ -414,6 +423,6 @@ func deliveryBlockOwnerQuestions(ctx context.Context, tx *sql.Tx, bindingID stri
 		return err
 	}
 	_, err := tx.ExecContext(ctx, `UPDATE delivery_messages SET blocked=1,block_reason='delivery_revoked'
-		WHERE binding_id=? AND blocked=0 AND json_extract(record,'$.kind')='answer'`, bindingID)
+		WHERE binding_id=? AND blocked=0 AND json_extract(record,'$.kind')='answer' AND json_extract(record,'$.status')!='observed'`, bindingID)
 	return err
 }
