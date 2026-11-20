@@ -582,7 +582,13 @@ private slots:
     QVERIFY(!client.uncertain());
     client.stop();
   }
+  void questionAnswerUnknownOutcomeReusesExactRequest_data() {
+    QTest::addColumn<bool>("legacy");
+    QTest::newRow("instance-mismatch") << false;
+    QTest::newRow("legacy-missing-route") << true;
+  }
   void questionAnswerUnknownOutcomeReusesExactRequest() {
+    QFETCH(bool, legacy);
     const QString question = "66666666-6666-4666-8666-666666666666";
     Fixture fixture;
     QList<QByteArray> answers;
@@ -604,6 +610,12 @@ private slots:
         const auto payload = QJsonDocument::fromJson(
                                  request.mid(request.indexOf("\r\n\r\n") + 4))
                                  .object();
+        if (serving == replacement && legacy) {
+          respond(
+              socket, 404,
+              "{\"code\":\"not_found\",\"message\":\"endpoint not found\"}");
+          return;
+        }
         if (payload.value("instance_id").toString() != serving) {
           respond(socket, 409, "{\"code\":\"instance_mismatch\"}");
           return;
@@ -625,16 +637,25 @@ private slots:
     QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
     client.reload();
     QTRY_VERIFY(client.online());
+    QSignalSpy accepted(&client, &ApiClient::answerAccepted);
     QVERIFY(!client.answerQuestion(taskID, question, QString(QChar(0xd800))));
     QVERIFY(client.answerQuestion(taskID, question, "line one\nline two"));
     QTRY_VERIFY(client.uncertain());
     QVERIFY(!client.answerQuestion(taskID, question, "different"));
     QCOMPARE(answers.size(), 1);
-    serving = replacement;
     holdSnapshot = true;
-    QVERIFY(client.retry());
+    client.reload(); // An A snapshot was already in flight before the swap.
     QTRY_VERIFY(delayed);
+    serving = replacement;
+    QVERIFY(client.retry());
+    QTRY_VERIFY(!client.pending());
     QVERIFY(client.uncertain());
+    QCOMPARE(client.instance(), instanceID);
+    QCOMPARE(accepted.count(), 0);
+    QVERIFY(!client.retry());
+    respond(delayed, 200, snapshot(0, instanceID));
+    delayed = nullptr;
+    QTRY_VERIFY(delayed); // A post-rejection snapshot is required.
     QCOMPARE(client.instance(), instanceID);
     QVERIFY(!client.retry());
     holdSnapshot = false;
@@ -642,16 +663,18 @@ private slots:
     QTRY_COMPARE(client.instance(), replacement);
     QVERIFY(client.uncertain());
     QVERIFY(!client.retry());
+    QCOMPARE(answers.size(), 2);
     serving = instanceID;
     client.reload();
     QTRY_COMPARE(client.instance(), instanceID);
     QVERIFY(client.retry());
     QTRY_VERIFY(!client.uncertain());
+    QCOMPARE(accepted.count(), 1);
     QCOMPARE(answers.size(), 3);
     QCOMPARE(answers[0], answers[1]);
     QCOMPARE(answers[0], answers[2]);
     QVERIFY(answers[0].contains("\"text\":\"line one\\nline two\""));
-    QCOMPARE(idempotencyKey(answers[0]), idempotencyKey(answers[1]));
+    QVERIFY(!idempotencyKey(answers[0]).isEmpty());
     client.stop();
   }
   void realTemporaryDaemon() {

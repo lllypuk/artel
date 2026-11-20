@@ -113,6 +113,7 @@ signals:
 
 private:
   void setProjectSelection(const QString &id);
+  void setTaskSelection(const QString &id);
   void resetCommissions();
   void resetQuestions();
   void pollQuestions();

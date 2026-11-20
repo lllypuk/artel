@@ -3994,15 +3994,48 @@ private slots:
     QFETCH(bool, retry);
     QFETCH(bool, discard);
     UiFixture fixture;
-    QPointer<QTcpSocket> held, heldHistory;
-    bool holdHistory = false;
+    const auto id = create ? QString("55555555-5555-4555-8555-555555555555")
+                           : (project ? fixture.project : fixture.task);
+    const bool taskCreate = !project && create;
+    const QString question = "66666666-6666-4666-8666-666666666666";
+    const QJsonObject answered{{"id", question},
+                               {"task_id", fixture.task},
+                               {"delivery_binding_id", fixture.project},
+                               {"pi_session_id", fixture.instance},
+                               {"text", "Task A question"},
+                               {"status", "answered"},
+                               {"created_at", "2026-11-17T12:00:00Z"},
+                               {"answer_message_id", id},
+                               {"answer_text", "Task A answer"},
+                               {"answer_status", "observed"},
+                               {"answered_at", "2026-11-17T12:01:00Z"}};
+    QPointer<QTcpSocket> held, heldHistory, heldPage, heldStatus;
+    bool holdHistory = false, holdQuestions = false;
+    QByteArray newTaskPage;
     fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
-      if (holdHistory && request.startsWith("GET /v1/events?"))
+      if (holdHistory && request.startsWith("GET /v1/events?")) {
         heldHistory = socket;
-      else if (!request.startsWith("GET"))
+      } else if (!request.startsWith("GET")) {
         held = socket;
-      else
+      } else if (taskCreate && request.contains("/questions?")) {
+        const bool oldTask =
+            request.startsWith("GET /v1/tasks/" + fixture.task.toUtf8() + "/");
+        if (oldTask && holdQuestions) {
+          (request.contains("&ids=") ? heldStatus : heldPage) = socket;
+          return;
+        }
+        if (!oldTask)
+          newTaskPage = request;
+        UiFixture::respond(
+            socket, 200,
+            QJsonDocument(
+                QJsonObject{{"questions",
+                             oldTask ? QJsonArray{answered} : QJsonArray{}},
+                            {"next_after", oldTask ? 1 : 0}})
+                .toJson());
+      } else {
         fixture.normal(socket, request);
+      }
     };
     ApiClient client;
     QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
@@ -4012,11 +4045,20 @@ private slots:
     QVERIFY(panel.selectProject(fixture.project));
     QVERIFY(panel.selectTask(fixture.task));
     QTRY_VERIFY(!panel.history().isEmpty());
-    bool selectionClearedAtReply = false;
+    if (taskCreate) {
+      QTRY_COMPARE(panel.questions().size(), 1);
+      QCOMPARE(
+          panel.questions().first().toMap().value("answer_text").toString(),
+          QString("Task A answer"));
+    }
+    bool selectionClearedAtReply = false, questionsClearedAtReply = false;
     connect(&client, &ApiClient::mutationSucceeded, &panel, [&] {
       selectionClearedAtReply = panel.task().isEmpty() &&
                                 panel.history().isEmpty() &&
                                 !panel.historyLoading();
+      questionsClearedAtReply = panel.questions().isEmpty() &&
+                                !panel.questionsLoading() &&
+                                !client.questionStatusesLoading();
     });
     QVERIFY(project ? panel.editProject(create) : panel.editTask(create));
     const QString field = project ? "name" : "title";
@@ -4038,8 +4080,6 @@ private slots:
       panel.field(field, "Newer draft during retry");
     }
     const auto retained = panel.editor();
-    const auto id = create ? QString("55555555-5555-4555-8555-555555555555")
-                           : (project ? fixture.project : fixture.task);
     const int version = create ? 1 : 2;
     // Simulate the committed object in the next snapshot as well as its reply.
     auto snapshot = QJsonDocument::fromJson(fixture.state).object();
@@ -4063,6 +4103,11 @@ private slots:
       client.loadHistory(fixture.project, fixture.task, 0);
       QTRY_VERIFY(heldHistory);
       QVERIFY(panel.historyLoading());
+    } else if (taskCreate) {
+      holdQuestions = true;
+      client.loadQuestions(fixture.task, 1);
+      client.refreshQuestionStatuses(fixture.task, {question});
+      QTRY_VERIFY(heldPage && heldStatus);
     }
     UiFixture::respond(
         held, 200,
@@ -4081,6 +4126,18 @@ private slots:
     } else if (project) {
       // Editing the current project must retain its selected task.
       QCOMPARE(panel.task().value("id").toString(), fixture.task);
+    } else if (taskCreate) {
+      QVERIFY(questionsClearedAtReply);
+      QTRY_VERIFY(!heldPage ||
+                  heldPage->state() == QAbstractSocket::UnconnectedState);
+      QTRY_VERIFY(!heldStatus ||
+                  heldStatus->state() == QAbstractSocket::UnconnectedState);
+      QCOMPARE(panel.task().value("id").toString(), id);
+      QTRY_VERIFY(newTaskPage.startsWith("GET /v1/tasks/" + id.toUtf8() +
+                                         "/questions?"));
+      QVERIFY(newTaskPage.contains("&after=0&"));
+      QTRY_VERIFY(!panel.questionsLoading());
+      QVERIFY(panel.questions().isEmpty());
     }
     if (discard) {
       panel.discard();
@@ -4111,6 +4168,10 @@ private slots:
     QVERIFY(!panel.dirty());
     QVERIFY(!panel.conflict());
     QCOMPARE(fixture.mutations.size(), retry ? 3 : 2);
+    if (taskCreate) {
+      QCOMPARE(panel.task().value("id").toString(), id);
+      QVERIFY(panel.questions().isEmpty());
+    }
     if (project && create) {
       QVERIFY(!panel.editTask(false));
       QVERIFY(!panel.allowed("cancelled"));

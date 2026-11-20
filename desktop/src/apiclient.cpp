@@ -347,7 +347,8 @@ void ApiClient::snapshotFinished(QNetworkReply *reply, quint64 generation) {
     m_cursor = 0;
   }
   m_instance = instance;
-  if (!reply->property("beforeAnswerMismatch").toBool())
+  if (instance == m_mutationInstance &&
+      !reply->property("beforeAnswerRetryCheck").toBool())
     m_answerRetryNeedsSnapshot = false;
   m_sequence = sequence;
   m_projects.replace(obj.value("projects").toArray());
@@ -1027,7 +1028,9 @@ void ApiClient::sendMutation() {
       const auto detail = obj.value("code").toString();
       const bool answerMismatch =
           answerRoute && code == 409 && detail == "instance_mismatch";
-      const bool unresolvedRetry = answerMismatch && m_uncertain;
+      // Only an accepted replay can settle an uncertain answer. A rejection
+      // may not even come from the answer route (e.g. a v3 replacement).
+      const bool unresolvedRetry = answerRoute && m_uncertain;
       m_uncertain = unresolvedRetry || staleInstance || code == 0 ||
                     code >= 500 || (code >= 200 && code < 400) ||
                     reply->error() == QNetworkReply::OperationCanceledError;
@@ -1055,10 +1058,10 @@ void ApiClient::sendMutation() {
                        : tr("Conflict; reload before trying the action again"))
                 : tr("Save rejected; draft preserved");
       }
-      if (answerMismatch) {
+      if (answerMismatch || unresolvedRetry) {
         m_answerRetryNeedsSnapshot = unresolvedRetry;
         if (m_snapshot)
-          m_snapshot->setProperty("beforeAnswerMismatch", true);
+          m_snapshot->setProperty("beforeAnswerRetryCheck", true);
         reload();
       }
       if (code == 401) {

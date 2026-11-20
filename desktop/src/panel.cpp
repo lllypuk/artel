@@ -69,8 +69,14 @@ Panel::Panel(ApiClient *client, QObject *parent)
             if (m_kind == "project") {
               if (m_project != m_editorId)
                 setProjectSelection(m_editorId);
-            } else {
-              m_task = m_editorId;
+            } else if (m_task != m_editorId) {
+              setTaskSelection(m_editorId);
+              // If SSE already loaded the new task, the ACK's reload may not
+              // advance the snapshot again. Start its reads here in that case.
+              if (!task().isEmpty()) {
+                moreHistory();
+                loadCommissionPage();
+              }
             }
           });
   connect(client, &ApiClient::historyReceived, this,
@@ -615,12 +621,7 @@ bool Panel::selectProject(const QString &id) {
   emit changed();
   return true;
 }
-bool Panel::selectTask(const QString &id) {
-  if (dirty() || m_client->pending() || uncertain())
-    return false;
-  const auto row = find(m_client->tasks(), id);
-  if (row.value("project_id").toString() != m_project)
-    return false;
+void Panel::setTaskSelection(const QString &id) {
   const bool sameTask = m_task == id;
   m_task = id;
   m_client->cancelHistory();
@@ -633,6 +634,14 @@ bool Panel::selectTask(const QString &id) {
     resetCommissions();
   else
     resetCommissionView();
+}
+bool Panel::selectTask(const QString &id) {
+  if (dirty() || m_client->pending() || uncertain())
+    return false;
+  const auto row = find(m_client->tasks(), id);
+  if (row.value("project_id").toString() != m_project)
+    return false;
+  setTaskSelection(id);
   moreHistory();
   loadCommissionPage();
   emit changed();
