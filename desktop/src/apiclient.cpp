@@ -1028,14 +1028,29 @@ void ApiClient::sendMutation() {
       const auto detail = obj.value("code").toString();
       const bool answerMismatch =
           answerRoute && code == 409 && detail == "instance_mismatch";
-      // Only an accepted replay can settle an uncertain answer. A rejection
-      // may not even come from the answer route (e.g. a v3 replacement).
-      const bool unresolvedRetry = answerRoute && m_uncertain;
+      // The owner answer route checks the instance and the exact receipt
+      // before returning closed. Other rejections may not even come from that
+      // route (e.g. a v3 replacement), so keep the original request locked.
+      const bool answerClosed =
+          answerRoute && m_uncertain && !staleInstance && code == 409 &&
+          reply->error() == QNetworkReply::ContentConflictError &&
+          !reply->property("oversized").toBool() &&
+          reply->header(QNetworkRequest::ContentTypeHeader)
+                  .toString()
+                  .section(';', 0, 0)
+                  .trimmed()
+                  .compare("application/json", Qt::CaseInsensitive) == 0 &&
+          detail == "closed" && obj.size() == 2 &&
+          !obj.value("message").toString().isEmpty();
+      const bool unresolvedRetry = answerRoute && m_uncertain && !answerClosed;
       m_uncertain = unresolvedRetry || staleInstance || code == 0 ||
                     code >= 500 || (code >= 200 && code < 400) ||
                     reply->error() == QNetworkReply::OperationCanceledError;
-      m_conflict = code == 409;
-      if (deliveryMutation) {
+      m_conflict = code == 409 && !answerClosed;
+      if (answerClosed) {
+        m_error =
+            tr("Question is closed; answer not recorded, draft preserved");
+      } else if (deliveryMutation) {
         m_error =
             m_uncertain ? tr("Send outcome unknown; retry the same request "
                              "with the same key")

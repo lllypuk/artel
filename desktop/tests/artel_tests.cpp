@@ -3363,6 +3363,119 @@ private slots:
     QVERIFY(!panel.sendCommission());
     client.stop();
   }
+  void ownerAnswerClosedRetryRestoresOwnerWrites() {
+    UiFixture fixture;
+    const QString question = "44444444-4444-4444-8444-444444444444";
+    const QString binding = "55555555-5555-4555-8555-555555555555";
+    const QString draft = "Answer to keep after closure";
+    const auto answerPath = ("POST /v1/tasks/" + fixture.task + "/questions/" +
+                             question + "/answer ")
+                                .toUtf8();
+    const QString time = "2026-11-17T12:00:00Z";
+    QJsonObject row{{"id", question},
+                    {"task_id", fixture.task},
+                    {"delivery_binding_id", binding},
+                    {"pi_session_id", fixture.instance},
+                    {"text", "Example question"},
+                    {"status", "open"},
+                    {"created_at", time}};
+    const QJsonObject grant{{"delivery_binding_id", binding},
+                            {"observer_id", fixture.instance},
+                            {"runtime_id", fixture.instance},
+                            {"project_id", fixture.project},
+                            {"pi_session_id", fixture.instance},
+                            {"journal_id", fixture.instance},
+                            {"generation", 1},
+                            {"status", "active"},
+                            {"allow_owner_questions", true},
+                            {"created_at", time}};
+    bool revoked = false;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith(answerPath)) {
+        if (!revoked) {
+          socket->disconnectFromHost(); // Lost before storing an answer.
+        } else if (fixture.mutations.size() == 2) {
+          UiFixture::respond(socket, 409, "{\"code\":\"closed\"}");
+        } else {
+          UiFixture::respond(socket, 409,
+                             "{\"code\":\"closed\","
+                             "\"message\":\"delivery operation rejected\"}");
+        }
+      } else if (request.contains("/questions?")) {
+        UiFixture::respond(
+            socket, 200,
+            QJsonDocument(QJsonObject{{"next_after", 1},
+                                      {"questions", request.contains("after=1&")
+                                                        ? QJsonArray{}
+                                                        : QJsonArray{row}}})
+                .toJson());
+      } else if (request.contains("/delivery ")) {
+        UiFixture::respond(
+            socket, 200,
+            QJsonDocument(QJsonObject{{"task_id", fixture.task},
+                                      {"project_id", fixture.project},
+                                      {"ready", false},
+                                      {"binding", revoked ? QJsonValue::Null
+                                                          : QJsonValue(grant)}})
+                .toJson());
+      } else if (request.startsWith("GET") && request.contains("/messages?")) {
+        UiFixture::respond(socket, 200, "{\"messages\":[],\"next_after\":0}");
+      } else if (request.startsWith("PATCH /v1/projects/")) {
+        UiFixture::respond(
+            socket, 200,
+            ("{\"id\":\"" + fixture.project + "\",\"version\":2}").toUtf8());
+      } else {
+        fixture.normal(socket, request);
+      }
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    QSignalSpy accepted(&client, &ApiClient::answerAccepted);
+    QSignalSpy saved(&client, &ApiClient::mutationSucceeded);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    QTRY_COMPARE(panel.questions().size(), 1);
+    QTRY_VERIFY(panel.questions().first().toMap().value("canAnswer").toBool());
+    panel.setAnswerText(question, draft);
+    QVERIFY(panel.answerQuestion(question));
+    QTRY_VERIFY(panel.uncertain() && !client.pending());
+    QCOMPARE(fixture.mutations.size(), 1);
+    QVERIFY(!panel.selectTask(fixture.task));
+    QVERIFY(!panel.editProject(false));
+
+    revoked = true;
+    row.insert("status", "closed");
+    // A malformed error carries no proof that replay was checked.
+    QVERIFY(panel.retry());
+    QTRY_VERIFY(!client.pending());
+    QCOMPARE(fixture.mutations.size(), 2);
+    QVERIFY(panel.uncertain());
+    QCOMPARE(accepted.count(), 0);
+    QTRY_VERIFY(client.canRetry());
+
+    QVERIFY(panel.retry());
+    QTRY_VERIFY(!client.pending());
+    QCOMPARE(fixture.mutations.size(), 3);
+    QCOMPARE(fixture.mutations[0], fixture.mutations[1]);
+    QCOMPARE(fixture.mutations[0], fixture.mutations[2]);
+    QCOMPARE(client.instance(), fixture.instance);
+    QCOMPARE(accepted.count(), 0);
+    QVERIFY(!panel.uncertain());
+    QVERIFY(!client.canRetry());
+    QVERIFY(panel.writable());
+    QCOMPARE(panel.answerText(question), draft);
+
+    QVERIFY(panel.selectTask(fixture.task));
+    QVERIFY(panel.editProject(false));
+    panel.field("description", "Unrelated project edit");
+    QVERIFY(panel.save());
+    QTRY_COMPARE(saved.count(), 1);
+    QCOMPARE(panel.answerText(question), draft);
+    client.stop();
+  }
   void ownerQuestionPaginationAnswerAndStatuses() {
     UiFixture fixture;
     const QString binding = "44444444-4444-4444-8444-444444444444";
