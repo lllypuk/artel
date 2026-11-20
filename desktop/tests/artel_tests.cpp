@@ -3700,7 +3700,9 @@ private slots:
     int posts = 0, pageReads = 0;
     bool includeForeign = false, revoked = false, holdStatuses = false;
     QList<QStringList> pollBatches;
-    QPointer<QTcpSocket> heldStatus;
+    QPointer<QTcpSocket> heldStatus, heldPage;
+    QByteArray heldPageBody;
+    bool holdPage = true;
     fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
       if (request.startsWith("GET /v1/tasks/") &&
           request.contains("/delivery ")) {
@@ -3771,6 +3773,14 @@ private slots:
             result.append(questions.at(i));
           next = end;
           more = end < questions.size();
+          if (after != 0 && holdPage) {
+            heldPage = socket;
+            heldPageBody = QJsonDocument(QJsonObject{{"questions", result},
+                                                     {"next_after", next},
+                                                     {"has_more", more}})
+                               .toJson();
+            return;
+          }
         }
         UiFixture::respond(socket, 200,
                            QJsonDocument(QJsonObject{{"questions", result},
@@ -3808,6 +3818,9 @@ private slots:
     Appearance appearance(fixture.directory.path(),
                           fixture.directory.filePath("language"));
     QQmlApplicationEngine engine;
+    QCoreApplication::installTranslator(&appearance);
+    connect(&appearance, &Appearance::changed, &engine,
+            &QQmlEngine::retranslate);
     auto *window = load(engine, panel, appearance);
     QVERIFY(window);
     client.reload();
@@ -3838,7 +3851,19 @@ private slots:
     QCOMPARE(pageReads, 1);
     QCOMPARE(panel.questions().size(), 5);
     panel.moreQuestions();
+    QTRY_VERIFY(heldPage);
+    auto newer = QJsonDocument::fromJson(fixture.state).object();
+    const auto sequence = client.sequence();
+    newer.insert("event_seq", sequence + 1);
+    fixture.state = QJsonDocument(newer).toJson();
+    client.reload();
+    QTRY_COMPARE(client.sequence(), sequence + 1);
+    QVERIFY(panel.questionsLoading());
+    QVERIFY(heldPage);
+    holdPage = false;
+    UiFixture::respond(heldPage, 200, heldPageBody);
     QTRY_COMPARE(panel.questions().size(), 6);
+    QCOMPARE(pageReads, 2);
     QVERIFY(!panel.questionsMore());
     QVERIFY(enter(window, "answerField_" + ids[1], "Other recipient draft"));
     const auto fieldName = "answerField_" + ids[0];
@@ -3856,7 +3881,24 @@ private slots:
                 ->property("text")
                 .toString()
                 .contains("4,096 UTF-8"));
+    const auto assertWarning = [&](const QString &text) {
+      QTRY_COMPARE(item(window, validationName)->property("text").toString(),
+                   text);
+      QCOMPARE(item(window, fieldName)->property("text").toString(),
+               exact + "a");
+      QVERIFY(!item(window, answerButtonName)->isEnabled());
+    };
+    writeFile(fixture.directory.filePath("language"), "ru\n");
+    appearance.refresh();
+    assertWarning(
+        QString::fromUtf8("Ответ превышает ограничение в 4096 байт UTF-8"));
+    writeFile(fixture.directory.filePath("language"), "en\n");
+    appearance.refresh();
+    assertWarning("Answer exceeds the 4,096 UTF-8 byte limit");
     QVERIFY(!panel.answerQuestion(ids[0]));
+    panel.discardTerminalAnswerDraft(
+        ids[0]); // Cannot discard an open card here.
+    QCOMPARE(panel.answerText(ids[0]), exact + "a");
     QCOMPARE(posts, 0);
     QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
     QTest::keyClick(window, Qt::Key_Backspace);
@@ -3974,6 +4016,16 @@ private slots:
              QString("answer <b>plain</b>"));
     QVERIFY(!item(window, answerButtonName)->isVisible());
     QVERIFY(!panel.answerQuestion(ids[0]));
+    auto *discard = item(window, "discardAnswerDraft_" + ids[0]);
+    QVERIFY(discard && discard->isVisible() && discard->isEnabled());
+    discard->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_Space);
+    QTRY_VERIFY(panel.answerText(ids[0]).isEmpty());
+    QVERIFY(!answeredDraft->isVisible());
+    QCOMPARE(panel.answerText(ids[1]), QString("Other recipient draft"));
+    QCOMPARE(savedAnswer->property("text").toString(),
+             QString("answer <b>plain</b>"));
+    QCOMPARE(posts, 2);
 
     auto observed = questions.first().toObject();
     observed.insert("answer_status", "observed");
@@ -4050,6 +4102,7 @@ private slots:
     fixture.state = QJsonDocument(snapshot).toJson();
     const auto originalState = fixture.state;
     QString delay;
+    const bool loseAnswerAck = mode == "ids";
     QUrlQuery captured;
     const auto replyToRead = [&](QTcpSocket *socket, const QUrlQuery &query) {
       const auto db = QJsonDocument::fromJson(fixture.state)
@@ -4074,6 +4127,17 @@ private slots:
       if (request.startsWith("GET /v1/snapshot ") && delay == "snapshot") {
         delay.clear();
         delayedSnapshot = socket;
+      } else if (request.startsWith("POST") && request.contains("/answer ")) {
+        if (loseAnswerAck)
+          socket->disconnectFromHost();
+        else
+          UiFixture::respond(
+              socket, 409,
+              R"({"code":"instance_mismatch","message":"Different database"})");
+      } else if (request.startsWith("POST /v1/projects ")) {
+        UiFixture::respond(
+            socket, 201,
+            ("{\"id\":\"" + fixture.project + "\",\"version\":1}").toUtf8());
       } else if (request.startsWith("GET /v1/stream?")) {
         stream = socket;
         fixture.normal(socket, request);
@@ -4217,6 +4281,94 @@ private slots:
     QTRY_COMPARE(
         item(window, "answerField_" + questionID)->property("text").toString(),
         QString("Original database answer draft"));
+    // Exercise the POST window with identical task/question IDs in the new DB.
+    // A first mismatch is not a domain conflict; a lost ACK stays fenced.
+    const auto draft = QString("Original database answer draft");
+    const auto originalKey =
+        fixture.instance + "/" + fixture.task + "/" + questionID;
+    QTRY_VERIFY(currentQuestion().value("canAnswer").toBool());
+    panel.discardDetachedAnswerDraft(
+        originalKey); // A current key is not recoverable here.
+    QCOMPARE(panel.answerText(questionID), draft);
+    fixture.state = QJsonDocument(snapshot).toJson();
+    QVERIFY(panel.answerQuestion(questionID));
+    QTRY_VERIFY(!panel.busy());
+    QCOMPARE(fixture.mutations.size(), 1);
+    QCOMPARE(panel.uncertain(), loseAnswerAck);
+    if (loseAnswerAck)
+      client.reload();
+    QTRY_COMPARE(client.instance(), replacement);
+    QTRY_COMPARE(currentQuestion().value("status").toString(), QString("open"));
+    QTRY_COMPARE(
+        item(window, "answerField_" + questionID)->property("text").toString(),
+        QString());
+    QVERIFY(panel.answerText(questionID).isEmpty());
+    QVERIFY(!panel.answerQuestion(questionID));
+    QVERIFY(!panel.retry());
+    QVERIFY(!panel.conflict());
+    auto *workspace =
+        window->property("workspace").value<WorkspaceController *>();
+    QVERIFY(!workspace->closeAllowed());
+    workspace->showTeam();
+    QTRY_VERIFY(item(window, "recoverAnswerDraftsButton")->isVisible());
+    QVERIFY(click(window, "recoverAnswerDraftsButton"));
+    auto *dialog = window->findChild<QObject *>("answerRecoveryDialog");
+    QVERIFY(dialog);
+    QTRY_VERIFY(dialog->property("opened").toBool());
+    auto *recovered = item(window, "detachedAnswerDraft_" + questionID);
+    QVERIFY(recovered && recovered->isVisible());
+    QVERIFY(recovered->property("readOnly").toBool());
+    QCOMPARE(recovered->property("textFormat").toInt(), int(Qt::PlainText));
+    QCOMPARE(recovered->property("text").toString(), draft);
+    QGuiApplication::clipboard()->clear();
+    auto *copy = item(window, "copyDetachedAnswerDraft_" + questionID);
+    QVERIFY(copy && copy->isVisible() && copy->isEnabled());
+    copy->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_Space);
+    QTRY_COMPARE(QGuiApplication::clipboard()->text(), draft);
+    if (loseAnswerAck) {
+      QVERIFY(!item(window, "discardDetachedAnswerDraft_" + questionID)
+                   ->isEnabled());
+      panel.discardDetachedAnswerDraft(originalKey);
+      QCOMPARE(panel.detachedAnswerDrafts().size(), 1);
+      QVERIFY(panel.uncertain());
+      QVERIFY(!panel.editProject(true));
+      QSignalSpy recoveryClosed(dialog, SIGNAL(closed()));
+      QVERIFY(QMetaObject::invokeMethod(dialog, "close"));
+      QTRY_COMPARE(recoveryClosed.count(), 1);
+      workspace->returnToEditor();
+      auto *abandonButton = item(window, "abandonButton");
+      QVERIFY(abandonButton && abandonButton->isVisible() &&
+              abandonButton->isEnabled());
+      abandonButton->forceActiveFocus();
+      QTest::keyClick(window, Qt::Key_Space);
+      auto *abandon = window->findChild<QObject *>("abandonDialog");
+      QVERIFY(abandon);
+      QTRY_VERIFY(abandon->property("visible").toBool());
+      QSignalSpy abandonClosed(abandon, SIGNAL(closed()));
+      QVERIFY(QMetaObject::invokeMethod(abandon, "accept"));
+      QTRY_COMPARE(abandonClosed.count(), 1);
+      QTRY_VERIFY(!panel.uncertain());
+      QVERIFY(!workspace->closeAllowed());
+      QVERIFY(click(window, "recoverAnswerDraftsButton"));
+      QTRY_VERIFY(dialog->property("opened").toBool());
+    }
+    auto *discard = item(window, "discardDetachedAnswerDraft_" + questionID);
+    QVERIFY(discard && discard->isVisible() && discard->isEnabled());
+    discard->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_Space);
+    QTRY_VERIFY(!dialog->property("visible").toBool());
+    QVERIFY(workspace->closeAllowed());
+    QVERIFY(!item(window, "recoverAnswerDraftsButton")->isVisible());
+    QCOMPARE(fixture.mutations.size(),
+             1); // Recovery never invokes the owner API.
+    QSignalSpy saved(&client, &ApiClient::mutationSucceeded);
+    QVERIFY(panel.editProject(true));
+    panel.field("name", "New unrelated project");
+    panel.field("root_path", "/fictional/workspace");
+    QVERIFY(panel.save());
+    QTRY_COMPARE(saved.count(), 1);
+    QCOMPARE(fixture.mutations.size(), 2);
     client.stop();
   }
   void unknownSaveRetryAndHistoryPagination() {

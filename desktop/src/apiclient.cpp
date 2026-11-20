@@ -248,6 +248,7 @@ void ApiClient::stop() {
   cancel(m_snapshot);
   cancelHistory();
   cancelMessages();
+  cancelQuestions();
   cancel(m_stream);
   cancel(m_mutation);
   m_online = false;
@@ -535,9 +536,11 @@ void ApiClient::cancelMessages() {
   cancel(m_messagesReply);
   cancel(m_statusReply);
   cancel(m_deliveryReply);
+  m_messagesPageLoaded = false;
+}
+void ApiClient::cancelQuestions() {
   cancel(m_questionsReply);
   cancel(m_questionStatusReply);
-  m_messagesPageLoaded = false;
 }
 void ApiClient::loadMessages(const QString &task, qint64 after) {
   cancel(m_messagesReply);
@@ -863,19 +866,17 @@ bool ApiClient::validAnswerResult(const QJsonObject &obj) const {
          uuid(obj.value("message_id").toString()) &&
          obj.value("status").toString() == "stored";
 }
-QString ApiClient::answerTextError(const QString &text) const {
+ApiClient::AnswerValidation ApiClient::validateAnswer(const QString &text) {
   if (!text.isValidUtf16() || text.contains(QChar::Null))
-    return tr("Answer must be valid text without NUL characters");
+    return InvalidAnswerText;
   if (text.toUtf8().size() > 4096)
-    return tr("Answer exceeds the 4,096 UTF-8 byte limit");
-  if (text.trimmed().isEmpty())
-    return tr("Enter an answer");
-  return {};
+    return AnswerTooLong;
+  return text.trimmed().isEmpty() ? EmptyAnswer : ValidAnswer;
 }
 bool ApiClient::answerQuestion(const QString &task, const QString &question,
                                const QString &text) {
   if (!m_online || m_stopped || pending() || m_uncertain || !uuid(task) ||
-      !uuid(question) || !answerTextError(text).isEmpty())
+      !uuid(question) || validateAnswer(text) != ValidAnswer)
     return false;
   m_method = "POST";
   m_path = "/v1/tasks/" + task + "/questions/" + question + "/answer";
@@ -884,7 +885,6 @@ bool ApiClient::answerQuestion(const QString &task, const QString &question,
           .toJson(QJsonDocument::Compact);
   m_key = QUuid::createUuid().toString(QUuid::WithoutBraces).toLatin1();
   m_mutationInstance = m_instance;
-  m_conflict = false;
   sendMutation();
   return true;
 }
@@ -958,7 +958,8 @@ bool ApiClient::abandonUncertain() {
   if (!canAbandon())
     return false;
   m_uncertain = false;
-  m_conflict = false;
+  if (!m_path.endsWith("/answer"))
+    m_conflict = false;
   m_method.clear();
   m_path.clear();
   m_body.clear();
@@ -1015,7 +1016,8 @@ void ApiClient::sendMutation() {
         (!answerRoute ||
          obj.value("question_id").toString() == m_path.section('/', 5, 5))) {
       m_uncertain = false;
-      m_conflict = false;
+      if (!answerRoute)
+        m_conflict = false;
       if (!deliveryMutation && m_draftRevision == m_sentRevision)
         m_draft.clear();
       m_error.clear();
@@ -1057,7 +1059,9 @@ void ApiClient::sendMutation() {
       m_uncertain = unresolvedRetry || staleInstance || code == 0 ||
                     code >= 500 || (code >= 200 && code < 400) ||
                     reply->error() == QNetworkReply::OperationCanceledError;
-      m_conflict = code == 409 && !answerClosed;
+      // Answer outcomes are independent of manual editor version conflicts.
+      if (!answerRoute)
+        m_conflict = code == 409;
       if (answerClosed) {
         m_error =
             tr("Question is closed; answer not recorded, draft preserved");

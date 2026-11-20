@@ -56,12 +56,12 @@ ApplicationWindow {
     }
     Shortcut {
         sequences: [StandardKey.Save]
-        enabled: window.workspace.editorVisible
+        enabled: !answerRecovery.visible && window.workspace.editorVisible
         onActivated: window.workspace.saveShortcut()
     }
     Shortcut {
         sequences: [StandardKey.Cancel]
-        enabled: window.workspace.editorVisible && !window.panel.busy && !window.panel.uncertain
+        enabled: !answerRecovery.visible && window.workspace.editorVisible && !window.panel.busy && !window.panel.uncertain
         onActivated: {
             if (window.panel.dirty)
                 discardDialog.open();
@@ -114,6 +114,78 @@ ApplicationWindow {
             width: parent.width
             wrapMode: Text.Wrap
             text: qsTr("The save may have committed in the old database. It will not be retried in the replacement database. The draft stays here: copy it before discarding it to continue.")
+        }
+    }
+    Dialog {
+        id: answerRecovery
+        objectName: "answerRecoveryDialog"
+        title: qsTr("Answer drafts from another database")
+        width: Math.min(720, window.width - 40)
+        anchors.centerIn: parent
+        modal: true
+        standardButtons: Dialog.Close
+        readonly property var drafts: window.panel.detachedAnswerDrafts
+        onDraftsChanged: {
+            if (drafts.length === 0 && visible)
+                close();
+        }
+        contentItem: ColumnLayout {
+            UI.StatusLabel {
+                theme: appTheme
+                Layout.fillWidth: true
+                text: window.panel.uncertain ? qsTr("You can copy these drafts now. Resolve the unknown save before discarding a draft.") : qsTr("These drafts belong to their original database and cannot be sent from here.")
+            }
+            ScrollView {
+                id: recoveryScroll
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(recoveryColumn.implicitHeight, window.height * 0.54)
+                contentWidth: availableWidth
+                clip: true
+                ColumnLayout {
+                    id: recoveryColumn
+                    width: recoveryScroll.availableWidth
+                    Repeater {
+                        model: answerRecovery.drafts
+                        delegate: ColumnLayout {
+                            id: recovered
+                            required property var modelData
+                            Layout.fillWidth: true
+                            UI.StatusLabel {
+                                theme: appTheme
+                                Layout.fillWidth: true
+                                text: qsTr("Database: %1\nTask: %2\nQuestion: %3").arg(recovered.modelData.instance).arg(recovered.modelData.task).arg(recovered.modelData.question)
+                            }
+                            UI.ActionButton {
+                                objectName: "copyDetachedAnswerDraft_" + recovered.modelData.question
+                                theme: appTheme
+                                text: qsTr("Copy answer draft")
+                                onClicked: {
+                                    recoveredText.selectAll();
+                                    recoveredText.copy();
+                                    recoveredText.deselect();
+                                }
+                            }
+                            UI.ActionButton {
+                                objectName: "discardDetachedAnswerDraft_" + recovered.modelData.question
+                                theme: appTheme
+                                kind: "destructive"
+                                text: qsTr("Discard answer draft")
+                                enabled: !window.panel.busy && !window.panel.uncertain
+                                onClicked: window.panel.discardDetachedAnswerDraft(recovered.modelData.key)
+                            }
+                            UI.LongText {
+                                id: recoveredText
+                                objectName: "detachedAnswerDraft_" + recovered.modelData.question
+                                theme: appTheme
+                                Layout.fillWidth: true
+                                readOnly: true
+                                Accessible.name: qsTr("Unsent answer draft")
+                                text: recovered.modelData.text
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     Drawer {
@@ -198,6 +270,15 @@ ApplicationWindow {
                         onClicked: window.workspace.openProject(navProject.modelData.id)
                     }
                     ScrollBar.vertical: ScrollBar {}
+                }
+                UI.ActionButton {
+                    objectName: "recoverAnswerDraftsButton"
+                    theme: appTheme
+                    text: qsTr("Recover answer drafts")
+                    kind: "quiet"
+                    Layout.fillWidth: true
+                    visible: answerRecovery.drafts.length > 0
+                    onClicked: answerRecovery.open()
                 }
                 UI.ActionButton {
                     objectName: "connectionsNavButton"

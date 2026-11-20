@@ -39,6 +39,8 @@ class Panel : public QObject {
   Q_PROPERTY(QVariant assignment READ assignment NOTIFY changed)
   Q_PROPERTY(QVariant messages READ messages NOTIFY changed)
   Q_PROPERTY(ObjectModel *questionModel READ questionModel CONSTANT)
+  Q_PROPERTY(QVariantList detachedAnswerDrafts READ detachedAnswerDrafts NOTIFY
+                 detachedAnswerDraftsChanged)
   Q_PROPERTY(bool questionsMore READ questionsMore NOTIFY changed)
   Q_PROPERTY(bool questionsLoading READ questionsLoading NOTIFY changed)
   Q_PROPERTY(bool messagesMore READ messagesMore NOTIFY changed)
@@ -105,9 +107,19 @@ public:
   Q_INVOKABLE bool sendCommission();
   Q_INVOKABLE QString answerText(const QString &question) const;
   Q_INVOKABLE void setAnswerText(const QString &question, const QString &text);
-  Q_INVOKABLE QString answerTextError(const QString &text) const {
-    return m_client->answerTextError(text);
+  enum AnswerValidation {
+    ValidAnswer = ApiClient::ValidAnswer,
+    InvalidAnswerText = ApiClient::InvalidAnswerText,
+    AnswerTooLong = ApiClient::AnswerTooLong,
+    EmptyAnswer = ApiClient::EmptyAnswer
+  };
+  Q_ENUM(AnswerValidation)
+  Q_INVOKABLE AnswerValidation answerValidation(const QString &text) const {
+    return static_cast<AnswerValidation>(ApiClient::validateAnswer(text));
   }
+  QVariantList detachedAnswerDrafts() const;
+  Q_INVOKABLE void discardDetachedAnswerDraft(const QString &key);
+  Q_INVOKABLE void discardTerminalAnswerDraft(const QString &question);
   Q_INVOKABLE bool answerQuestion(const QString &question);
   Q_INVOKABLE void moreQuestions();
   Q_INVOKABLE void moreMessages();
@@ -115,6 +127,7 @@ public:
 signals:
   void changed();
   void answerDraftsChanged();
+  void detachedAnswerDraftsChanged();
 
 private:
   void setProjectSelection(const QString &id);
@@ -129,6 +142,7 @@ private:
   void armStatusPoll();
   QVariantMap messageRow(const QVariantMap &row) const;
   QString answerKey(const QString &question) const;
+  void discardAnswerDraft(const QString &key);
   QVariantList queueIds() const;
   bool begin(const QString &kind, const QVariantMap &value);
   ApiClient *m_client;

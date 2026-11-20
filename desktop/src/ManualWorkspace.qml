@@ -746,7 +746,19 @@ Item {
                                         id: answerValidation
                                         theme: manual.theme
                                         objectName: "answerValidation_" + questionRow.questionId
-                                        text: manual.panel.answerTextError(answerField.text)
+                                        readonly property int validation: manual.panel.answerValidation(answerField.text)
+                                        text: {
+                                            switch (validation) {
+                                            case Panel.InvalidAnswerText:
+                                                return qsTr("Answer must be valid text without NUL characters");
+                                            case Panel.AnswerTooLong:
+                                                return qsTr("Answer exceeds the 4,096 UTF-8 byte limit");
+                                            case Panel.EmptyAnswer:
+                                                return qsTr("Enter an answer");
+                                            default:
+                                                return "";
+                                            }
+                                        }
                                         visible: answerField.visible && answerField.text.length > 0 && text.length > 0
                                         severity: "warning"
                                         Layout.fillWidth: true
@@ -756,7 +768,7 @@ Item {
                                         visible: questionRow.record.status === "open"
                                         text: qsTr("Save answer for Pi")
                                         kind: "primary"
-                                        enabled: questionRow.record.canAnswer && answerValidation.text.length === 0
+                                        enabled: questionRow.record.canAnswer && answerValidation.validation === Panel.ValidAnswer
                                         onClicked: manual.panel.answerQuestion(questionRow.questionId)
                                     }
                                     Caption {
@@ -775,6 +787,14 @@ Item {
                                         Accessible.name: answerDraftLabel.text
                                         onActiveFocusChanged: manual.revealField(this, cursorRectangle.y)
                                         onCursorRectangleChanged: manual.revealField(this, cursorRectangle.y)
+                                    }
+                                    PanelButton {
+                                        objectName: "discardAnswerDraft_" + questionRow.questionId
+                                        text: qsTr("Discard answer draft")
+                                        kind: "destructive"
+                                        visible: answerDraft.visible
+                                        enabled: !manual.panel.busy && !manual.panel.uncertain
+                                        onClicked: manual.panel.discardTerminalAnswerDraft(questionRow.questionId)
                                     }
                                     CopyText {
                                         objectName: "answerText_" + questionRow.questionId

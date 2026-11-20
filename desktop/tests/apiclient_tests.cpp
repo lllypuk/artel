@@ -582,6 +582,51 @@ private slots:
     QVERIFY(!client.uncertain());
     client.stop();
   }
+  void questionAnswerDoesNotClearAnExistingEditorConflict() {
+    Fixture fixture;
+    const QString question = "66666666-6666-4666-8666-666666666666";
+    bool reject = true;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("POST") && request.contains("/answer ")) {
+        if (reject) {
+          respond(socket, 409,
+                  R"({"code":"already_answered","message":"No new answer"})");
+        } else {
+          respond(socket, 200,
+                  QJsonDocument(QJsonObject{{"question_id", question},
+                                            {"message_id", messageID},
+                                            {"status", "stored"}})
+                      .toJson());
+        }
+      } else {
+        fixture.normal(socket, request);
+      }
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    client.reload();
+    QTRY_VERIFY(client.online());
+    const QVariantMap draft{{"description", "An unrelated project draft"}};
+    client.setDraft(draft);
+    QVERIFY(client.save("PATCH", "/v1/projects/" + projectID,
+                        {{"expected_version", 1},
+                         {"description", draft.value("description")}}));
+    QTRY_VERIFY(client.conflict());
+    QSignalSpy accepted(&client, &ApiClient::answerAccepted);
+    QVERIFY(client.answerQuestion(taskID, question, "Example answer"));
+    QVERIFY(client.conflict());
+    QTRY_VERIFY(!client.pending());
+    QVERIFY(client.conflict());
+    QVERIFY(!client.uncertain());
+    QCOMPARE(accepted.count(), 0);
+    QCOMPARE(client.draft(), draft);
+    reject = false;
+    QVERIFY(client.answerQuestion(taskID, question, "A valid answer"));
+    QTRY_COMPARE(accepted.count(), 1);
+    QVERIFY(client.conflict());
+    QCOMPARE(client.draft(), draft);
+    client.stop();
+  }
   void questionAnswerUnknownOutcomeReusesExactRequest_data() {
     QTest::addColumn<bool>("legacy");
     QTest::newRow("instance-mismatch") << false;

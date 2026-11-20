@@ -118,10 +118,13 @@ class SpendDropProxy:
     """Private UDS proxy for delivery barriers and an optional lost spend response."""
     def __init__(self, listen_path, target_path):
         self.deny_attach = False
+        self.attach_started = threading.Event()
+        self.release_attach = threading.Event()
         self.denied_attach = threading.Event()
         self.legacy_refusal = None
         self.drop_next = False
         self.dropped = 0
+        self.writer_contexts = 0
         fixture = self
 
         class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
@@ -130,7 +133,11 @@ class SpendDropProxy:
         class Handler(socketserver.BaseRequestHandler):
             def handle(self):
                 request = self._read(self.request)
+                if request.startswith(b'GET /delivery/v1/context '):
+                    fixture.writer_contexts += 1
                 if fixture.deny_attach and request.startswith(b'POST /delivery/v1/attach '):
+                    fixture.attach_started.set()
+                    assert fixture.release_attach.wait(20), 'attach fixture release deadline'
                     body = b'{"error":"owner_conflict"}'
                     self.request.sendall(b'HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\n'
                                          + f'Content-Length: {len(body)}\r\nConnection: close\r\n\r\n'.encode() + body)
@@ -181,6 +188,7 @@ class SpendDropProxy:
         self.thread.start()
 
     def close(self):
+        self.release_attach.set()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=3)
@@ -195,6 +203,7 @@ class Fixture:
         self.daemon_binary = daemon_binary or ROOT / 'build/bin/arteld'
         self.spend_proxy = None
         self.use_spend_proxy = spend_proxy
+        self.tool_selection = None
         self.children = []
         self.daemon = self.pi = None
         self.master = None
@@ -344,6 +353,8 @@ class Fixture:
                 '--no-themes', '--no-mcp', '--no-builtin-tools', '-e', str(Path(artifact) / 'index.mjs'),
                 '-e', str(PACKAGE / 'tests/probe.ts'), '-e', str(PACKAGE / 'tests/fixture.ts'),
                 '--model', 'artel-fixture/local']
+        if self.tool_selection:
+            args.extend(['--tools', self.tool_selection])
         if resume:
             args.extend(['--session', (self.root / 'session').read_text().strip()])
         self.pi = self.spawn(args, cwd=self.root / 'work', stdin=slave, stdout=slave, stderr=slave)
@@ -551,15 +562,16 @@ class OwnerQuestions(unittest.TestCase):
                 question = 'FIRST_QUESTION "quoted"\nAnswer: still part of the question'
                 answer = 'FIRST_ANSWER \u2713\nAnswer: still part of the answer'
                 fixture.qml(question, answer, commission, True, 1, True)
+                fixture.wait(lambda: Provider.answer_turns >= 1, 'fresh provider request for the answer')
                 self.assertEqual(Provider.answer_turns, 1)
                 self.assertIn('artel_ask_owner', Provider.tool_lists[commission])
                 rows = fixture.questions()
                 self.assertEqual(len(rows), 1)
                 self.assertEqual(rows[0]['answer_status'], 'observed')
                 self.assertEqual(rows[0]['pi_session_id'], fixture.pi_session)
-                title, fields = Provider.fresh[-1].split('\n', 1)
-                self.assertEqual(title, 'Artel owner answer')
-                self.assertEqual(json.loads(fields), {'question': question, 'answer': answer})
+                payloads = [json.loads(text.split('\n', 1)[1]) for text in Provider.fresh
+                            if text.startswith('Artel owner answer\n')]
+                self.assertEqual(payloads, [{'question_id': rows[0]['id'], 'question': question, 'answer': answer}])
                 journal_path = fixture.delivery_config.with_name('delivery').joinpath(fixture.binding, 'journal.json')
 
                 def published():
@@ -674,7 +686,7 @@ class OwnerQuestions(unittest.TestCase):
 
     def test_manual_turn_precedes_answer_and_ambiguous_spend_never_repeats(self):
         with tempfile.TemporaryDirectory(prefix='artel-questions-manual-') as tmp:
-            fixture = Fixture(Path(tmp), True)
+            fixture = Fixture(Path(tmp), True, spend_proxy=True)
             try:
                 fixture.prepare()
                 fixture.owner_request('POST', f"/v1/tasks/{fixture.task}/messages", {
@@ -687,7 +699,11 @@ class OwnerQuestions(unittest.TestCase):
                 fixture.wait(Provider.hold_started.is_set, 'manual provider turn held open')
                 answered = fixture.owner_request('POST', f"/v1/tasks/{fixture.task}/questions/{question['id']}/answer", {
                     'instance_id': fixture.instance, 'text': 'ANSWER_AFTER_MANUAL'}, key=uid())
-                time.sleep(3)  # More than two production writer polls while the provider barrier holds.
+                # These context reads are serial within one writer. The second proves
+                # the first post-storage cycle finished while the provider was held.
+                before = fixture.spend_proxy.writer_contexts
+                fixture.wait(lambda: fixture.spend_proxy.writer_contexts >= before + 2,
+                             'writer completed a cycle while the manual turn was held')
                 self.assertFalse(Provider.hold_release.is_set())
                 self.assertEqual(Provider.answer_turns, 0)
                 self.assertFalse(any('ANSWER_AFTER_MANUAL' in text for text in Provider.fresh))
@@ -889,9 +905,16 @@ class OwnerQuestions(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='artel-attach-refused-') as tmp:
             fixture = Fixture(Path(tmp), True, spend_proxy=True)
             try:
+                fixture.tool_selection = 'artel_ask_owner'
                 fixture.prepare(enable=False)
                 fixture.spend_proxy.deny_attach = True
                 fixture.enable_delivery(wait_ready=False)
+                fixture.wait(fixture.spend_proxy.attach_started.is_set, 'opted-in attach held')
+                prompt = 'Manual fictional turn before attach completes'
+                fixture.command(prompt)
+                fixture.wait(lambda: prompt in Provider.tool_lists, 'provider tool list before attach completes')
+                self.assertNotIn('artel_ask_owner', Provider.tool_lists[prompt])
+                fixture.spend_proxy.release_attach.set()
                 fixture.wait(fixture.spend_proxy.denied_attach.is_set, 'opted-in attach refused')
                 prompt = 'Manual fictional turn after attach refusal'
                 fixture.command(prompt)

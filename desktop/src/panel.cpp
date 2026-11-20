@@ -47,8 +47,10 @@ Panel::Panel(ApiClient *client, QObject *parent)
       m_historyCursor = 0;
       m_historyMore = true;
       resetCommissions();
-      if (!sameInstance)
+      if (!sameInstance) {
         resetQuestions();
+        emit detachedAnswerDraftsChanged();
+      }
       if (!m_task.isEmpty()) {
         moreHistory();
         loadCommissionPage();
@@ -231,6 +233,39 @@ void Panel::setAnswerText(const QString &question, const QString &text) {
   if (hadDrafts != hasAnswerDrafts())
     emit answerDraftsChanged();
 }
+QVariantList Panel::detachedAnswerDrafts() const {
+  QVariantList drafts;
+  const auto prefix = m_client->instance() + "/";
+  for (auto it = m_answers.cbegin(); it != m_answers.cend(); ++it) {
+    if (!it.key().startsWith(prefix))
+      drafts.append(QVariantMap{{"key", it.key()},
+                                {"instance", it.key().section('/', 0, 0)},
+                                {"task", it.key().section('/', 1, 1)},
+                                {"question", it.key().section('/', 2, 2)},
+                                {"text", it.value()}});
+  }
+  return drafts;
+}
+void Panel::discardAnswerDraft(const QString &key) {
+  if (m_answers.remove(key) && m_answers.isEmpty())
+    emit answerDraftsChanged();
+  m_sentAnswers.remove(key);
+}
+void Panel::discardDetachedAnswerDraft(const QString &key) {
+  if (busy() || uncertain() || key.startsWith(m_client->instance() + "/") ||
+      !m_answers.contains(key))
+    return;
+  discardAnswerDraft(key);
+  emit detachedAnswerDraftsChanged();
+}
+void Panel::discardTerminalAnswerDraft(const QString &question) {
+  const auto row = find(&m_questions, question);
+  const auto status = row.value("status").toString();
+  if (busy() || uncertain() || (status != "closed" && status != "answered"))
+    return;
+  discardAnswerDraft(answerKey(question));
+  emit changed();
+}
 void Panel::armStatusPoll() {
   if (m_task.isEmpty())
     return;
@@ -345,6 +380,7 @@ void Panel::pollQuestions() {
   m_client->refreshQuestionStatuses(m_task, ids);
 }
 void Panel::resetQuestions() {
+  m_client->cancelQuestions();
   m_questions.replace({});
   m_questionsCursor = 0;
   m_questionsMore = false;

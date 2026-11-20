@@ -68,12 +68,20 @@ public:
   bool questionStatusesLoading() const { return m_questionStatusReply; }
   void loadQuestions(const QString &task, qint64 after = 0);
   void refreshQuestionStatuses(const QString &task, const QStringList &ids);
+  void cancelQuestions();
   void cancelMessages();
   // One owner commission. An unknown outcome (timeout/5xx/lost reply) keeps
   // the original instance/task/binding/body/key for an explicit same retry.
   Q_INVOKABLE bool sendMessage(const QString &task, const QString &text,
                                const QString &binding);
-  QString answerTextError(const QString &text) const;
+  enum AnswerValidation {
+    ValidAnswer,
+    InvalidAnswerText,
+    AnswerTooLong,
+    EmptyAnswer
+  };
+  Q_ENUM(AnswerValidation)
+  static AnswerValidation validateAnswer(const QString &text);
   Q_INVOKABLE bool answerQuestion(const QString &task, const QString &question,
                                   const QString &text);
   ObjectModel *projects() { return &m_projects; }
