@@ -466,10 +466,22 @@ func attachReview(client resultOwnerClient, options attachOptions, binding revmu
 	if input == nil || err == resultHTTPStatus(http.StatusNotFound) {
 		fresh, freshErr := inputs.FreshAttachment()
 		if freshErr != nil {
-			return review, nil, freshErr
+			// A pair accepted by the original stage 5a normalization may fail
+			// only newer client-side rules. Recover either receipt format with
+			// the original payload hash, but never turn this probe into a write.
+			replay, replayErr := inputs.ReceiptReplay()
+			if replayErr != nil {
+				return review, nil, freshErr
+			}
+			input = &replay
+			err = client.request(http.MethodPost, path+"/receipt", options.key, input, &review, &raw)
+			if err == resultHTTPStatus(http.StatusNotFound) {
+				err = freshErr
+			}
+		} else {
+			input = &fresh
+			err = client.request(http.MethodPost, path, options.key, input, &review, &raw)
 		}
-		input = &fresh
-		err = client.request(http.MethodPost, path, options.key, input, &review, &raw)
 	}
 	if err != nil {
 		return review, nil, err

@@ -577,6 +577,10 @@ func TestLegacyReviewReceiptReplaysBeforeNewCompleteness(t *testing.T) {
 	if err != nil || replayed.Status != 201 || !bytes.Equal(replayed.Body, response.Body) {
 		t.Fatalf("legacy exact receipt did not replay: %+v %v", replayed, err)
 	}
+	replayed, err = s.ReplayReviewReceipt(t.Context(), task.ID, result.ID, mutation, legacy)
+	if err != nil || replayed.Status != 201 || !bytes.Equal(replayed.Body, response.Body) {
+		t.Fatalf("general exact receipt lookup lost legacy body: %+v %v", replayed, err)
+	}
 	page, err := s.CurrentTaskReviews(t.Context(), task.ID, "", 20)
 	if err != nil || len(page.Reviews) != 1 || page.Reviews[0].EvidenceConsistent {
 		t.Fatalf("legacy complete review was not flagged inconsistent: %+v %v", page, err)
@@ -684,6 +688,10 @@ func TestCurrentReceiptRejectsChangedOptionalDegradedRoster(t *testing.T) {
 	replayed, err := s.AttachReview(t.Context(), task.ID, result.ID, mutation, original)
 	if err != nil || replayed.Status != response.Status || !bytes.Equal(replayed.Body, response.Body) {
 		t.Fatalf("current exact receipt did not replay: %+v %v", replayed, err)
+	}
+	replayed, err = s.ReplayReviewReceipt(t.Context(), task.ID, result.ID, mutation, original)
+	if err != nil || replayed.Status != response.Status || !bytes.Equal(replayed.Body, response.Body) {
+		t.Fatalf("read-only current receipt lookup failed: %+v %v", replayed, err)
 	}
 	changed := original
 	changed.Sources = append(changed.Sources, ReviewSource{Name: "optional", Executor: "pi", Degraded: true})

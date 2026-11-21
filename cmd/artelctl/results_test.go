@@ -747,6 +747,152 @@ func TestReviewsAttachUnattributedItemOnlyReplaysExactLegacyReceipt(t *testing.T
 	}
 }
 
+func TestReviewsAttachDoesNotBroadenAttributionFailureRecovery(t *testing.T) {
+	h := newCLIResultHarness(t)
+	repo, _, base, head := h.repository(t)
+	bindingPath := filepath.Join(h.root, "bindings", "attribution.json")
+	resultJSON, _ := h.call(t, 0, h.submitArgs(repo, base, head, bindingPath, "01-review", "", uuid.NewString())...)
+	var result store.TaskResult
+	if err := json.Unmarshal([]byte(resultJSON), &result); err != nil {
+		t.Fatal(err)
+	}
+	report := writeCLIReport(t, h.root, "fictional-task", "01-review")
+	findingsPath := filepath.Join(report, "findings.json")
+	findings := loadCLIArtifact(t, findingsPath)
+	findings["findings"] = append(findings["findings"].([]any), map[string]any{
+		"id": "fictional-optional", "sources": []any{"optional"},
+	})
+	writeCLIArtifact(t, findingsPath, findings)
+	key := uuid.NewString()
+	args := h.attachArgs(result.ID, bindingPath, report, key)
+	output, _ := h.call(t, 0, args...)
+	var review store.TaskReview
+	if err := json.Unmarshal([]byte(output), &review); err != nil || review.Findings != 2 {
+		t.Fatalf("valid current receipt fixture: %q %v", output, err)
+	}
+	before := h.resultWriteCounts(t)
+
+	// Keep aggregate and per-source counters identical to the accepted payload,
+	// but make one item unattributed. This was already invalid before the new
+	// scope/completion rules and must not enter their general recovery path.
+	items := findings["findings"].([]any)
+	items[0].(map[string]any)["sources"] = []any{"reviewer", "optional"}
+	items[1].(map[string]any)["sources"] = []any{}
+	writeCLIArtifact(t, findingsPath, findings)
+	output, diagnostic := h.call(t, 1, args...)
+	if output != "" || !strings.Contains(diagnostic, "no source attribution") {
+		t.Fatalf("changed artifact recovered outside new-rules recovery: %q %q", output, diagnostic)
+	}
+	if after := h.resultWriteCounts(t); after != before {
+		t.Fatalf("attribution rejection wrote state: before=%+v after=%+v", before, after)
+	}
+}
+
+func assertOldDaemonRejectsInvalidReview(t *testing.T, h *cliResultHarness, resultID, bindingPath, report string, before resultWriteCounts) {
+	t.Helper()
+	// An old daemon knows no general receipt probe. Its 404 is terminal for
+	// this invalid artifact and must never fall back to a write.
+	upstream, err := url.Parse(h.endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := &httputil.ReverseProxy{Rewrite: func(r *httputil.ProxyRequest) { r.SetURL(upstream) }}
+	probes, writingPosts := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reviews/receipt") {
+			probes++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"code":"not_found","message":"unknown route"}`))
+			return
+		}
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reviews") {
+			writingPosts++
+		}
+		// #nosec G704 -- Test-only proxy to this harness's loopback daemon.
+		proxy.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	args := append(h.attachArgs(resultID, bindingPath, report, uuid.NewString()),
+		"--endpoint", server.URL, "--token-file", h.tokenPath)
+	var out, stderr bytes.Buffer
+	if code := run(args, &out, &stderr); code != 1 || !strings.Contains(stderr.String(), "scope mismatch") {
+		t.Fatalf("old-daemon rejection exit=%d stdout=%q stderr=%q", code, out.String(), stderr.String())
+	}
+	if probes != 1 || writingPosts != 0 {
+		t.Fatalf("old-daemon recovery probes=%d writing posts=%d", probes, writingPosts)
+	}
+	if after := h.resultWriteCounts(t); after != before {
+		t.Fatalf("old-daemon rejection wrote state: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestReviewsAttachNewRulesRecoverEitherReceiptWithoutWrites(t *testing.T) {
+	for _, mode := range []string{"current", "legacy-same-normalization"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newCLIResultHarness(t)
+			repo, _, base, head := h.repository(t)
+			bindingPath := filepath.Join(h.root, "bindings", "recovery.json")
+			resultJSON, _ := h.call(t, 0, h.submitArgs(repo, base, head, bindingPath, "01-review", "", uuid.NewString())...)
+			var result store.TaskResult
+			if err := json.Unmarshal([]byte(resultJSON), &result); err != nil {
+				t.Fatal(err)
+			}
+			report := writeCLIReport(t, h.root, "fictional-task", "01-review")
+			findingsPath := filepath.Join(report, "findings.json")
+			findings := loadCLIArtifact(t, findingsPath)
+			findings["scope"].(map[string]any)["scope_path"] = "contradicting-scope"
+			writeCLIArtifact(t, findingsPath, findings)
+			binding, err := revmuximport.LoadBinding(bindingPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			inputs, err := revmuximport.Import(binding, report,
+				[]store.ReviewRequirement{{Name: "reviewer", Executor: "pi"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := inputs.FreshAttachment(); err == nil {
+				t.Fatal("contradicting scope eligible for a fresh attachment")
+			}
+			replayedInput, err := inputs.ReceiptReplay()
+			if err != nil {
+				t.Fatal(err)
+			}
+			key := uuid.NewString()
+			path := "/v1/tasks/" + h.task.ID + "/results/" + result.ID + "/reviews"
+			var original []byte
+			if mode == "current" {
+				body, err := json.Marshal(replayedInput)
+				if err != nil {
+					t.Fatal(err)
+				}
+				original = h.ownerRequest(t, http.MethodPost, path, key, body, http.StatusCreated, nil)
+			} else {
+				original = h.seedLegacyCLIReceipt(t, result.ID, key, replayedInput)
+			}
+			before := h.resultWriteCounts(t)
+			output, _ := h.call(t, 0, h.attachArgs(result.ID, bindingPath, report, key)...)
+			if output != string(original)+"\n" {
+				t.Fatalf("exact receipt bytes changed: %q want %q", output, original)
+			}
+			if after := h.resultWriteCounts(t); after != before {
+				t.Fatalf("receipt recovery wrote state: before=%+v after=%+v", before, after)
+			}
+
+			freshOutput, diagnostic := h.call(t, 1, h.attachArgs(result.ID, bindingPath, report, uuid.NewString())...)
+			if freshOutput != "" || !strings.Contains(diagnostic, "scope mismatch") {
+				t.Fatalf("fresh invalid attachment not rejected: %q %q", freshOutput, diagnostic)
+			}
+			if after := h.resultWriteCounts(t); after != before {
+				t.Fatalf("fresh rejection wrote state: before=%+v after=%+v", before, after)
+			}
+
+			assertOldDaemonRejectsInvalidReview(t, h, result.ID, bindingPath, report, before)
+		})
+	}
+}
+
 func TestResultsAndReviewsReportGeneratedRetryKeyOnStdoutFailure(t *testing.T) {
 	h := newCLIResultHarness(t)
 	repo, _, base, head := h.repository(t)
@@ -899,6 +1045,32 @@ func writeCLIArtifact(t *testing.T, path string, artifact map[string]any) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+type resultWriteCounts struct {
+	reviews  int
+	events   int
+	receipts int
+}
+
+func (h *cliResultHarness) resultWriteCounts(t *testing.T) resultWriteCounts {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(h.root, "data", "artel.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var counts resultWriteCounts
+	for query, target := range map[string]*int{
+		"SELECT count(*) FROM task_reviews":      &counts.reviews,
+		"SELECT count(*) FROM events":            &counts.events,
+		"SELECT count(*) FROM mutation_receipts": &counts.receipts,
+	} {
+		if err := db.QueryRowContext(t.Context(), query).Scan(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return counts
 }
 
 func (h *cliResultHarness) seedLegacyCLIReceipt(t *testing.T, resultID, key string, input store.AttachReviewInput) []byte {

@@ -363,10 +363,12 @@ public:
   bool failNextHistory = false;
   int delayed = 0;
   int delayedReviewContinuations = 0;
+  int delayedSnapshots = 0;
   int failures = 0;
   int resultReads = 0;
   int currentReviewReads = 0;
   int resultHistoryReads = 0;
+  int taskHistoryReads = 0;
   QList<QJsonObject> transitions;
   QList<QPointer<QTcpSocket>> streams;
   void dropStreams() {
@@ -406,6 +408,8 @@ public:
               first[0] == "GET" && path.contains("/results/current/reviews?");
           const bool historyResultRead =
               first[0] == "GET" && path.contains("/results?");
+          const bool taskHistoryRead =
+              first[0] == "GET" && path.startsWith("/v1/events?");
           if (first[0] == "POST" && path.endsWith("/transition"))
             transitions.append(
                 QJsonDocument::fromJson(bytes->mid(split + 4)).object());
@@ -415,6 +419,8 @@ public:
             ++currentReviewReads;
           if (historyResultRead)
             ++resultHistoryReads;
+          if (taskHistoryRead)
+            ++taskHistoryReads;
           const bool delay = currentResultRead && holdNext;
           const bool snapshot = first[0] == "GET" && path == "/v1/snapshot";
           const bool delayReview =
@@ -451,58 +457,82 @@ public:
           }
           connect(socket, &QTcpSocket::disconnected, reply,
                   [reply] { reply->abort(); });
-          connect(
-              reply, &QNetworkReply::finished, socket,
-              [this, reply, socket, delay, delayReview, hold, fail, stream] {
-                const int status =
-                    fail ? 503
-                         : reply
-                               ->attribute(
-                                   QNetworkRequest::HttpStatusCodeAttribute)
-                               .toInt();
-                const auto body =
-                    stream ? QByteArray{}
-                    : fail ? QByteArray("{\"code\":\"unavailable\",\"message\":"
-                                        "\"controlled failure\"}")
-                    : reply->isOpen() ? reply->readAll()
-                                      : QByteArray{};
-                const auto response =
-                    "HTTP/1.1 " + QByteArray::number(status) +
-                    " OK\r\nContent-Type: application/json\r\n"
-                    "Connection: close\r\nContent-Length: " +
-                    QByteArray::number(body.size()) + "\r\n\r\n" + body;
-                if (fail)
-                  ++failures;
-                if (hold) {
-                  if (delay)
-                    ++delayed;
-                  if (delayReview)
-                    ++delayedReviewContinuations;
-                  held.append({socket, response});
-                } else if (!stream &&
-                           socket->state() == QAbstractSocket::ConnectedState) {
-                  socket->write(response);
-                  socket->disconnectFromHost();
-                }
-                reply->deleteLater();
-              });
+          connect(reply, &QNetworkReply::finished, socket,
+                  [this, reply, socket, delay, delayReview, hold, fail, stream,
+                   snapshot] {
+                    const int status =
+                        fail ? 503
+                             : reply
+                                   ->attribute(
+                                       QNetworkRequest::HttpStatusCodeAttribute)
+                                   .toInt();
+                    const auto body =
+                        stream            ? QByteArray{}
+                        : fail            ? QByteArray(
+                                                "{\"code\":\"unavailable\",\"message\":"
+                                                "\"controlled failure\"}")
+                        : reply->isOpen() ? reply->readAll()
+                                          : QByteArray{};
+                    const auto response =
+                        "HTTP/1.1 " + QByteArray::number(status) +
+                        " OK\r\nContent-Type: application/json\r\n"
+                        "Connection: close\r\nContent-Length: " +
+                        QByteArray::number(body.size()) + "\r\n\r\n" + body;
+                    if (fail)
+                      ++failures;
+                    if (hold) {
+                      if (delay)
+                        ++delayed;
+                      if (delayReview)
+                        ++delayedReviewContinuations;
+                      if (snapshot)
+                        ++delayedSnapshots;
+                      held.append({socket, response, snapshot});
+                    } else if (!stream && socket->state() ==
+                                              QAbstractSocket::ConnectedState) {
+                      socket->write(response);
+                      socket->disconnectFromHost();
+                    }
+                    reply->deleteLater();
+                  });
         });
       }
     });
   }
   void release() {
     for (auto &pending : held) {
-      if (pending.first &&
-          pending.first->state() == QAbstractSocket::ConnectedState) {
-        pending.first->write(pending.second);
-        pending.first->disconnectFromHost();
+      if (pending.socket &&
+          pending.socket->state() == QAbstractSocket::ConnectedState) {
+        pending.socket->write(pending.response);
+        pending.socket->disconnectFromHost();
       }
     }
     held.clear();
   }
 
+  void releaseSnapshots() {
+    for (int index = 0; index < held.size();) {
+      auto &pending = held[index];
+      if (!pending.snapshot) {
+        ++index;
+        continue;
+      }
+      if (pending.socket &&
+          pending.socket->state() == QAbstractSocket::ConnectedState) {
+        pending.socket->write(pending.response);
+        pending.socket->disconnectFromHost();
+      }
+      held.removeAt(index);
+    }
+  }
+
 private:
-  QList<QPair<QPointer<QTcpSocket>, QByteArray>> held;
+  struct Held {
+    QPointer<QTcpSocket> socket;
+    QByteArray response;
+    bool snapshot;
+  };
+  QList<Held> held;
 };
 } // namespace
 
@@ -1202,6 +1232,7 @@ private slots:
                QString("Head: %1").arg(secondHead));
     }
     QString expectedCurrent = secondID;
+    QString paginatedCurrent;
     int expectedFirstPage = 3;
     if (!sharedDelivery) {
       // Three earlier result/review events plus 47 submissions put the current
@@ -1269,6 +1300,10 @@ private slots:
                      .toString()
                      .isEmpty());
       }
+      auto otherTask =
+          oracle.request("POST", "/v1/projects/" + project + "/tasks",
+                         {{"title", "Fictional unrelated task"}});
+      QVERIFY(!otherTask.value("id").toString().isEmpty());
       // A late snapshot would cancel a held read and start an unheld one.
       const auto finalReviewSequence =
           oracle.get("/v1/snapshot").value("event_seq").toInteger();
@@ -1299,6 +1334,42 @@ private slots:
       QVERIFY(!ui->panel.allowed("cancelled"));
       auto *cancelButton = item(ui->window, "cancelTaskButton");
       QVERIFY(cancelButton && !cancelButton->isEnabled());
+
+      // Events for another task in the same project must not cancel A's held
+      // continuation or restart either history chain. Repeated invalidations
+      // would otherwise keep the owner's decision indefinitely unavailable.
+      const int unrelatedResultReads = proxy.resultReads;
+      const int unrelatedReviewReads = proxy.currentReviewReads;
+      const int unrelatedResultHistoryReads = proxy.resultHistoryReads;
+      const int unrelatedTaskHistoryReads = proxy.taskHistoryReads;
+      const int unrelatedHeldSnapshots = proxy.delayedSnapshots;
+      proxy.holdSnapshot = true;
+      for (int index = 0; index < 3; ++index) {
+        const auto updated = oracle.request(
+            "PATCH", "/v1/tasks/" + otherTask.value("id").toString(),
+            {{"title", QString("Fictional unrelated update %1").arg(index)},
+             {"expected_version", otherTask.value("version")}});
+        QVERIFY(!updated.isEmpty());
+        otherTask = updated;
+      }
+      const auto unrelatedSequence =
+          oracle.get("/v1/snapshot").value("event_seq").toInteger();
+      QTRY_COMPARE(proxy.delayedSnapshots, unrelatedHeldSnapshots + 1);
+      QTRY_COMPARE(ui->client.streamCursor(), unrelatedSequence);
+      proxy.holdSnapshot = false;
+      proxy.releaseSnapshots();
+      QTRY_COMPARE(ui->client.sequence(), unrelatedSequence);
+      QTest::qWait(50);
+      QCOMPARE(proxy.delayedReviewContinuations, 1);
+      QCOMPARE(proxy.resultReads, unrelatedResultReads);
+      QCOMPARE(proxy.currentReviewReads, unrelatedReviewReads);
+      QCOMPARE(proxy.resultHistoryReads, unrelatedResultHistoryReads);
+      QCOMPARE(proxy.taskHistoryReads, unrelatedTaskHistoryReads);
+      QVERIFY(ui->panel.resultsLoading());
+      QVERIFY(!ui->panel.resultsLoaded());
+      QCOMPARE(
+          ui->panel.currentResult().toMap().value("reviews").toList().size(),
+          20);
       proxy.release();
       QTRY_VERIFY(ui->panel.resultsLoaded() && ui->panel.allowed("cancelled"));
       QCOMPARE(
@@ -1331,11 +1402,45 @@ private slots:
                expectedCurrent);
       QVERIFY(ui->panel.allowed("cancelled"));
       QVERIFY(item(ui->window, "cancelTaskButton")->isEnabled());
+
+      // A relevant result event for A in the same coalesced interval as B must
+      // still invalidate A. The enabled decision must use the newly visible
+      // result ID, not the previously loaded candidate or merely task.version.
+      paginatedCurrent = expectedCurrent;
+      proxy.holdSnapshot = true;
+      const int heldSnapshots = proxy.delayedSnapshots;
+      const auto updatedOther = oracle.request(
+          "PATCH", "/v1/tasks/" + otherTask.value("id").toString(),
+          {{"title", "Fictional mixed-interval update"},
+           {"expected_version", otherTask.value("version")}});
+      QVERIFY(!updatedOther.isEmpty());
+      otherTask = updatedOther;
+      const auto relevantCandidate = oracle.request(
+          "POST", "/v1/tasks/" + task + "/results",
+          {{"repo", second.value("repo")},
+           {"base", base},
+           {"head", secondHead},
+           {"summary", "Fictional relevant mixed-interval candidate"},
+           {"expected_result_id", paginatedCurrent}});
+      QVERIFY(!relevantCandidate.value("id").toString().isEmpty());
+      const auto mixedSequence =
+          oracle.get("/v1/snapshot").value("event_seq").toInteger();
+      QTRY_COMPARE(proxy.delayedSnapshots, heldSnapshots + 1);
+      QTRY_COMPARE(ui->client.streamCursor(), mixedSequence);
+      proxy.holdSnapshot = false;
+      proxy.releaseSnapshots();
+      expectedCurrent = relevantCandidate.value("id").toString();
+      QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
+                   expectedCurrent);
+      QTRY_VERIFY(ui->panel.resultsLoaded() && ui->panel.allowed("cancelled"));
       // Twenty-one expanded cards put the button below the visible scroll
       // area; exercise the enabled production action without a mouse warning.
       QVERIFY(ui->panel.transition("cancelled"));
       QTRY_COMPARE(ui->panel.task().value("state").toString(),
                    QString("cancelled"));
+      QVERIFY(!proxy.transitions.isEmpty());
+      QCOMPARE(proxy.transitions.last().value("expected_result_id").toString(),
+               expectedCurrent);
     }
     const auto wire =
         oracle.get("/v1/tasks/" + task + "/results?after=0&limit=50");
@@ -1349,7 +1454,7 @@ private slots:
                    .toObject()
                    .value("id")
                    .toString(),
-               expectedCurrent);
+               paginatedCurrent);
       const auto secondPage = oracle.get(
           "/v1/tasks/" + task + "/results?after=" +
           QString::number(wire.value("next_after").toInteger()) + "&limit=50");
@@ -1361,7 +1466,7 @@ private slots:
                    .toObject()
                    .value("result_id")
                    .toString(),
-               expectedCurrent);
+               paginatedCurrent);
     }
   }
   void restartConcurrencyAndRecovery() {

@@ -124,6 +124,11 @@ public:
   QDateTime lastUpdated() const { return m_updated; }
   QString instance() const { return m_instance; }
   qint64 sequence() const { return m_sequence; }
+  qint64 streamCursor() const { return m_cursor; }
+  // Scope is exposed only for the latest accepted snapshot. Unknown coverage
+  // must always invalidate task-scoped reads conservatively.
+  bool snapshotScopeKnown() const { return m_snapshotScopeKnown; }
+  bool snapshotAffectsTask(const QString &project, const QString &task) const;
   Q_INVOKABLE void reload();
   Q_INVOKABLE void stop();
   // Payload includes expected_version/expected_queue_version from the editor's
@@ -166,6 +171,13 @@ private:
   void cancel(QNetworkReply *&reply);
   bool validMessage(const QJsonObject &obj) const;
   bool validAnswerResult(const QJsonObject &obj) const;
+  struct Invalidation {
+    qint64 sequence;
+    QString project;
+    QString task;
+  };
+  QList<Invalidation> m_pendingInvalidations, m_snapshotInvalidations;
+  bool m_snapshotScopeKnown = false, m_invalidationsOverflowed = false;
   QNetworkAccessManager m_network;
   ObjectModel m_projects, m_tasks, m_queues;
   QUrl m_endpoint;

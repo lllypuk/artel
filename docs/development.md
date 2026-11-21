@@ -243,6 +243,18 @@ exact original legacy receipt and never writes. On a miss, the CLI submits the
 current normalization only if every counted item has source attribution. A
 legacy hash conflict is not retried as a fresh attachment.
 
+For a fresh attachment, `manifest.finished_at` must contain a non-whitespace
+character, and two non-empty `scope_path` values in manifest/findings must
+match literally. Neither path is opened. Missing optional scope metadata stays
+compatible. If a pair fails only these newer rules, the CLI preserves the
+original stage-5a normalized payload for recovery: it uses the legacy lookup
+first when its payload differs, then the read-only `…/reviews/receipt` lookup.
+The latter accepts either legacy or current exact receipt bytes by original
+method/path, key and payload hash, without filtering the stored body format.
+A miss returns the artifact validation error without a writing POST; an older
+daemon's 404 is not a fallback to attach. Valid attachments add no recovery
+request. Recovery must leave reviews, events and receipts unchanged.
+
 Artifact files must be regular files even during receipt recovery. If an old
 archive used symlinked `manifest.json` or `findings.json`, replace the links
 with regular copies of the unchanged target files in the same report directory
@@ -263,7 +275,11 @@ current candidate independently of history; the UI then drains bounded
 `GET /v1/tasks/{task_id}/results/current/reviews` pages before enabling a
 decision. A history-page failure is shown only in history and does not block an
 owner decision. Incomplete/degraded evidence and zero findings are not owner
-acceptance.
+acceptance. Task-scoped reads survive a continuous SSE/snapshot interval whose
+events all belong to other tasks. A selected-task event, a relevant project
+event without task ID, an instance change, a gap or a snapshot ahead of SSE
+invalidates conservatively; every event in the interval is considered, since
+result/review history is not represented by `task.version` alone.
 
 After a new commit, submit its full SHA with `--expected-result-id "$RESULT_ID"`,
 a new binding path/run and a new request ID. Capture the returned new result ID

@@ -458,6 +458,18 @@ func loadTaskResult(ctx context.Context, tx *sql.Tx, id string) (TaskResult, err
 // ReplayLegacyReview only looks up an exact pre-normalization receipt. No
 // receipt, or a current receipt, lets the caller attempt the normal attach.
 func (s *Store) ReplayLegacyReview(ctx context.Context, taskID, resultID string, m Mutation, in AttachReviewInput) (Result, error) {
+	return s.replayReviewReceipt(ctx, taskID, resultID, m, in, true)
+}
+
+// ReplayReviewReceipt looks up either legacy or current exact receipt bytes.
+// It never creates a review, event, or receipt and never checks fresh-artifact
+// eligibility. The caller uses it only before rejecting a previously accepted
+// artifact normalization under newer client-side rules.
+func (s *Store) ReplayReviewReceipt(ctx context.Context, taskID, resultID string, m Mutation, in AttachReviewInput) (Result, error) {
+	return s.replayReviewReceipt(ctx, taskID, resultID, m, in, false)
+}
+
+func (s *Store) replayReviewReceipt(ctx context.Context, taskID, resultID string, m Mutation, in AttachReviewInput, legacyOnly bool) (Result, error) {
 	if err := validateAttachReviewIdentity(taskID, resultID, m.Key, in); err != nil {
 		return Result{}, err
 	}
@@ -467,12 +479,12 @@ func (s *Store) ReplayLegacyReview(ctx context.Context, taskID, resultID string,
 		return Result{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	receipt, matched, err := resultReplay(ctx, tx, m, true)
+	receipt, matched, err := resultReplay(ctx, tx, m, legacyOnly)
 	if err != nil {
 		return Result{}, err
 	}
 	if !matched {
-		return Result{}, &domain.Error{Code: "not_found", Message: "legacy review receipt not found"}
+		return Result{}, &domain.Error{Code: "not_found", Message: "review receipt not found"}
 	}
 	return receipt, tx.Commit()
 }

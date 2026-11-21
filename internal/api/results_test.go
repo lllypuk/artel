@@ -272,8 +272,12 @@ func TestLegacyReviewLookupCannotCreateOrReplayCurrentReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	request(t, f.h, "POST", path+"/legacy-receipt", string(body), key, 404)
+	request(t, f.h, "POST", path+"/receipt", string(body), key, 404)
 	created := request(t, f.h, "POST", path, string(body), key, 201)
 	request(t, f.h, "POST", path+"/legacy-receipt", string(body), key, 404)
+	if replay := request(t, f.h, "POST", path+"/receipt", string(body), key, 201); !bytes.Equal(replay, created) {
+		t.Fatalf("general lookup changed current receipt: %s", replay)
+	}
 	if replay := request(t, f.h, "POST", path, string(body), key, 201); !bytes.Equal(replay, created) {
 		t.Fatalf("current replay changed after a legacy lookup: %s", replay)
 	}
@@ -283,6 +287,7 @@ func TestLegacyReviewLookupCannotCreateOrReplayCurrentReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	request(t, f.h, "POST", path+"/legacy-receipt", string(body), key, 404)
+	request(t, f.h, "POST", path+"/receipt", string(body), key, 409)
 	request(t, f.h, "POST", path, string(body), key, 409)
 }
 
@@ -306,7 +311,7 @@ func TestReviewLegacyCountersWireContract(t *testing.T) {
 	}
 	path := "/v1/tasks/" + f.task.ID + "/results/" + result.ID + "/reviews"
 	legacy := seedLegacyAPICounterReceipt(t, dbPath, path, key, f.task.ID, result.ID, input, originalRequest)
-	for _, suffix := range []string{"", "/legacy-receipt"} {
+	for _, suffix := range []string{"", "/legacy-receipt", "/receipt"} {
 		replayed := request(t, f.h, "POST", path+suffix, string(originalRequest), key, 201)
 		if !bytes.Equal(replayed, legacy) {
 			t.Fatalf("legacy receipt changed: %s", replayed)

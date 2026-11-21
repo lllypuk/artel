@@ -406,6 +406,37 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/TaskReviewReceipt'}
         default: {$ref: '#/components/responses/Error'}
+  /v1/tasks/{task_id}/results/{result_id}/reviews/receipt:
+    parameters:
+      - {$ref: '#/components/parameters/TaskID'}
+      - {name: result_id, in: path, required: true, schema: {$ref: '#/components/schemas/UUID'}}
+    post:
+      operationId: replayTaskReviewReceipt
+      description: >-
+        Looks up either a legacy or current exact attachment receipt without creating or changing
+        a review, event, or receipt. The normalized payload is matched against the original attach
+        method/path, idempotency key, and payload hash; the stored body format is not filtered.
+        This recovery endpoint allows newer clients to reject previously accepted artifacts for
+        fresh writes while preserving byte-exact lost-response recovery. Returns 404 when no exact
+        receipt exists and 409 when the key belongs to another operation/path or has another payload.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AttachTaskReview'}
+      responses:
+        '201':
+          description: Exact original creation receipt, returned unchanged
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskReviewReceipt'}
+        '200':
+          description: Exact original duplicate receipt, returned unchanged
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskReviewReceipt'}
+        default: {$ref: '#/components/responses/Error'}
   /v1/tasks/{id}/transition:
     parameters: [{$ref: '#/components/parameters/ID'}]
     post:
