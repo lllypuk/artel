@@ -603,9 +603,9 @@ func TestPostCommitBindingFailureReportsGeneratedRequestID(t *testing.T) {
 func TestSubmitLostResponseReportsEffectiveGeneratedRequestID(t *testing.T) {
 	h := newCLIResultHarness(t)
 	repo, _, base, head := h.repository(t)
-	sentID := ""
+	sentID := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sentID = r.Header.Get("Idempotency-Key")
+		sentID <- r.Header.Get("Idempotency-Key")
 		connection, _, err := http.NewResponseController(w).Hijack()
 		if err != nil {
 			t.Error(err)
@@ -620,17 +620,18 @@ func TestSubmitLostResponseReportsEffectiveGeneratedRequestID(t *testing.T) {
 	if code := run(args, &out, &diagnostic); code != 1 {
 		t.Fatalf("lost response exit=%d stderr=%s", code, diagnostic.String())
 	}
-	if !validCanonicalID(sentID) || !strings.Contains(diagnostic.String(), "outcome unknown; retry with --request-id "+sentID) {
-		t.Fatalf("lost response did not expose effective sent UUID %q: %q", sentID, diagnostic.String())
+	requestID := <-sentID
+	if !validCanonicalID(requestID) || !strings.Contains(diagnostic.String(), "outcome unknown; retry with --request-id "+requestID) {
+		t.Fatalf("lost response did not expose effective sent UUID %q: %q", requestID, diagnostic.String())
 	}
 }
 
 func TestSubmitTruncatedCreatedResponseReportsEffectiveGeneratedRequestID(t *testing.T) {
 	h := newCLIResultHarness(t)
 	repo, _, base, head := h.repository(t)
-	sentID := ""
+	sentID := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sentID = r.Header.Get("Idempotency-Key")
+		sentID <- r.Header.Get("Idempotency-Key")
 		connection, buffered, err := http.NewResponseController(w).Hijack()
 		if err != nil {
 			t.Error(err)
@@ -647,8 +648,9 @@ func TestSubmitTruncatedCreatedResponseReportsEffectiveGeneratedRequestID(t *tes
 	if code := run(args, &out, &diagnostic); code != 1 {
 		t.Fatalf("truncated created response exit=%d stderr=%s", code, diagnostic.String())
 	}
-	if !validCanonicalID(sentID) || !strings.Contains(diagnostic.String(), "outcome unknown; retry with --request-id "+sentID) {
-		t.Fatalf("truncated created response did not expose effective sent UUID %q: %q", sentID, diagnostic.String())
+	requestID := <-sentID
+	if !validCanonicalID(requestID) || !strings.Contains(diagnostic.String(), "outcome unknown; retry with --request-id "+requestID) {
+		t.Fatalf("truncated created response did not expose effective sent UUID %q: %q", requestID, diagnostic.String())
 	}
 }
 
