@@ -11,18 +11,29 @@ import (
 // validate the payload; the file itself holds no implicit trust.
 func ReadPrivateFile(path string) ([]byte, error) { return readPrivate(path) }
 
-// WritePrivateFile atomically publishes data with mode 0600 inside a private
-// 0700 directory, fsyncing file and directory. Initial publication refuses to
-// replace an existing path; replace=true is only for validated transitions of
-// a file this process read immediately before.
-func WritePrivateFile(path string, data []byte, replace bool) error {
+// ValidatePrivateFileDestination applies the same parent ownership,
+// permissions and no-symlink checks as WritePrivateFile without publishing the
+// final file. It may create a missing private parent directory.
+func ValidatePrivateFileDestination(path string) error {
+	return validatePrivateFileDestination(path)
+}
+
+func validatePrivateFileDestination(path string) error {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return errors.New("private path must be absolute")
 	}
 	if err := privateDir(filepath.Dir(path)); err != nil {
 		return err
 	}
-	if err := noSymlinks(path); err != nil {
+	return noSymlinks(path)
+}
+
+// WritePrivateFile atomically publishes data with mode 0600 inside a private
+// 0700 directory, fsyncing file and directory. Initial publication refuses to
+// replace an existing path; replace=true is only for validated transitions of
+// a file this process read immediately before.
+func WritePrivateFile(path string, data []byte, replace bool) error {
+	if err := validatePrivateFileDestination(path); err != nil {
 		return err
 	}
 	if !replace {

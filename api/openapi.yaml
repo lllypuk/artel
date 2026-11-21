@@ -275,6 +275,137 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Task'}
         default: {$ref: '#/components/responses/Error'}
+  /v1/tasks/{task_id}/results:
+    parameters: [{$ref: '#/components/parameters/TaskID'}]
+    post:
+      operationId: submitTaskResult
+      description: >-
+        Atomically records an immutable owner-submitted Git candidate and CASes the
+        current result. expected_result_id is empty only when no result is expected.
+        Exact request receipt replay is checked before that CAS, including after newer submissions.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SubmitTaskResult'}
+      responses:
+        '201':
+          description: Submitted candidate or exact original request receipt replay
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskResult'}
+        default: {$ref: '#/components/responses/Error'}
+    get:
+      operationId: taskResultHistory
+      description: Bounded task-scoped submissions and reviews in event order; late reviews retain their original result_id.
+      parameters:
+        - {name: after, in: query, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+      responses:
+        '200':
+          description: Current result ID and a bounded history page
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskResultHistoryPage'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tasks/{task_id}/results/current:
+    parameters: [{$ref: '#/components/parameters/TaskID'}]
+    get:
+      operationId: currentTaskResult
+      description: >-
+        Bounded current-candidate read, independent of review and submission history.
+        The compatibility reviews array is always empty; read current/reviews pages until
+        has_more is false before making a decision. Null result confirms no current result.
+      responses:
+        '200':
+          description: Current candidate without unbounded review evidence
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CurrentTaskResult'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tasks/{task_id}/results/current/reviews:
+    parameters: [{$ref: '#/components/parameters/TaskID'}]
+    get:
+      operationId: currentTaskReviews
+      description: >-
+        Bounded insertion-order reviews for the candidate current in this read transaction.
+        result_id must match the loaded candidate; next_after is the UUID cursor for the next page.
+      parameters:
+        - {name: after, in: query, allowEmptyValue: true, schema: {$ref: '#/components/schemas/ReviewCursor'}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 50, default: 20}}
+      responses:
+        '200':
+          description: One bounded current-candidate review page
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CurrentTaskReviewsPage'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tasks/{task_id}/results/{result_id}/reviews:
+    parameters:
+      - {$ref: '#/components/parameters/TaskID'}
+      - {name: result_id, in: path, required: true, schema: {$ref: '#/components/schemas/UUID'}}
+    post:
+      operationId: attachTaskReview
+      description: >-
+        Attaches normalized review evidence without changing task state, queue or assignment.
+        Stored result task/repo/base/head are authoritative; matching request values are only assertions.
+        The business uniqueness key is repo/revmux_task/run. With a fresh request ID, the payload must
+        pass current validation before an identical existing attachment can return the original review
+        without another event. Transfer or changed normalized payload is 409. Exact request receipt
+        replay remains available after project archival, but a valid fresh request for the same business
+        key is rejected with 409 by the archive guard. Fresh writes limit every
+        counter to 9007199254740991. Each source count is at most its aggregate, and the sum for each
+        counter must cover its aggregate (sources can cite the same item). Exact legacy receipt replay
+        accepts the original counters and returns the original status and bytes, not a GET projection.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AttachTaskReview'}
+      responses:
+        '201':
+          description: Attached review or exact original request receipt replay
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskReviewReceipt'}
+        '200':
+          description: Valid identical review for the same repo/task/run business key or exact original 200 receipt replay
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskReviewReceipt'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tasks/{task_id}/results/{result_id}/reviews/legacy-receipt:
+    parameters:
+      - {$ref: '#/components/parameters/TaskID'}
+      - {name: result_id, in: path, required: true, schema: {$ref: '#/components/schemas/UUID'}}
+    post:
+      operationId: replayLegacyTaskReview
+      description: >-
+        Looks up an exact legacy attachment receipt, using the original payload derived from
+        the actual findings roster. It never creates an attachment or a receipt. Returns 404
+        for a missing key or a current-format receipt (use the normal attach only for valid fresh evidence), and 409 if a
+        legacy receipt does not match the exact payload or the key belongs to a different
+        operation or path. The stored status and body are returned unchanged.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AttachTaskReview'}
+      responses:
+        '201':
+          description: Exact original legacy creation receipt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskReviewReceipt'}
+        '200':
+          description: Exact original legacy duplicate receipt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskReviewReceipt'}
+        default: {$ref: '#/components/responses/Error'}
   /v1/tasks/{id}/transition:
     parameters: [{$ref: '#/components/parameters/ID'}]
     post:
@@ -295,6 +426,8 @@ paths:
                   description: Required when leaving queued; only the first queued task may start.
                   type: integer
                   minimum: 1
+                expected_result_id:
+                  $ref: '#/components/schemas/ExpectedResultID'
       responses:
         '200':
           description: Task manually transitioned
@@ -417,6 +550,177 @@ components:
           schema: {$ref: '#/components/schemas/DeliveryError'}
   schemas:
     UUID: {type: string, format: uuid}
+    ExpectedResultID:
+      type: string
+      maxLength: 36
+      pattern: '^$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      description: Canonical current result UUID, or empty to assert that no result exists. Omission is legacy only when no result exists.
+    ReviewCursor:
+      type: string
+      maxLength: 36
+      pattern: '^$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      description: Current-candidate review UUID, or empty for the first page.
+    FullSHA: {type: string, pattern: '^[0-9a-f]{40}$'}
+    ReviewRequirement:
+      type: object
+      additionalProperties: false
+      required: [name, executor]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200, description: 'Non-empty valid UTF-8, additionally limited to 200 bytes; no NUL.'}
+        executor: {type: string, minLength: 1, maxLength: 120, description: 'Non-empty valid UTF-8, additionally limited to 120 bytes; no NUL.'}
+    ReviewCounter:
+      type: integer
+      minimum: 0
+      maximum: 9007199254740991
+    ReviewReceiptCounter:
+      type: integer
+      minimum: 0
+      format: int64
+      description: The exact integer on the attach wire. Counters above 9007199254740991 are accepted only for exact legacy receipt replay.
+    ReviewReceiptSource:
+      type: object
+      additionalProperties: false
+      required: [name, executor, required, responded, degraded, findings, pre_existing, open_questions]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200, description: 'Non-empty valid UTF-8, additionally limited to 200 bytes; no NUL.'}
+        executor: {type: string, minLength: 1, maxLength: 120, description: 'Non-empty valid UTF-8, additionally limited to 120 bytes; no NUL.'}
+        required: {type: boolean, description: Derived from exact membership in required_sources.}
+        responded: {type: boolean, description: 'A responded source with zero findings is not missing. Exactly one of responded and degraded is true.'}
+        degraded: {type: boolean, description: 'Includes roster-only non-response evidence; a degraded reporter can still have counts.'}
+        findings: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+        pre_existing: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+        open_questions: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+    ReviewSource:
+      allOf:
+        - {$ref: '#/components/schemas/ReviewReceiptSource'}
+        - type: object
+          properties:
+            findings: {$ref: '#/components/schemas/ReviewCounter'}
+            pre_existing: {$ref: '#/components/schemas/ReviewCounter'}
+            open_questions: {$ref: '#/components/schemas/ReviewCounter'}
+    SubmitTaskResult:
+      type: object
+      additionalProperties: false
+      required: [repo, base, head, expected_result_id]
+      properties:
+        repo:
+          type: string
+          maxLength: 4096
+          description: Canonical absolute, symlink-resolved Git common-dir identity; valid UTF-8, additionally limited to 4096 bytes, no NUL; not the project root or worktree path.
+        base: {$ref: '#/components/schemas/FullSHA'}
+        head: {$ref: '#/components/schemas/FullSHA'}
+        summary: {type: string, maxLength: 4096, description: 'Optional owner summary; valid UTF-8, additionally limited to 4096 bytes, no NUL; no automatic verdict.'}
+        expected_result_id: {$ref: '#/components/schemas/ExpectedResultID'}
+    TaskResult:
+      type: object
+      additionalProperties: false
+      required: [id, task_id, repo, base, head, summary, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/UUID'}
+        task_id: {$ref: '#/components/schemas/UUID'}
+        repo: {type: string}
+        base: {$ref: '#/components/schemas/FullSHA'}
+        head: {$ref: '#/components/schemas/FullSHA'}
+        summary: {type: string}
+        created_at: {type: string, format: date-time}
+    AttachTaskReview:
+      type: object
+      additionalProperties: false
+      required: [repo, base, head, revmux_task, run, range_source, report_ref, complete, required_sources, sources, incomplete_reasons, findings, pre_existing, open_questions]
+      properties:
+        repo: {type: string, maxLength: 4096, description: 'Valid UTF-8, additionally limited to 4096 bytes; no NUL.'}
+        base: {$ref: '#/components/schemas/FullSHA'}
+        head: {$ref: '#/components/schemas/FullSHA'}
+        revmux_task: {type: string, minLength: 1, maxLength: 200, description: 'Non-empty valid UTF-8, additionally limited to 200 bytes; no NUL.'}
+        run: {type: string, minLength: 1, maxLength: 200, description: 'Non-empty valid UTF-8, additionally limited to 200 bytes; no NUL.'}
+        range_source: {type: string, enum: [operator], description: 'Owner assertion, never independent Git attestation.'}
+        report_ref: {type: string, minLength: 1, maxLength: 4096, description: 'Display-only local path or URI; never opened by the daemon. Valid UTF-8, additionally limited to 4096 bytes; no NUL.'}
+        complete: {type: boolean, description: 'Completeness of required sources only, not acceptance or a clean review. Complete requires at least one required pair and a responding, non-degraded exact match for every pair.'}
+        required_sources: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ReviewRequirement'}}
+        sources: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/ReviewReceiptSource'}}
+        incomplete_reasons: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 500, description: 'Non-empty valid UTF-8, additionally limited to 500 bytes; no NUL.'}}
+        findings: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+        pre_existing: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+        open_questions: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+    TaskReviewReceipt:
+      type: object
+      additionalProperties: false
+      required: [id, task_id, result_id, repo, base, head, revmux_task, run, range_source, report_ref, complete, required_sources, sources, incomplete_reasons, findings, pre_existing, open_questions, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/UUID'}
+        task_id: {$ref: '#/components/schemas/UUID'}
+        result_id: {$ref: '#/components/schemas/UUID'}
+        repo: {type: string, maxLength: 4096, description: 'Valid UTF-8, additionally limited to 4096 bytes; no NUL.'}
+        base: {$ref: '#/components/schemas/FullSHA'}
+        head: {$ref: '#/components/schemas/FullSHA'}
+        revmux_task: {type: string, minLength: 1, maxLength: 200, description: 'Non-empty valid UTF-8, additionally limited to 200 bytes; no NUL.'}
+        run: {type: string, minLength: 1, maxLength: 200, description: 'Non-empty valid UTF-8, additionally limited to 200 bytes; no NUL.'}
+        range_source: {type: string, enum: [operator]}
+        report_ref: {type: string, minLength: 1, maxLength: 4096, description: 'Valid UTF-8, additionally limited to 4096 bytes; no NUL.'}
+        complete: {type: boolean}
+        required_sources: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ReviewRequirement'}}
+        sources: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/ReviewReceiptSource'}}
+        incomplete_reasons: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 500, description: 'Non-empty valid UTF-8, additionally limited to 500 bytes; no NUL.'}}
+        findings: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+        pre_existing: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+        open_questions: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+        created_at: {type: string, format: date-time}
+        evidence_consistent: {type: boolean, description: Absent from legacy receipt bodies.}
+    TaskReview:
+      allOf:
+        - {$ref: '#/components/schemas/TaskReviewReceipt'}
+        - type: object
+          required: [evidence_consistent]
+          properties:
+            sources: {type: array, items: {$ref: '#/components/schemas/ReviewSource'}}
+            findings: {$ref: '#/components/schemas/ReviewCounter'}
+            pre_existing: {$ref: '#/components/schemas/ReviewCounter'}
+            open_questions: {$ref: '#/components/schemas/ReviewCounter'}
+            evidence_consistent: {type: boolean, description: 'False when persisted flags, source coverage, or counters are inconsistent. Out-of-range counters are saturated in this read projection, not in stored receipts.'}
+    CurrentTaskResult:
+      type: object
+      additionalProperties: false
+      required: [result, reviews]
+      properties:
+        result:
+          oneOf:
+            - {$ref: '#/components/schemas/TaskResult'}
+            - type: object
+              nullable: true
+              enum: [null]
+              description: Null when no candidate is current; never an empty object.
+        reviews:
+          type: array
+          maxItems: 0
+          description: Compatibility field, always empty; use the bounded current/reviews endpoint.
+          items: {$ref: '#/components/schemas/TaskReview'}
+    CurrentTaskReviewsPage:
+      type: object
+      additionalProperties: false
+      required: [result_id, reviews, next_after, has_more]
+      properties:
+        result_id: {$ref: '#/components/schemas/ExpectedResultID'}
+        reviews: {type: array, maxItems: 50, items: {$ref: '#/components/schemas/TaskReview'}}
+        next_after: {$ref: '#/components/schemas/ExpectedResultID'}
+        has_more: {type: boolean}
+    TaskResultHistoryEntry:
+      type: object
+      additionalProperties: false
+      required: [seq, kind]
+      properties:
+        seq: {type: integer, minimum: 1}
+        kind: {type: string, enum: [result, review]}
+        result: {$ref: '#/components/schemas/TaskResult'}
+        review: {$ref: '#/components/schemas/TaskReview'}
+    TaskResultHistoryPage:
+      type: object
+      additionalProperties: false
+      required: [current_result_id, entries, next_after, has_more]
+      properties:
+        current_result_id: {$ref: '#/components/schemas/ExpectedResultID'}
+        entries: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/TaskResultHistoryEntry'}}
+        next_after: {type: integer, minimum: 0}
+        has_more: {type: boolean}
     QuestionText:
       type: string
       minLength: 1

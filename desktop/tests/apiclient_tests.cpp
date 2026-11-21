@@ -723,6 +723,125 @@ private slots:
     QVERIFY(!idempotencyKey(answers[0]).isEmpty());
     client.stop();
   }
+  void currentReviewPages_data() {
+    QTest::addColumn<QString>("continuation");
+    QTest::newRow("saturated legacy counters remain readable") << QString{};
+    QTest::newRow("nonadvancing cursor") << QString("nonadvancing");
+    QTest::newRow("repeated ID with advancing cursor") << QString("repeated");
+  }
+  void currentReviewPages() {
+    QFETCH(QString, continuation);
+    Fixture fixture;
+    const QString resultID = "66666666-6666-4666-8666-666666666666";
+    const QString reviewID = "77777777-7777-4777-8777-777777777777";
+    const QString sha(40, 'a');
+    const auto result = QJsonObject{{"id", resultID},
+                                    {"task_id", taskID},
+                                    {"repo", "/tmp/review/.git"},
+                                    {"base", sha},
+                                    {"head", sha},
+                                    {"summary", "Legacy counters"},
+                                    {"created_at", "2026-11-20T11:00:00Z"}};
+    constexpr double safeMaximum = 9007199254740991.0;
+    const auto source = QJsonObject{{"name", "reviewer"},
+                                    {"executor", "codex"},
+                                    {"required", true},
+                                    {"responded", true},
+                                    {"degraded", false},
+                                    {"findings", safeMaximum},
+                                    {"pre_existing", safeMaximum},
+                                    {"open_questions", safeMaximum}};
+    const auto review = QJsonObject{
+        {"id", reviewID},
+        {"task_id", taskID},
+        {"result_id", resultID},
+        {"repo", result.value("repo")},
+        {"base", sha},
+        {"head", sha},
+        {"revmux_task", "legacy"},
+        {"run", "run-01"},
+        {"range_source", "operator"},
+        {"report_ref", "/tmp/report"},
+        {"complete", true},
+        {"required_sources",
+         QJsonArray{QJsonObject{{"name", "reviewer"}, {"executor", "codex"}}}},
+        {"sources", QJsonArray{source}},
+        {"incomplete_reasons", QJsonArray{}},
+        {"findings", safeMaximum},
+        {"pre_existing", safeMaximum},
+        {"open_questions", safeMaximum},
+        {"created_at", "2026-11-20T12:00:00Z"},
+        {"evidence_consistent", false}};
+    QJsonArray firstPage{review};
+    if (!continuation.isEmpty()) {
+      for (int i = 1; i < 20; ++i) {
+        auto nextReview = review;
+        nextReview.insert(
+            "id",
+            QString("88888888-8888-4888-8888-%1").arg(i, 12, 10, QChar('0')));
+        firstPage.append(nextReview);
+      }
+    }
+    const auto cursor = firstPage.last().toObject().value("id").toString();
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/tasks/" + taskID.toUtf8() +
+                             "/results/current "))
+        respond(socket, 200,
+                QJsonDocument(
+                    QJsonObject{{"result", result}, {"reviews", QJsonArray{}}})
+                    .toJson(QJsonDocument::Compact));
+      else if (request.startsWith("GET /v1/tasks/" + taskID.toUtf8() +
+                                  "/results/current/reviews?")) {
+        auto page = firstPage;
+        auto next = cursor;
+        auto more = !continuation.isEmpty();
+        if (request.contains("after=" + cursor.toUtf8()) &&
+            continuation == "repeated") {
+          auto unseen = review;
+          next = "99999999-9999-4999-8999-999999999999";
+          unseen.insert("id", next);
+          page = QJsonArray{review, unseen};
+          more = false;
+        }
+        respond(socket, 200,
+                QJsonDocument(QJsonObject{{"result_id", resultID},
+                                          {"reviews", page},
+                                          {"next_after", next},
+                                          {"has_more", more}})
+                    .toJson(QJsonDocument::Compact));
+      } else
+        fixture.normal(socket, request);
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QSignalSpy received(&client, &ApiClient::currentReviewsReceived);
+    client.loadCurrentResult(taskID);
+    QTRY_COMPARE(received.size(), 1);
+    const auto reviews = received.first().at(1).toList();
+    QCOMPARE(reviews.size(), firstPage.size());
+    if (!continuation.isEmpty()) {
+      QVERIFY(client.currentResultError().isEmpty());
+      client.loadCurrentReviews(taskID, resultID, cursor);
+      QTRY_VERIFY(!client.currentResultError().isEmpty());
+      QCOMPARE(received.size(), 1);
+      QVERIFY(!client.currentResultLoading());
+      return;
+    }
+    const auto projected = reviews.first().toMap();
+    QVERIFY(!projected.value("evidence_consistent").toBool());
+    QCOMPARE(projected.value("findings").toDouble(), safeMaximum);
+    QCOMPARE(projected.value("sources")
+                 .toList()
+                 .first()
+                 .toMap()
+                 .value("open_questions")
+                 .toDouble(),
+             safeMaximum);
+    QVERIFY(client.currentResultError().isEmpty());
+    client.stop();
+  }
   void realTemporaryDaemon() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());

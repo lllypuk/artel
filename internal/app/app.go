@@ -43,6 +43,7 @@ type Command struct {
 	TaskIDs              []string     `json:"task_ids,omitempty"`
 	ExpectedVersion      int64        `json:"expected_version,omitempty"`
 	ExpectedQueueVersion int64        `json:"expected_queue_version,omitempty"`
+	ExpectedResultID     *string      `json:"expected_result_id,omitempty"`
 }
 
 type Service struct{ store *store.Store }
@@ -289,6 +290,16 @@ func changeTask(snap *store.Snapshot, c Command, now string, e *store.Event) (an
 	}
 	if err := writable(p); err != nil {
 		return nil, err
+	}
+	if c.Action == Transition {
+		current, submitted := snap.CurrentResultID(t.ID)
+		expected := ""
+		if c.ExpectedResultID != nil {
+			expected = *c.ExpectedResultID
+		}
+		if (submitted && (c.ExpectedResultID == nil || *c.ExpectedResultID != current)) || (!submitted && expected != "") {
+			return nil, domain.Conflict("current task result changed")
+		}
 	}
 	if err := domain.CheckVersion(c.ExpectedVersion, t.Version); err != nil {
 		return nil, err

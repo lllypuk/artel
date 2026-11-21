@@ -47,6 +47,7 @@ Panel::Panel(ApiClient *client, QObject *parent)
       m_historyCursor = 0;
       m_historyMore = true;
       resetCommissions();
+      resetResults(sameInstance);
       if (!sameInstance) {
         resetQuestions();
         emit detachedAnswerDraftsChanged();
@@ -54,12 +55,18 @@ Panel::Panel(ApiClient *client, QObject *parent)
       if (!m_task.isEmpty()) {
         moreHistory();
         loadCommissionPage();
+        loadResults();
       }
-    } else if (reconnected && !m_task.isEmpty() && !m_deliveryPoll.isActive()) {
-      // A selection made offline still needs its first reads on a same-snapshot
-      // reconnect.
-      moreHistory();
-      loadCommissionPage();
+    } else if (reconnected && !m_task.isEmpty()) {
+      // A selection or reload made offline still needs its first reads on a
+      // same-snapshot reconnect. Result recovery is independent of the
+      // delivery timer, which may already be active for this selected task.
+      if (!m_deliveryPoll.isActive()) {
+        moreHistory();
+        loadCommissionPage();
+      }
+      if (!m_resultsLoaded)
+        loadResults();
     }
     if (!m_client->dirty() && !m_client->pending() && !m_client->uncertain())
       m_kind.clear();
@@ -85,6 +92,7 @@ Panel::Panel(ApiClient *client, QObject *parent)
               if (!task().isEmpty()) {
                 moreHistory();
                 loadCommissionPage();
+                loadResults();
               }
             }
           });
@@ -93,6 +101,47 @@ Panel::Panel(ApiClient *client, QObject *parent)
             m_history += events;
             m_historyCursor = cursor;
             m_historyMore = more;
+            emit changed();
+          });
+  connect(client, &ApiClient::currentResultReceived, this,
+          [this](const QVariantMap &result) {
+            if (m_task.isEmpty())
+              return;
+            m_currentResultData = result;
+            m_currentResult = result.value("id").toString();
+            m_currentResultData.insert("reviews", QVariantList{});
+            m_currentReviewsCursor.clear();
+            m_currentResultLoaded = true;
+            // Confirmed absence needs no review read. A present candidate is
+            // visible now, but decisions wait for every bounded review page.
+            m_resultsLoaded = result.isEmpty();
+            emit changed();
+          });
+  connect(client, &ApiClient::currentReviewsReceived, this,
+          [this](const QString &result, const QVariantList &reviews,
+                 const QString &after, const QString &cursor, bool more) {
+            if (m_task.isEmpty() || result != m_currentResult ||
+                after != m_currentReviewsCursor)
+              return;
+            auto all = m_currentResultData.value("reviews").toList();
+            all += reviews;
+            m_currentResultData.insert("reviews", all);
+            m_currentReviewsCursor = cursor;
+            m_resultsLoaded = !more;
+            emit changed();
+            if (more)
+              m_client->loadCurrentReviews(m_task, result, cursor);
+          });
+  connect(client, &ApiClient::resultsReceived, this,
+          [this](const QString &, const QVariantList &entries, qint64 after,
+                 qint64 cursor, bool more) {
+            if (m_task.isEmpty() || (after != 0 && after != m_resultsCursor))
+              return;
+            if (after == 0)
+              m_resultEntries.clear();
+            m_resultEntries += entries;
+            m_resultsCursor = cursor;
+            m_resultsMore = more;
             emit changed();
           });
   connect(client, &ApiClient::messagesReceived, this,
@@ -386,6 +435,58 @@ void Panel::resetQuestions() {
   m_questionsMore = false;
   m_questionStatusOffset = 0;
 }
+void Panel::resetResults(bool preserveCurrent) {
+  m_client->cancelResults();
+  m_resultEntries.clear();
+  m_currentResultData.clear();
+  m_currentReviewsCursor.clear();
+  m_currentResultLoaded = false;
+  m_resultsCursor = 0;
+  m_resultsMore = false;
+  m_resultsLoaded = false;
+  if (!preserveCurrent)
+    m_currentResult.clear();
+}
+void Panel::loadResults() {
+  if (!m_task.isEmpty() && m_client->online()) {
+    m_client->loadResults(m_task, 0);
+    m_client->loadCurrentResult(m_task);
+  }
+}
+QString Panel::resultsError() const {
+  return m_task.isEmpty() ? QString{} : m_client->currentResultError();
+}
+QString Panel::resultHistoryError() const {
+  return m_task.isEmpty() ? QString{} : m_client->resultsError();
+}
+QVariant Panel::currentResult() const {
+  return m_currentResultLoaded ? QVariant(m_currentResultData) : QVariantMap{};
+}
+QVariant Panel::resultHistory() const {
+  QVariantList rows;
+  for (const auto &value : m_resultEntries) {
+    const auto entry = value.toMap();
+    if (entry.value("kind").toString() == "result") {
+      rows.append(QVariantMap{{"seq", entry.value("seq")},
+                              {"result", entry.value("result")},
+                              {"reviews", QVariantList{}}});
+      continue;
+    }
+    const auto review = entry.value("review").toMap();
+    for (auto &row : rows) {
+      auto candidate = row.toMap();
+      if (candidate.value("result").toMap().value("id").toString() !=
+          review.value("result_id").toString())
+        continue;
+      auto reviews = candidate.value("reviews").toList();
+      reviews.append(review);
+      candidate.insert("reviews", reviews);
+      row = candidate;
+      break;
+    }
+  }
+  return rows;
+}
 QVariantMap Panel::assignment() const {
   QVariantMap result{{"enabled", false},
                      {"available", false},
@@ -663,6 +764,7 @@ void Panel::setProjectSelection(const QString &id) {
   m_historyCursor = 0;
   m_historyMore = true;
   resetCommissionView();
+  resetResults();
 }
 bool Panel::selectProject(const QString &id) {
   if (dirty() || m_client->pending() || uncertain())
@@ -684,6 +786,7 @@ void Panel::setTaskSelection(const QString &id) {
     resetCommissions();
   else
     resetCommissionView();
+  resetResults();
 }
 bool Panel::selectTask(const QString &id) {
   if (dirty() || m_client->pending() || uncertain())
@@ -694,6 +797,7 @@ bool Panel::selectTask(const QString &id) {
   setTaskSelection(id);
   moreHistory();
   loadCommissionPage();
+  loadResults();
   emit changed();
   return true;
 }
@@ -755,7 +859,11 @@ bool Panel::save() {
       payload);
 }
 void Panel::discard() { m_client->discardDraft(); }
-void Panel::reload() { m_client->reload(); }
+void Panel::reload() {
+  m_client->reload();
+  resetResults(true);
+  loadResults();
+}
 bool Panel::rebase() {
   // Explicit owner action: retain text but adopt the freshly loaded version.
   if (!writable() || m_client->loading() || m_editorId.isEmpty() ||
@@ -820,20 +928,25 @@ bool Panel::queue(const QString &id, int direction) {
       {{"expected_queue_version", project().value("queue_version")},
        {"task_ids", ids}});
 }
+bool Panel::queueStartEligible() const {
+  const auto state = task().value("state").toString();
+  const auto ids = queueIds();
+  if (state != "queued" || ids.isEmpty() || ids.first().toString() != m_task)
+    return false;
+  for (const auto &row : tasks())
+    if (row.toMap().value("state") == "in_progress")
+      return false;
+  return true;
+}
 bool Panel::allowed(const QString &target) const {
   if (!writable() || dirty() || project().value("archived").toBool() ||
-      task().isEmpty())
+      task().isEmpty() || !m_resultsLoaded)
     return false;
   const auto state = task().value("state").toString();
-  if (target == "in_progress") {
-    const auto ids = queueIds();
-    if (state != "queued" || ids.isEmpty() || ids.first().toString() != m_task)
-      return false;
-    for (const auto &row : tasks())
-      if (row.toMap().value("state") == "in_progress")
-        return false;
+  if (target == "in_progress" && !queueStartEligible())
+    return false;
+  if (target == "in_progress")
     return true;
-  }
   if (target == "done")
     return state == "in_progress";
   if (target == "cancelled")
@@ -846,7 +959,8 @@ bool Panel::transition(const QString &state) {
   if (!allowed(state))
     return false;
   QVariantMap payload{{"state", state},
-                      {"expected_version", task().value("version")}};
+                      {"expected_version", task().value("version")},
+                      {"expected_result_id", m_currentResult}};
   if (task().value("state") == "queued")
     payload.insert("expected_queue_version", project().value("queue_version"));
   return m_client->save("POST", "/v1/tasks/" + m_task + "/transition", payload);
@@ -854,4 +968,8 @@ bool Panel::transition(const QString &state) {
 void Panel::moreHistory() {
   if (!m_task.isEmpty() && m_historyMore && !historyLoading())
     m_client->loadHistory(m_project, m_task, m_historyCursor);
+}
+void Panel::moreResults() {
+  if (!m_task.isEmpty() && m_resultsMore && !resultHistoryLoading())
+    m_client->loadResults(m_task, m_resultsCursor);
 }
