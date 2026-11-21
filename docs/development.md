@@ -106,7 +106,7 @@ Explicitly load the installed artifact in a separately installed supported Pi:
 From source use `make observer-build` and the absolute path to
 `integrations/pi-observer/dist/index.mjs`, or copy the three dist files elsewhere.
 Do not place it in `.pi/extensions` or global settings. No config means inert;
-unsupported version/capabilities or unsafe/pending config disables observation.
+missing observation capabilities, unsupported Node or unsafe/pending config disables observation. The pinned Pi SDK version is a test dependency, not an exact runtime version requirement.
 
 Use the list JSON to select full observer/runtime/project UUIDs and current observer
 version. `artelctl observer bind --id UUID --runtime-id UUID --project-id UUID
