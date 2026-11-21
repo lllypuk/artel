@@ -4,14 +4,20 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -365,7 +371,7 @@ func TestResultPathsRejectParentComponentsAcrossSymlinks(t *testing.T) {
 	if err := os.Symlink(inner, shortcut); err != nil {
 		t.Fatal(err)
 	}
-	canonical, err := validateGitCandidate(filepath.Join(shortcut, "..", "repo"), base, head)
+	canonical, err := validateGitCandidate(shortcut+"/../repo", base, head)
 	if err == nil {
 		t.Fatalf("symlink/parent repository was accepted as %q", canonical)
 	}
@@ -374,9 +380,42 @@ func TestResultPathsRejectParentComponentsAcrossSymlinks(t *testing.T) {
 	if err := os.Rename(report, resolvedReport); err != nil {
 		t.Fatal(err)
 	}
-	canonical, err = canonicalReportDir(filepath.Join(shortcut, "..", "report"))
+	canonical, err = canonicalReportDir(shortcut + "/../report")
 	if err == nil {
 		t.Fatalf("symlink/parent report was accepted as %q", canonical)
+	}
+}
+
+func TestResultPathsResolvePhysicalWorkingDirectoryBeforeRelativeSymlinks(t *testing.T) {
+	h := newCLIResultHarness(t)
+	repo, _, base, head := h.repository(t)
+	report := writeCLIReport(t, h.root, "fictional-task", "01-review")
+	cwd := filepath.Join(h.root, "physical", "cwd")
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for path, target := range map[string]string{
+		filepath.Join(h.root, "alias"):   cwd,
+		filepath.Join(cwd, "repository"): "../../repo",
+	} {
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	physicalReport := filepath.Join(cwd, "report")
+	if err := os.Rename(report, physicalReport); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwd)
+	t.Setenv("PWD", filepath.Join(h.root, "alias"))
+	if got, err := os.Getwd(); err != nil || got != os.Getenv("PWD") {
+		t.Fatalf("test did not enter aliased cwd: %q %v", got, err)
+	}
+	if got, err := validateGitCandidate("repository", base, head); err != nil || got != filepath.Join(repo, ".git") {
+		t.Fatalf("relative repository symlink resolved to %q: %v", got, err)
+	}
+	if got, err := canonicalReportDir("report"); err != nil || got != physicalReport {
+		t.Fatalf("relative report path resolved to %q: %v", got, err)
 	}
 }
 
@@ -613,72 +652,211 @@ func TestSubmitTruncatedCreatedResponseReportsEffectiveGeneratedRequestID(t *tes
 	}
 }
 
-func TestReviewsAttachPreservesLegacyReceiptFieldAbsence(t *testing.T) {
+func TestSubmitServerErrorAfterCommitReportsEffectiveRequestID(t *testing.T) {
 	h := newCLIResultHarness(t)
 	repo, _, base, head := h.repository(t)
-	canonicalRepo, err := validateGitCandidate(repo, base, head)
+	bindingPath := filepath.Join(h.root, "bindings", "server-error.json")
+	upstream, err := url.Parse(h.endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding := revmuximport.Binding{Version: 1, Repo: canonicalRepo, RevmuxTask: "fictional-task", Run: "01-review",
-		Base: base, Head: head, RangeSource: "operator"}
+	proxy := &httputil.ReverseProxy{Rewrite: func(r *httputil.ProxyRequest) { r.SetURL(upstream) }}
+	sent := make(chan string, 1)
+	proxy.ModifyResponse = func(response *http.Response) error {
+		if response.StatusCode != http.StatusCreated {
+			t.Errorf("daemon did not return a committed receipt: %d", response.StatusCode)
+		}
+		sent <- response.Request.Header.Get("Idempotency-Key")
+		response.StatusCode = http.StatusBadGateway
+		return nil
+	}
+	server := httptest.NewServer(proxy)
+	defer server.Close()
+	serverArgs := []string{"--endpoint", server.URL, "--token-file", h.tokenPath}
+	var out, diagnostic bytes.Buffer
+	args := append(h.submitArgs(repo, base, head, bindingPath, "01-review", "", ""), serverArgs...)
+	if code := run(args, &out, &diagnostic); code != 1 || out.Len() != 0 {
+		t.Fatalf("server error exit=%d stdout=%s stderr=%s", code, out.String(), diagnostic.String())
+	}
+	var sentID string
+	select {
+	case sentID = <-sent:
+	default:
+		t.Fatal("loopback proxy did not forward the submission")
+	}
+	if !validCanonicalID(sentID) || !strings.Contains(diagnostic.String(), "outcome unknown; retry with --request-id "+sentID) {
+		t.Fatalf("server error did not expose the actual sent key %q: %q", sentID, diagnostic.String())
+	}
+	if _, err := os.Stat(bindingPath); !os.IsNotExist(err) {
+		t.Fatalf("unknown outcome created a binding: %v", err)
+	}
+	var current store.CurrentTaskResult
+	h.ownerRequest(t, http.MethodGet, "/v1/tasks/"+h.task.ID+"/results/current", "", nil, http.StatusOK, &current)
+	if current.Result == nil {
+		t.Fatal("upstream submission did not commit")
+	}
+	retry, _ := h.call(t, 0, h.submitArgs(repo, base, head, bindingPath, "01-review", "", sentID)...)
+	var result store.TaskResult
+	if err := json.Unmarshal([]byte(retry), &result); err != nil || result.ID != current.Result.ID {
+		t.Fatalf("retry did not recover the original submission %q: %s (%v)", current.Result.ID, retry, err)
+	}
+	assertCLIBinding(t, bindingPath, result, base, head)
+}
+
+func TestReviewsAttachRecoversLegacyReceiptFromActualFindingsRoster(t *testing.T) {
+	for _, name := range []string{"zero-count degraded reporter", "128 plus one manifest-only"} {
+		t.Run(name, func(t *testing.T) {
+			testLegacyRosterRetry(t, name == "128 plus one manifest-only")
+		})
+	}
+}
+
+func testLegacyRosterRetry(t *testing.T, atLimit bool) {
+	t.Helper()
+	h := newCLIResultHarness(t)
+	repo, _, base, head := h.repository(t)
 	bindingPath := filepath.Join(h.root, "bindings", "legacy.json")
-	if err := revmuximport.SaveBinding(bindingPath, binding); err != nil {
+	resultJSON, _ := h.call(t, 0, h.submitArgs(repo, base, head, bindingPath, "01-review", "", uuid.NewString())...)
+	var result store.TaskResult
+	if err := json.Unmarshal([]byte(resultJSON), &result); err != nil {
 		t.Fatal(err)
 	}
-	report := writeCLIReport(t, h.root, binding.RevmuxTask, binding.Run)
-	result := store.TaskResult{ID: uuid.NewString(), TaskID: h.task.ID, Repo: canonicalRepo, Base: base, Head: head,
-		Summary: "Fictional owner summary", CreatedAt: "2026-11-20T11:00:00Z"}
-	requestID := uuid.NewString()
-	args := h.attachArgs(result.ID, bindingPath, report, requestID)
-	options, err := parseAttachOptions(args[1:])
+	report := writeCLIReport(t, h.root, "fictional-task", "01-review")
+	sources, addToFindings := expandCLILegacyRoster(t, report, atLimit)
+	original := store.AttachReviewInput{
+		Repo: result.Repo, Base: base, Head: head, RevmuxTask: "fictional-task", Run: "01-review", RangeSource: "operator", ReportRef: report,
+		RequiredSources: []store.ReviewRequirement{{Name: "manifest-only", Executor: "codex"}, {Name: "reviewer", Executor: "pi"}},
+		Sources:         sources, IncompleteReasons: []string{"required source missing: manifest-only (codex)"}, Findings: 1, OpenQuestions: 1,
+	}
+	key := uuid.NewString()
+	legacy := h.seedLegacyCLIReceipt(t, result.ID, key, original)
+	args := append(h.attachArgs(result.ID, bindingPath, report, key), "--required-source", "manifest-only=codex")
+	output, _ := h.call(t, 0, args...)
+	if output != string(legacy)+"\n" || strings.Contains(output, "evidence_consistent") {
+		t.Fatalf("CLI changed the original legacy receipt bytes: %q", output)
+	}
+	if atLimit {
+		fresh := append(h.attachArgs(result.ID, bindingPath, report, uuid.NewString()), "--required-source", "manifest-only=codex")
+		h.call(t, 1, fresh...)
+		current := original
+		current.Sources = append(slices.Clone(original.Sources), store.ReviewSource{Name: "manifest-only", Executor: "codex", Required: true, Degraded: true})
+		current.IncompleteReasons = []string{"required source degraded: manifest-only (codex)"}
+		data, err := json.Marshal(current)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.ownerRequest(t, http.MethodPost, "/v1/tasks/"+h.task.ID+"/results/"+result.ID+"/reviews", uuid.NewString(), data, http.StatusBadRequest, nil)
+		return
+	}
+	addToFindings()
+	output, diagnostic := h.call(t, 1, args...)
+	if output != "" || !strings.Contains(diagnostic, "API operation rejected") {
+		t.Fatalf("changed legacy roster returned an original receipt: %q %q", output, diagnostic)
+	}
+}
+
+func expandCLILegacyRoster(t *testing.T, report string, atLimit bool) ([]store.ReviewSource, func()) {
+	t.Helper()
+	manifestPath, findingsPath := filepath.Join(report, "manifest.json"), filepath.Join(report, "findings.json")
+	manifest, findings := loadCLIArtifact(t, manifestPath), loadCLIArtifact(t, findingsPath)
+	reported := findings["sources"].(map[string]any)
+	agents := reported["agents"].([]any)
+	roster := manifest["agents"].([]any)
+	addAgent := func(name string, degraded bool) map[string]any {
+		agent := maps.Clone(agents[1].(map[string]any))
+		agent["name"], agent["degraded"] = name, degraded
+		roster = append(roster, agent)
+		return agent
+	}
+	sources := []store.ReviewSource{
+		{Name: "optional", Executor: "codex", Responded: true, OpenQuestions: 1},
+		{Name: "reviewer", Executor: "pi", Required: true, Responded: true, Findings: 1},
+	}
+	addAgent("manifest-only", true)
+	var newlyReported map[string]any
+	if atLimit {
+		for i := range 126 {
+			name := fmt.Sprintf("extra-%03d", i)
+			agents = append(agents, addAgent(name, false))
+			sources = append(sources, store.ReviewSource{Name: name, Executor: "codex", Responded: true})
+		}
+	} else {
+		newlyReported = addAgent("newly-reported", true)
+	}
+	responded := len(agents)
+	if !atLimit {
+		agents = append(agents, addAgent("already-reported", true))
+		sources = append(sources, store.ReviewSource{Name: "already-reported", Executor: "codex", Degraded: true})
+	}
+	manifest["agents"] = roster
+	reported["expected"], reported["reported"], reported["agents"] = len(roster), responded, agents
+	slices.SortFunc(sources, func(a, b store.ReviewSource) int { return strings.Compare(a.Name, b.Name) })
+	writeCLIArtifact(t, manifestPath, manifest)
+	writeCLIArtifact(t, findingsPath, findings)
+	return sources, func() {
+		// This zero-count degraded reporter does not affect current evidence,
+		// but the old normalized payload must now contain its row.
+		reported["agents"] = append(agents, newlyReported)
+		writeCLIArtifact(t, findingsPath, findings)
+	}
+}
+
+func loadCLIArtifact(t *testing.T, path string) map[string]any {
+	t.Helper()
+	// #nosec G304 -- This test owns both synthetic artifacts.
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, input, err := prepareReview(options)
+	var artifact map[string]any
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		t.Fatal(err)
+	}
+	return artifact
+}
+
+func writeCLIArtifact(t *testing.T, path string, artifact map[string]any) {
+	t.Helper()
+	data, err := json.Marshal(artifact)
 	if err != nil {
 		t.Fatal(err)
 	}
-	review := store.TaskReview{ID: uuid.NewString(), TaskID: h.task.ID, ResultID: result.ID,
-		Repo: result.Repo, Base: result.Base, Head: result.Head, RevmuxTask: binding.RevmuxTask, Run: binding.Run,
-		RangeSource: "operator", ReportRef: input.ReportRef, Complete: input.Complete, RequiredSources: input.RequiredSources,
-		Sources: input.Sources, IncompleteReasons: input.IncompleteReasons, Findings: input.Findings,
-		PreExisting: input.PreExisting, OpenQuestions: input.OpenQuestions, CreatedAt: "2026-11-20T12:00:00Z"}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (h *cliResultHarness) seedLegacyCLIReceipt(t *testing.T, resultID, key string, input store.AttachReviewInput) []byte {
+	t.Helper()
+	data, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/tasks/" + h.task.ID + "/results/" + resultID + "/reviews"
+	review := store.TaskReview{ID: uuid.NewString(), TaskID: h.task.ID, ResultID: resultID,
+		Repo: input.Repo, Base: input.Base, Head: input.Head, RevmuxTask: input.RevmuxTask, Run: input.Run,
+		RangeSource: input.RangeSource, ReportRef: input.ReportRef, Complete: input.Complete,
+		RequiredSources: input.RequiredSources, Sources: input.Sources, IncompleteReasons: input.IncompleteReasons,
+		Findings: input.Findings, PreExisting: input.PreExisting, OpenQuestions: input.OpenQuestions, CreatedAt: "2026-11-20T12:00:00Z"}
 	encoded, err := json.Marshal(review)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(encoded, &fields); err != nil {
-		t.Fatal(err)
-	}
-	delete(fields, "evidence_consistent")
-	legacyBody, err := json.Marshal(fields)
+	legacy := bytes.ReplaceAll(encoded, []byte(`,"evidence_consistent":false`), nil)
+	db, err := sql.Open("sqlite", filepath.Join(h.root, "data", "artel.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.Method == http.MethodGet {
-			_ = json.NewEncoder(w).Encode(store.TaskResultHistoryPage{CurrentResultID: result.ID,
-				Entries: []store.TaskResultHistoryEntry{{Seq: 1, Kind: "result", Result: &result}}, NextAfter: 1})
-			return
-		}
-		if r.Method != http.MethodPost || r.Header.Get("Idempotency-Key") != requestID {
-			t.Errorf("unexpected mutation request: %s %s", r.Method, r.URL.Path)
-		}
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write(legacyBody)
-	}))
-	defer server.Close()
-	args = append(args, "--endpoint", server.URL, "--token-file", h.tokenPath)
-	var out, diagnostic bytes.Buffer
-	if code := run(args, &out, &diagnostic); code != 0 {
-		t.Fatalf("legacy receipt replay exit=%d stderr=%s", code, diagnostic.String())
+	defer func() { _ = db.Close() }()
+	hash := fmt.Sprintf("%x", sha256.Sum256(data))
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO task_reviews(id,task_id,result_id,repo,revmux_task,run,payload_hash,record)
+		VALUES(?,?,?,?,?,?,?,?)`, review.ID, h.task.ID, resultID, input.Repo, input.RevmuxTask, input.Run, hash, string(legacy)); err != nil {
+		t.Fatal(err)
 	}
-	if strings.TrimSpace(out.String()) != string(legacyBody) || strings.Contains(out.String(), "evidence_consistent") {
-		t.Fatalf("CLI changed the validated legacy receipt bytes:\n%s\nwant:\n%s", out.String(), legacyBody)
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO mutation_receipts(key,method,path,payload_hash,status,body) VALUES(?,'POST',?,?,201,?)", key, path, hash, legacy); err != nil {
+		t.Fatal(err)
 	}
+	return legacy
 }
 
 func TestReviewsAttachEmptyRequirementsIsSavedIncomplete(t *testing.T) {

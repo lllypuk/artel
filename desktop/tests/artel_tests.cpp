@@ -2976,6 +2976,85 @@ private slots:
     QTRY_COMPARE(appearance.accent(), QString("#FFD60A"));
     QCoreApplication::removeTranslator(&appearance);
   }
+  void inconsistentReviewWarningDoesNotBlameRequiredSources() {
+    UiFixture fixture;
+    const QString resultID = "44444444-4444-4444-8444-444444444444";
+    const QString reviewID = "55555555-5555-4555-8555-555555555555";
+    const QString sha(40, 'a');
+    const QJsonObject result{{"id", resultID},
+                             {"task_id", fixture.task},
+                             {"repo", "/example/repo/.git"},
+                             {"base", sha},
+                             {"head", sha},
+                             {"summary", "Fictional candidate"},
+                             {"created_at", "2026-11-20T11:00:00Z"}};
+    QJsonObject review = result;
+    review.remove("summary");
+    const QJsonObject pair{{"name", "reviewer"}, {"executor", "codex"}};
+    const auto maximum = qint64{9007199254740991};
+    const QJsonObject source{{"name", "reviewer"}, {"executor", "codex"},
+                             {"required", true},   {"responded", true},
+                             {"degraded", false},  {"findings", maximum},
+                             {"pre_existing", 0},  {"open_questions", 0}};
+    review.insert("id", reviewID);
+    review.insert("result_id", resultID);
+    review.insert("revmux_task", "legacy");
+    review.insert("run", "run-01");
+    review.insert("range_source", "operator");
+    review.insert("report_ref", "/example/report");
+    review.insert("complete", true);
+    review.insert("required_sources", QJsonArray{pair});
+    review.insert("sources", QJsonArray{source});
+    review.insert("incomplete_reasons", QJsonArray{});
+    review.insert("findings", maximum);
+    review.insert("pre_existing", 0);
+    review.insert("open_questions", 0);
+    review.insert("evidence_consistent", false);
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      const auto prefix = "GET /v1/tasks/" + fixture.task.toUtf8() + "/results";
+      QJsonObject response;
+      if (request.startsWith(prefix + "/current "))
+        response = {{"result", result}, {"reviews", QJsonArray{}}};
+      else if (request.startsWith(prefix + "/current/reviews?"))
+        response = {{"result_id", resultID},
+                    {"reviews", QJsonArray{review}},
+                    {"next_after", reviewID},
+                    {"has_more", false}};
+      else {
+        fixture.normal(socket, request);
+        return;
+      }
+      UiFixture::respond(socket, 200, QJsonDocument(response).toJson());
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    const auto languagePath = fixture.directory.filePath("language");
+    writeFile(languagePath, "en\n");
+    Appearance appearance(fixture.directory.path(), languagePath);
+    QCoreApplication::installTranslator(&appearance);
+    QQmlApplicationEngine engine;
+    connect(&appearance, &Appearance::changed, &engine,
+            &QQmlEngine::retranslate);
+    auto *window = load(engine, panel, appearance);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    const auto warningName = "currentReviewOutcome_" + reviewID;
+    QTRY_VERIFY(item(window, warningName));
+    const auto *warning = item(window, warningName);
+    QVERIFY(warning->isVisible());
+    QCOMPARE(warning->property("severity").toString(), QString("warning"));
+    QCOMPARE(warning->property("text").toString(),
+             QString("Review evidence inconsistent"));
+    writeFile(languagePath, "ru\n");
+    appearance.refresh();
+    QTRY_COMPARE(item(window, warningName)->property("text").toString(),
+                 QString::fromUtf8("Данные ревью несогласованы"));
+    QCoreApplication::removeTranslator(&appearance);
+  }
   void realQmlCrudQueueConflictHistoryAndClose() {
     Daemon daemon;
     daemon.start();

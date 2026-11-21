@@ -547,7 +547,7 @@ func countItems(items []reviewItem, sources []store.ReviewSource, indexes map[st
 	return nil
 }
 
-func normalizeSources(manifestDoc manifest, findingsDoc findingsDocument, required map[string]bool) ([]store.ReviewSource, map[string]int, error) {
+func normalizeSources(manifestDoc manifest, findingsDoc findingsDocument, required map[string]bool) ([]store.ReviewSource, []store.ReviewSource, error) {
 	roster, actual, degraded, err := mapSources(manifestDoc, findingsDoc)
 	if err != nil {
 		return nil, nil, err
@@ -566,33 +566,13 @@ func normalizeSources(manifestDoc manifest, findingsDoc findingsDocument, requir
 			Responded: !degraded[name], Degraded: degraded[name],
 		})
 	}
-	for name, expected := range roster {
-		if _, ok := actual[name]; ok || !degraded[name] {
-			continue
-		}
-		// A manifest-only degradation is known non-response evidence, including
-		// for an optional source; do not erase it from the normalized card.
-		sources = append(sources, store.ReviewSource{
-			Name: name, Executor: expected.Executor, Required: required[sourceKey(name, expected.Executor)],
-			Responded: false, Degraded: true,
-		})
-	}
 	if findingsDoc.Sources.Reported != responded || findingsDoc.Sources.Reported < 0 {
 		return nil, nil, errors.New("inconsistent reported source count")
 	}
-	slices.SortFunc(sources, func(a, b store.ReviewSource) int {
-		if compared := strings.Compare(a.Name, b.Name); compared != 0 {
-			return compared
-		}
-		return strings.Compare(a.Executor, b.Executor)
-	})
-	indexes := make(map[string]int, len(sources))
-	attributionIndexes := make(map[string]int, len(actual))
-	for index := range sources {
-		indexes[sources[index].Name] = index
-		if _, reported := actual[sources[index].Name]; reported {
-			attributionIndexes[sources[index].Name] = index
-		}
+	// Count attribution against the actual findings roster, never the manifest.
+	attributionIndexes := make(map[string]int, len(sources))
+	for index, source := range sources {
+		attributionIndexes[source.Name] = index
 	}
 	counts := []struct {
 		items       []reviewItem
@@ -607,21 +587,50 @@ func normalizeSources(manifestDoc manifest, findingsDoc findingsDocument, requir
 			return nil, nil, err
 		}
 	}
-	return sources, indexes, nil
+	// Names are unique within each validated roster, so sorting by name
+	// suffices to reproduce the historical (name, executor) order.
+	sortSources := func(values []store.ReviewSource) {
+		slices.SortFunc(values, func(a, b store.ReviewSource) int { return strings.Compare(a.Name, b.Name) })
+	}
+	sortSources(sources)
+	var current []store.ReviewSource
+	for name, expected := range roster {
+		if _, ok := actual[name]; ok || !degraded[name] {
+			continue
+		}
+		// A manifest-only degradation is known non-response evidence, including
+		// for an optional source; do not erase it from the normalized card.
+		if current == nil {
+			current = slices.Clone(sources)
+		}
+		current = append(current, store.ReviewSource{
+			Name: name, Executor: expected.Executor, Required: required[sourceKey(name, expected.Executor)],
+			Responded: false, Degraded: true,
+		})
+	}
+	if current == nil {
+		return sources, nil, nil
+	}
+	sortSources(current)
+	return current, sources, nil
 }
 
-func completenessReasons(required []store.ReviewRequirement, sources []store.ReviewSource, indexes map[string]int) []string {
+func completenessReasons(required []store.ReviewRequirement, sources []store.ReviewSource) []string {
+	byName := make(map[string]store.ReviewSource, len(sources))
+	for _, source := range sources {
+		byName[source.Name] = source
+	}
 	reasons := []string{}
 	if len(required) == 0 {
 		reasons = append(reasons, "required source list is empty")
 	}
 	for _, requirement := range required {
-		index, ok := indexes[requirement.Name]
-		if !ok || sourceKey(sources[index].Name, sources[index].Executor) != sourceKey(requirement.Name, requirement.Executor) {
+		source, ok := byName[requirement.Name]
+		if !ok || source.Executor != requirement.Executor {
 			reasons = append(reasons, "required source missing: "+requirement.Name+" ("+requirement.Executor+")")
 			continue
 		}
-		if sources[index].Degraded {
+		if source.Degraded {
 			reasons = append(reasons, "required source degraded: "+requirement.Name+" ("+requirement.Executor+")")
 		}
 	}
@@ -629,32 +638,45 @@ func completenessReasons(required []store.ReviewRequirement, sources []store.Rev
 	return reasons
 }
 
-// Import validates one completed, consistent pair and derives completeness only
-// from sources that actually reported in findings.json. Manifest roster entries
-// alone never count as responses, and a profile never substitutes an executor.
-func Import(binding Binding, reportDir string, required []store.ReviewRequirement) (store.AttachReviewInput, error) {
-	var empty store.AttachReviewInput
+type ReviewInputs struct {
+	Current      store.AttachReviewInput
+	LegacyReplay *store.AttachReviewInput
+}
+
+// Import validates one completed pair. If manifest-only rows expanded the
+// roster, LegacyReplay contains the original-format input from the same read
+// of findings.json. It is only suitable for exact receipt lookup.
+func Import(binding Binding, reportDir string, required []store.ReviewRequirement) (ReviewInputs, error) {
+	var inputs ReviewInputs
 	if err := binding.Validate(); err != nil {
-		return empty, err
+		return inputs, err
 	}
 	requirements, requiredPairs, err := normalizeRequirements(required)
 	if err != nil {
-		return empty, err
+		return inputs, err
 	}
 	manifestDoc, findingsDoc, err := readPair(binding, reportDir)
 	if err != nil {
-		return empty, err
+		return inputs, err
 	}
-	sources, indexes, err := normalizeSources(manifestDoc, findingsDoc, requiredPairs)
+	sources, reported, err := normalizeSources(manifestDoc, findingsDoc, requiredPairs)
 	if err != nil {
-		return empty, err
+		return inputs, err
 	}
-	reasons := completenessReasons(requirements, sources, indexes)
-	return store.AttachReviewInput{
+	reasons := completenessReasons(requirements, sources)
+	inputs.Current = store.AttachReviewInput{
 		Repo: binding.Repo, Base: binding.Base, Head: binding.Head,
 		RevmuxTask: binding.RevmuxTask, Run: binding.Run, RangeSource: "operator", ReportRef: reportDir,
 		Complete: len(reasons) == 0, RequiredSources: requirements, Sources: sources,
 		IncompleteReasons: reasons, Findings: len(findingsDoc.Findings),
 		PreExisting: len(findingsDoc.PreExisting), OpenQuestions: len(findingsDoc.OpenQuestions),
-	}, nil
+	}
+	if reported != nil {
+		legacy := inputs.Current
+		legacy.Sources = reported
+		legacy.IncompleteReasons = completenessReasons(requirements, reported)
+		legacy.Complete = len(legacy.IncompleteReasons) == 0
+		inputs.LegacyReplay = &legacy
+	}
+	return inputs, nil
 }

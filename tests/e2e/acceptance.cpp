@@ -15,6 +15,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
+#include <QUrlQuery>
 #include <QUuid>
 #include <QtTest>
 #include <memory>
@@ -355,11 +356,13 @@ class ResultDelayProxy : public QTcpServer {
 public:
   Oracle &upstream;
   bool holdNext = false;
+  bool holdNextReviewContinuation = false;
   bool holdSnapshot = false;
   bool failNext = false;
   bool failNextReviews = false;
   bool failNextHistory = false;
   int delayed = 0;
+  int delayedReviewContinuations = 0;
   int failures = 0;
   int resultReads = 0;
   int currentReviewReads = 0;
@@ -414,12 +417,17 @@ public:
             ++resultHistoryReads;
           const bool delay = currentResultRead && holdNext;
           const bool snapshot = first[0] == "GET" && path == "/v1/snapshot";
-          const bool hold = delay || (snapshot && holdSnapshot);
+          const bool delayReview =
+              holdNextReviewContinuation && currentReviewRead &&
+              !QUrlQuery(QUrl(path)).queryItemValue("after").isEmpty();
+          const bool hold = delay || delayReview || (snapshot && holdSnapshot);
           const bool fail = (currentResultRead && failNext) ||
                             (currentReviewRead && failNextReviews) ||
                             (historyResultRead && failNextHistory);
           if (delay)
             holdNext = false;
+          if (delayReview)
+            holdNextReviewContinuation = false;
           if (currentResultRead && fail)
             failNext = false;
           if (currentReviewRead && fail)
@@ -443,39 +451,41 @@ public:
           }
           connect(socket, &QTcpSocket::disconnected, reply,
                   [reply] { reply->abort(); });
-          connect(reply, &QNetworkReply::finished, socket,
-                  [this, reply, socket, delay, hold, fail, stream] {
-                    const int status =
-                        fail ? 503
-                             : reply
-                                   ->attribute(
-                                       QNetworkRequest::HttpStatusCodeAttribute)
-                                   .toInt();
-                    const auto body =
-                        stream            ? QByteArray{}
-                        : fail            ? QByteArray(
-                                                "{\"code\":\"unavailable\",\"message\":"
-                                                "\"controlled failure\"}")
-                        : reply->isOpen() ? reply->readAll()
-                                          : QByteArray{};
-                    const auto response =
-                        "HTTP/1.1 " + QByteArray::number(status) +
-                        " OK\r\nContent-Type: application/json\r\n"
-                        "Connection: close\r\nContent-Length: " +
-                        QByteArray::number(body.size()) + "\r\n\r\n" + body;
-                    if (fail)
-                      ++failures;
-                    if (hold) {
-                      if (delay)
-                        ++delayed;
-                      held.append({socket, response});
-                    } else if (!stream && socket->state() ==
-                                              QAbstractSocket::ConnectedState) {
-                      socket->write(response);
-                      socket->disconnectFromHost();
-                    }
-                    reply->deleteLater();
-                  });
+          connect(
+              reply, &QNetworkReply::finished, socket,
+              [this, reply, socket, delay, delayReview, hold, fail, stream] {
+                const int status =
+                    fail ? 503
+                         : reply
+                               ->attribute(
+                                   QNetworkRequest::HttpStatusCodeAttribute)
+                               .toInt();
+                const auto body =
+                    stream ? QByteArray{}
+                    : fail ? QByteArray("{\"code\":\"unavailable\",\"message\":"
+                                        "\"controlled failure\"}")
+                    : reply->isOpen() ? reply->readAll()
+                                      : QByteArray{};
+                const auto response =
+                    "HTTP/1.1 " + QByteArray::number(status) +
+                    " OK\r\nContent-Type: application/json\r\n"
+                    "Connection: close\r\nContent-Length: " +
+                    QByteArray::number(body.size()) + "\r\n\r\n" + body;
+                if (fail)
+                  ++failures;
+                if (hold) {
+                  if (delay)
+                    ++delayed;
+                  if (delayReview)
+                    ++delayedReviewContinuations;
+                  held.append({socket, response});
+                } else if (!stream &&
+                           socket->state() == QAbstractSocket::ConnectedState) {
+                  socket->write(response);
+                  socket->disconnectFromHost();
+                }
+                reply->deleteLater();
+              });
         });
       }
     });
@@ -1270,9 +1280,21 @@ private slots:
       QVERIFY(!ui->panel.allowed("cancelled"));
       QVERIFY(item(ui->window, "resultLoading")->isVisible());
       QVERIFY(!item(ui->window, "noTaskResult")->isVisible());
+      proxy.holdNextReviewContinuation = true;
       proxy.release();
-      QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
-                   expectedCurrent);
+      QTRY_COMPARE(proxy.delayedReviewContinuations, 1);
+      QCOMPARE(ui->panel.currentResult().toMap().value("id").toString(),
+               expectedCurrent);
+      QCOMPARE(
+          ui->panel.currentResult().toMap().value("reviews").toList().size(),
+          20);
+      QVERIFY(item(ui->window, "currentReviewRun_" + currentReviewID));
+      QVERIFY(!ui->panel.resultsLoaded());
+      QVERIFY(ui->panel.resultsLoading());
+      QVERIFY(!ui->panel.allowed("cancelled"));
+      auto *cancelButton = item(ui->window, "cancelTaskButton");
+      QVERIFY(cancelButton && !cancelButton->isEnabled());
+      proxy.release();
       QTRY_VERIFY(ui->panel.resultsLoaded() && ui->panel.allowed("cancelled"));
       QCOMPARE(
           ui->panel.currentResult().toMap().value("reviews").toList().size(),

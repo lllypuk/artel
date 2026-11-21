@@ -233,12 +233,18 @@ ATTACH_JSON=$("$ARTELCTL" reviews attach --task-id "$TASK_ID" --result-id "$RESU
 ```
 
 Repeat the **same command with the same request ID** after an uncertain response;
-the diagnostic prints a generated ID when the response is lost. Exact receipt
-replay requires the same normalized payload hash. As a narrow upgrade exception,
-the daemon reconstructs the old actual-source roster and old required-source
-reasons for receipts that omit `evidence_consistent`; it returns the original
-receipt only when that reconstruction matches its stored hash. Current-format
-receipts and fresh requests retain exact payload matching and the new normalization. An
+the diagnostic prints the effective ID when the outcome is unknown (including
+mutation 5xx responses). Exact receipt replay requires the same normalized
+payload hash. As a narrow upgrade exception, when manifest-only rows expand
+the roster, the CLI first POSTs to `…/reviews/legacy-receipt` with the old
+payload derived from the actual `findings.json` roster and its required-source
+reasons.
+This lookup only returns the exact original legacy receipt and never writes.
+Only if there is no legacy receipt for that key does the CLI submit the current
+normalization. A legacy hash conflict is not retried with the expanded roster.
+Exact replays retain original bytes and counters, whereas fresh writes are
+limited to 128 source rows and safe-integer counters, and GET projections
+saturate out-of-range legacy counters and flag inconsistent evidence. An
 identical already-attached repo/task/run with a fresh request ID returns the
 original review without another event only while the project is not archived.
 Exact receipt replay with the original request ID remains available after

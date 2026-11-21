@@ -353,7 +353,10 @@ paths:
         The business uniqueness key is repo/revmux_task/run. An identical existing attachment returns
         the original review without another event; transfer or changed normalized payload is 409.
         Exact request receipt replay remains available after project archival, but a fresh request
-        for the same business key is rejected with 409 by the archive guard.
+        for the same business key is rejected with 409 by the archive guard. Fresh writes limit every
+        counter to 9007199254740991. Each source count is at most its aggregate, and the sum for each
+        counter must cover its aggregate (sources can cite the same item). Exact legacy receipt replay
+        accepts the original counters and returns the original status and bytes, not a GET projection.
       parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
         required: true
@@ -365,12 +368,42 @@ paths:
           description: Attached review or exact original request receipt replay
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/TaskReview'}
+              schema: {$ref: '#/components/schemas/TaskReviewReceipt'}
         '200':
-          description: Existing identical review for the same repo/task/run business key
+          description: Existing identical review for the same repo/task/run business key or exact original 200 receipt replay
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/TaskReview'}
+              schema: {$ref: '#/components/schemas/TaskReviewReceipt'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tasks/{task_id}/results/{result_id}/reviews/legacy-receipt:
+    parameters:
+      - {$ref: '#/components/parameters/TaskID'}
+      - {name: result_id, in: path, required: true, schema: {$ref: '#/components/schemas/UUID'}}
+    post:
+      operationId: replayLegacyTaskReview
+      description: >-
+        Looks up an exact legacy attachment receipt, using the original payload derived from
+        the actual findings roster. It never creates an attachment or a receipt. Returns 404
+        for a missing key or a current-format receipt (try the normal attach), and 409 if a
+        legacy receipt does not match the exact payload or the key belongs to a different
+        operation or path. The stored status and body are returned unchanged.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AttachTaskReview'}
+      responses:
+        '201':
+          description: Exact original legacy creation receipt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskReviewReceipt'}
+        '200':
+          description: Exact original legacy duplicate receipt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskReviewReceipt'}
         default: {$ref: '#/components/responses/Error'}
   /v1/tasks/{id}/transition:
     parameters: [{$ref: '#/components/parameters/ID'}]
@@ -534,7 +567,16 @@ components:
       properties:
         name: {type: string, minLength: 1, maxLength: 200, description: 'Non-empty valid UTF-8, additionally limited to 200 bytes; no NUL.'}
         executor: {type: string, minLength: 1, maxLength: 120, description: 'Non-empty valid UTF-8, additionally limited to 120 bytes; no NUL.'}
-    ReviewSource:
+    ReviewCounter:
+      type: integer
+      minimum: 0
+      maximum: 9007199254740991
+    ReviewReceiptCounter:
+      type: integer
+      minimum: 0
+      format: int64
+      description: The exact integer on the attach wire. Counters above 9007199254740991 are accepted only for exact legacy receipt replay.
+    ReviewReceiptSource:
       type: object
       additionalProperties: false
       required: [name, executor, required, responded, degraded, findings, pre_existing, open_questions]
@@ -544,9 +586,17 @@ components:
         required: {type: boolean, description: Derived from exact membership in required_sources.}
         responded: {type: boolean, description: 'A responded source with zero findings is not missing. Exactly one of responded and degraded is true.'}
         degraded: {type: boolean, description: 'Includes roster-only non-response evidence; a degraded reporter can still have counts.'}
-        findings: {type: integer, minimum: 0, maximum: 9007199254740991}
-        pre_existing: {type: integer, minimum: 0, maximum: 9007199254740991}
-        open_questions: {type: integer, minimum: 0, maximum: 9007199254740991}
+        findings: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+        pre_existing: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+        open_questions: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+    ReviewSource:
+      allOf:
+        - {$ref: '#/components/schemas/ReviewReceiptSource'}
+        - type: object
+          properties:
+            findings: {$ref: '#/components/schemas/ReviewCounter'}
+            pre_existing: {$ref: '#/components/schemas/ReviewCounter'}
+            open_questions: {$ref: '#/components/schemas/ReviewCounter'}
     SubmitTaskResult:
       type: object
       additionalProperties: false
@@ -586,12 +636,12 @@ components:
         report_ref: {type: string, minLength: 1, maxLength: 4096, description: 'Display-only local path or URI; never opened by the daemon. Valid UTF-8, additionally limited to 4096 bytes; no NUL.'}
         complete: {type: boolean, description: 'Completeness of required sources only, not acceptance or a clean review. Complete requires at least one required pair and a responding, non-degraded exact match for every pair.'}
         required_sources: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ReviewRequirement'}}
-        sources: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/ReviewSource'}}
+        sources: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/ReviewReceiptSource'}}
         incomplete_reasons: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 500, description: 'Non-empty valid UTF-8, additionally limited to 500 bytes; no NUL.'}}
-        findings: {type: integer, minimum: 0, maximum: 9007199254740991}
-        pre_existing: {type: integer, minimum: 0, maximum: 9007199254740991}
-        open_questions: {type: integer, minimum: 0, maximum: 9007199254740991}
-    TaskReview:
+        findings: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+        pre_existing: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+        open_questions: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+    TaskReviewReceipt:
       type: object
       additionalProperties: false
       required: [id, task_id, result_id, repo, base, head, revmux_task, run, range_source, report_ref, complete, required_sources, sources, incomplete_reasons, findings, pre_existing, open_questions, created_at]
@@ -608,13 +658,24 @@ components:
         report_ref: {type: string, minLength: 1, maxLength: 4096, description: 'Valid UTF-8, additionally limited to 4096 bytes; no NUL.'}
         complete: {type: boolean}
         required_sources: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ReviewRequirement'}}
-        sources: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/ReviewSource'}}
+        sources: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/ReviewReceiptSource'}}
         incomplete_reasons: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 500, description: 'Non-empty valid UTF-8, additionally limited to 500 bytes; no NUL.'}}
-        findings: {type: integer, minimum: 0, maximum: 9007199254740991}
-        pre_existing: {type: integer, minimum: 0, maximum: 9007199254740991}
-        open_questions: {type: integer, minimum: 0, maximum: 9007199254740991}
+        findings: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+        pre_existing: {$ref: '#/components/schemas/ReviewReceiptCounter'}
+        open_questions: {$ref: '#/components/schemas/ReviewReceiptCounter'}
         created_at: {type: string, format: date-time}
-        evidence_consistent: {type: boolean, description: 'Read-only consistency projection; false when legacy required-source flags/pairs or counters are inconsistent. Out-of-range persisted counters are saturated to the safe-integer limit on reads. Never rewrites a receipt, so an original legacy receipt body may omit it.'}
+        evidence_consistent: {type: boolean, description: Absent from legacy receipt bodies.}
+    TaskReview:
+      allOf:
+        - {$ref: '#/components/schemas/TaskReviewReceipt'}
+        - type: object
+          required: [evidence_consistent]
+          properties:
+            sources: {type: array, items: {$ref: '#/components/schemas/ReviewSource'}}
+            findings: {$ref: '#/components/schemas/ReviewCounter'}
+            pre_existing: {$ref: '#/components/schemas/ReviewCounter'}
+            open_questions: {$ref: '#/components/schemas/ReviewCounter'}
+            evidence_consistent: {type: boolean, description: 'False when persisted flags, source coverage, or counters are inconsistent. Out-of-range counters are saturated in this read projection, not in stored receipts.'}
     CurrentTaskResult:
       type: object
       additionalProperties: false

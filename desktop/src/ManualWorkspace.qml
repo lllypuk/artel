@@ -97,7 +97,7 @@ Item {
         UI.StatusLabel {
             theme: manual.theme
             objectName: reviewDetails.namePrefix + "Outcome_" + reviewDetails.review.id
-            text: !reviewDetails.review.evidence_consistent ? qsTr("Review evidence inconsistent: required sources were not recorded") : reviewDetails.review.complete ? qsTr("Required review sources complete") : qsTr("Required review sources incomplete")
+            text: !reviewDetails.review.evidence_consistent ? qsTr("Review evidence inconsistent") : reviewDetails.review.complete ? qsTr("Required review sources complete") : qsTr("Required review sources incomplete")
             severity: !reviewDetails.review.evidence_consistent || !reviewDetails.review.complete ? "warning" : "info"
             Layout.fillWidth: true
         }

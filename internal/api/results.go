@@ -27,8 +27,12 @@ func mountTaskResults(mux *http.ServeMux, s *store.Store) {
 	mux.HandleFunc("GET /v1/tasks/{task_id}/results/current/reviews", func(w http.ResponseWriter, r *http.Request) {
 		currentTaskReviews(w, r, s)
 	})
-	mux.HandleFunc("POST /v1/tasks/{task_id}/results/{result_id}/reviews", func(w http.ResponseWriter, r *http.Request) {
-		attachTaskReview(w, r, s)
+	const attachPath = "POST /v1/tasks/{task_id}/results/{result_id}/reviews"
+	mux.HandleFunc(attachPath, func(w http.ResponseWriter, r *http.Request) {
+		attachTaskReview(w, r, s, false)
+	})
+	mux.HandleFunc(attachPath+legacyReviewReceiptSuffix, func(w http.ResponseWriter, r *http.Request) {
+		attachTaskReview(w, r, s, true)
 	})
 }
 
@@ -141,7 +145,9 @@ func submitTaskResult(w http.ResponseWriter, r *http.Request, s *store.Store) {
 	send(w, result.Status, result.Body)
 }
 
-func attachTaskReview(w http.ResponseWriter, r *http.Request, s *store.Store) {
+const legacyReviewReceiptSuffix = "/legacy-receipt"
+
+func attachTaskReview(w http.ResponseWriter, r *http.Request, s *store.Store, legacyOnly bool) {
 	taskID, resultID := r.PathValue("task_id"), r.PathValue("result_id")
 	mutation, ok := resultMutation(r)
 	if !validUUID(taskID) || !validUUID(resultID) || !ok {
@@ -154,7 +160,14 @@ func attachTaskReview(w http.ResponseWriter, r *http.Request, s *store.Store) {
 	if !decodeResultJSON(w, r, &body, allowed, allowed) {
 		return
 	}
-	result, err := s.AttachReview(r.Context(), taskID, resultID, mutation, body)
+	var result store.Result
+	var err error
+	if legacyOnly {
+		mutation.Path = strings.TrimSuffix(mutation.Path, legacyReviewReceiptSuffix)
+		result, err = s.ReplayLegacyReview(r.Context(), taskID, resultID, mutation, body)
+	} else {
+		result, err = s.AttachReview(r.Context(), taskID, resultID, mutation, body)
+	}
 	if err != nil {
 		publicError(w, err)
 		return

@@ -250,7 +250,7 @@
   "Head: %1": "Версия: %1",
   "Required review sources complete": "Обязательные источники ревью в полном составе",
   "Required review sources incomplete": "Обязательные источники ревью неполны",
-  "Review evidence inconsistent: required sources were not recorded": "Данные ревью несогласованы: обязательные источники не записаны",
+  "Review evidence inconsistent": "Данные ревью несогласованы",
   "Optional review source degraded: %1 (%2)": "Необязательный источник ревью деградировал: %1 (%2)",
   "revmux task: %1 · run: %2": "Задача revmux: %1 · прогон: %2",
   "Report reference (display only): %1": "Ссылка на отчёт (только отображение): %1",

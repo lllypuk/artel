@@ -2,10 +2,14 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -32,7 +36,17 @@ type apiResultFixture struct {
 
 func newAPIResultFixture(t *testing.T) apiResultFixture {
 	t.Helper()
-	s, h := fixture(t)
+	return newAPIResultFixtureAt(t, filepath.Join(t.TempDir(), "test.sqlite"))
+}
+
+func newAPIResultFixtureAt(t *testing.T, path string) apiResultFixture {
+	t.Helper()
+	s, err := store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	h := New(t.Context(), s)
 	projectBody, _ := json.Marshal(map[string]string{"name": "Results", "root_path": t.TempDir()})
 	projectData := request(t, h, "POST", "/v1/projects", string(projectBody), uuid.NewString(), 201)
 	var project domain.Project
@@ -244,30 +258,132 @@ func TestOwnerReviewCompletenessAndUTF8ByteLimits(t *testing.T) {
 	apiSubmit(t, other, uuid.NewString(), rejected, 400)
 }
 
-func TestReviewCounterSafeIntegerLimitAndContract(t *testing.T) {
+func TestLegacyReviewLookupCannotCreateOrReplayCurrentReceipt(t *testing.T) {
 	f := newAPIResultFixture(t)
+	var result store.TaskResult
+	if err := json.Unmarshal(apiSubmit(t, f, uuid.NewString(), apiSubmitInput(""), 201), &result); err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/tasks/" + f.task.ID + "/results/" + result.ID + "/reviews"
+	key := uuid.NewString()
+	input := apiReviewInput(result, "current")
+	body, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request(t, f.h, "POST", path+"/legacy-receipt", string(body), key, 404)
+	created := request(t, f.h, "POST", path, string(body), key, 201)
+	request(t, f.h, "POST", path+"/legacy-receipt", string(body), key, 404)
+	if replay := request(t, f.h, "POST", path, string(body), key, 201); !bytes.Equal(replay, created) {
+		t.Fatalf("current replay changed after a legacy lookup: %s", replay)
+	}
+	input.IncompleteReasons = []string{"different reason"}
+	body, err = json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request(t, f.h, "POST", path+"/legacy-receipt", string(body), key, 404)
+	request(t, f.h, "POST", path, string(body), key, 409)
+}
+
+func TestReviewLegacyCountersWireContract(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.sqlite")
+	f := newAPIResultFixtureAt(t, dbPath)
 	resultBody := apiSubmit(t, f, uuid.NewString(), apiSubmitInput(""), 201)
 	var result store.TaskResult
 	if err := json.Unmarshal(resultBody, &result); err != nil {
 		t.Fatal(err)
 	}
-	accepted := apiReviewInput(result, "safe-counter")
-	accepted.Findings = store.MaxReviewCounter
-	accepted.Sources[0].Findings = store.MaxReviewCounter
-	apiAttach(t, f, result.ID, uuid.NewString(), accepted, 201)
-	rejected := apiReviewInput(result, "unsafe-counter")
-	rejected.Findings = store.MaxReviewCounter + 1
-	rejected.Sources[0].Findings = store.MaxReviewCounter + 1
-	apiAttach(t, f, result.ID, uuid.NewString(), rejected, 400)
-	for _, schemaName := range []string{"ReviewSource", "AttachTaskReview", "TaskReview"} {
-		schema := contract(t).Components.Schemas[schemaName].Value
-		for _, name := range []string{"findings", "pre_existing", "open_questions"} {
-			maximum := schema.Properties[name].Value.Max
-			if maximum == nil || *maximum != store.MaxReviewCounter {
-				t.Fatalf("%s %s maximum=%v", schemaName, name, maximum)
-			}
+	input := apiReviewInput(result, "legacy-counter")
+	input.Complete, input.Sources[0].Responded, input.Sources[0].Degraded = true, true, false
+	input.IncompleteReasons = []string{}
+	input.Findings, input.PreExisting, input.OpenQuestions = store.MaxReviewCounter+2, store.MaxReviewCounter+2, store.MaxReviewCounter+2
+	input.Sources[0].Findings, input.Sources[0].PreExisting, input.Sources[0].OpenQuestions = input.Findings, input.PreExisting, input.OpenQuestions
+	key := uuid.NewString()
+	originalRequest, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/tasks/" + f.task.ID + "/results/" + result.ID + "/reviews"
+	legacy := seedLegacyAPICounterReceipt(t, dbPath, path, key, f.task.ID, result.ID, input, originalRequest)
+	for _, suffix := range []string{"", "/legacy-receipt"} {
+		replayed := request(t, f.h, "POST", path+suffix, string(originalRequest), key, 201)
+		if !bytes.Equal(replayed, legacy) {
+			t.Fatalf("legacy receipt changed: %s", replayed)
 		}
 	}
+	request(t, f.h, "POST", path, string(originalRequest), uuid.NewString(), 400)
+	request(t, f.h, "POST", path+"/legacy-receipt", strings.Repeat(" ", MaxBody)+string(originalRequest), key, 413)
+	currentPath := "/v1/tasks/" + f.task.ID + "/results/current/reviews"
+	data := request(t, f.h, "GET", currentPath, "", "", 200)
+	var page store.CurrentTaskReviewsPage
+	if err := json.Unmarshal(data, &page); err != nil || len(page.Reviews) != 1 {
+		t.Fatalf("GET review projection: %s %v", data, err)
+	}
+	projected := page.Reviews[0]
+	if projected.EvidenceConsistent || projected.Findings != store.MaxReviewCounter ||
+		projected.PreExisting != store.MaxReviewCounter || projected.OpenQuestions != store.MaxReviewCounter ||
+		projected.Sources[0].Findings != store.MaxReviewCounter || projected.Sources[0].PreExisting != store.MaxReviewCounter ||
+		projected.Sources[0].OpenQuestions != store.MaxReviewCounter {
+		t.Fatalf("GET did not saturate and flag the legacy counters: %s", data)
+	}
+	for _, from := range []string{"aggregate", "source"} {
+		t.Run(from, func(t *testing.T) {
+			// Each GET constraint must hold even when the other set is safe.
+			changed := page.Reviews[0]
+			changed.Sources = append([]store.ReviewSource{}, changed.Sources...)
+			if from == "aggregate" {
+				changed.Findings, changed.PreExisting, changed.OpenQuestions = input.Findings, input.PreExisting, input.OpenQuestions
+			} else {
+				changed.Sources[0] = input.Sources[0]
+			}
+			encoded, err := json.Marshal(changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var model any
+			if err := json.Unmarshal(encoded, &model); err != nil {
+				t.Fatal(err)
+			}
+			if err := contract(t).Components.Schemas["TaskReview"].Value.VisitJSON(model); err == nil {
+				t.Fatal("GET schema admitted a counter above the safe limit")
+			}
+		})
+	}
+	input.Run = "safe-counter"
+	input.Findings, input.PreExisting, input.OpenQuestions = store.MaxReviewCounter, store.MaxReviewCounter, store.MaxReviewCounter
+	input.Sources[0].Findings, input.Sources[0].PreExisting, input.Sources[0].OpenQuestions = input.Findings, input.PreExisting, input.OpenQuestions
+	apiAttach(t, f, result.ID, uuid.NewString(), input, 201)
+}
+
+func seedLegacyAPICounterReceipt(t *testing.T, dbPath, urlPath, key, taskID, resultID string, input store.AttachReviewInput, request []byte) []byte {
+	t.Helper()
+	// Insert an original pre-limit record and exact POST receipt without
+	// bypassing the schema's immutability guard or rounding via float64.
+	review := store.TaskReview{ID: uuid.NewString(), TaskID: taskID, ResultID: resultID,
+		Repo: input.Repo, Base: input.Base, Head: input.Head, RevmuxTask: input.RevmuxTask, Run: input.Run,
+		RangeSource: input.RangeSource, ReportRef: input.ReportRef, Complete: input.Complete,
+		RequiredSources: input.RequiredSources, Sources: input.Sources, IncompleteReasons: input.IncompleteReasons,
+		Findings: input.Findings, PreExisting: input.PreExisting, OpenQuestions: input.OpenQuestions, CreatedAt: "2026-11-20T12:00:00Z"}
+	encoded, err := json.Marshal(review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := bytes.ReplaceAll(encoded, []byte(`,"evidence_consistent":false`), nil)
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	hash := fmt.Sprintf("%x", sha256.Sum256(request))
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO task_reviews(id,task_id,result_id,repo,revmux_task,run,payload_hash,record)
+		VALUES(?,?,?,?,?,?,?,?)`, review.ID, taskID, resultID, input.Repo, input.RevmuxTask, input.Run, hash, string(legacy)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO mutation_receipts(key,method,path,payload_hash,status,body) VALUES(?,'POST',?,?,201,?)", key, urlPath, hash, legacy); err != nil {
+		t.Fatal(err)
+	}
+	return legacy
 }
 
 func TestResultWireRejectsNullOmittedAndAliasFields(t *testing.T) {
@@ -360,7 +476,7 @@ func TestReviewRequiredSourceLimitMatchesReasons(t *testing.T) {
 	input.RequiredSources = append(input.RequiredSources, store.ReviewRequirement{Name: "one-too-many", Executor: "codex"})
 	input.IncompleteReasons = append(input.IncompleteReasons, "required source missing: one-too-many")
 	apiAttach(t, f, result.ID, uuid.NewString(), input, 400)
-	for _, schemaName := range []string{"AttachTaskReview", "TaskReview"} {
+	for _, schemaName := range []string{"AttachTaskReview", "TaskReviewReceipt"} {
 		schema := contract(t).Components.Schemas[schemaName].Value.Properties["required_sources"].Value
 		if schema.MaxItems == nil || *schema.MaxItems != store.MaxRequiredSources {
 			t.Fatalf("%s required_sources max=%v", schemaName, schema.MaxItems)
@@ -491,6 +607,7 @@ func TestTaskResultRoutesRequireOwner(t *testing.T) {
 		{"GET", "/v1/tasks/" + f.task.ID + "/results/current"},
 		{"GET", "/v1/tasks/" + f.task.ID + "/results/current/reviews"},
 		{"POST", "/v1/tasks/" + f.task.ID + "/results/" + uuid.NewString() + "/reviews"},
+		{"POST", "/v1/tasks/" + f.task.ID + "/results/" + uuid.NewString() + "/reviews/legacy-receipt"},
 	} {
 		r := httptest.NewRequest(route.method, route.path, nil)
 		r.Host = host

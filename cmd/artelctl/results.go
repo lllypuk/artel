@@ -29,6 +29,10 @@ type resultOwnerClient struct {
 	client          *http.Client
 }
 
+type resultHTTPStatus int
+
+func (resultHTTPStatus) Error() string { return "API operation rejected" }
+
 // request accepts the result API's 201 creation response as well as its 200
 // replay/history response. Other owner commands retain their existing client.
 func (c resultOwnerClient) request(method, path, key string, body, result any, raw ...*[]byte) error {
@@ -60,6 +64,13 @@ func (c resultOwnerClient) request(method, path, key string, body, result any, r
 		return errors.New("local API unavailable")
 	}
 	defer func() { _ = response.Body.Close() }()
+	return decodeResultResponse(response, method, key, result, raw)
+}
+
+func decodeResultResponse(response *http.Response, method, key string, result any, raw []*[]byte) error {
+	if method == http.MethodPost && key != "" && response.StatusCode >= 500 && response.StatusCode <= 599 {
+		return fmt.Errorf("API server error; outcome unknown; retry with --request-id %s", key)
+	}
 	validStatus := response.StatusCode == http.StatusOK || method == http.MethodPost && response.StatusCode == http.StatusCreated
 	invalidResponse := func() error {
 		if key != "" && validStatus {
@@ -67,12 +78,12 @@ func (c resultOwnerClient) request(method, path, key string, body, result any, r
 		}
 		return errors.New("invalid API response")
 	}
-	data, err = io.ReadAll(io.LimitReader(response.Body, 4*1024*1024+1))
+	data, err := io.ReadAll(io.LimitReader(response.Body, 4*1024*1024+1))
 	if err != nil || len(data) > 4*1024*1024 {
 		return invalidResponse()
 	}
 	if !validStatus {
-		return errors.New("API operation rejected")
+		return resultHTTPStatus(response.StatusCode)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -178,6 +189,23 @@ func hasParentPathComponent(path string) bool {
 	return slices.Contains(strings.Split(filepath.ToSlash(path), "/"), "..")
 }
 
+// Resolve the working directory before joining: PWD may be an alias, and a
+// symlink in a relative argument can refer to a sibling of the physical cwd.
+func physicalPath(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		cwd, err = filepath.EvalSymlinks(cwd)
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(cwd, path)
+	}
+	return filepath.EvalSymlinks(path)
+}
+
 // validateGitCandidate resolves common-dir identity for main and linked
 // worktrees and proves both literal lowercase SHAs name commits in that repo.
 func validateGitCandidate(repo, base, head string) (string, error) {
@@ -187,11 +215,7 @@ func validateGitCandidate(repo, base, head string) (string, error) {
 	if hasParentPathComponent(repo) {
 		return "", errors.New("repository path must not contain parent components")
 	}
-	resolved, err := filepath.EvalSymlinks(repo)
-	if err != nil {
-		return "", errors.New("invalid repository path")
-	}
-	absolute, err := filepath.Abs(resolved)
+	absolute, err := physicalPath(repo)
 	if err != nil {
 		return "", errors.New("invalid repository path")
 	}
@@ -328,15 +352,10 @@ func canonicalReportDir(path string) (string, error) {
 	if hasParentPathComponent(path) {
 		return "", errors.New("report directory must not contain parent components")
 	}
-	resolved, err := filepath.EvalSymlinks(path)
+	resolved, err := physicalPath(path)
 	if err != nil {
 		return "", errors.New("report directory unavailable")
 	}
-	absolute, err := filepath.Abs(resolved)
-	if err != nil {
-		return "", errors.New("invalid report directory")
-	}
-	resolved = absolute
 	// #nosec G703 -- The owner explicitly selects this canonical local report directory; no URL is opened.
 	info, err := os.Stat(resolved)
 	if err != nil || !info.IsDir() || !filepath.IsAbs(resolved) || filepath.Clean(resolved) != resolved {
@@ -406,8 +425,8 @@ func parseAttachOptions(args []string) (attachOptions, error) {
 	return options, err
 }
 
-func prepareReview(options attachOptions) (revmuximport.Binding, store.AttachReviewInput, error) {
-	var input store.AttachReviewInput
+func prepareReview(options attachOptions) (revmuximport.Binding, revmuximport.ReviewInputs, error) {
+	var input revmuximport.ReviewInputs
 	binding, err := revmuximport.LoadBinding(options.bindingPath)
 	if err != nil {
 		return binding, input, err
@@ -420,18 +439,27 @@ func prepareReview(options attachOptions) (revmuximport.Binding, store.AttachRev
 	return binding, input, err
 }
 
-func attachReview(client resultOwnerClient, options attachOptions, binding revmuximport.Binding, input store.AttachReviewInput) (store.TaskReview, []byte, error) {
+func attachReview(client resultOwnerClient, options attachOptions, binding revmuximport.Binding, inputs revmuximport.ReviewInputs) (store.TaskReview, []byte, error) {
 	var review store.TaskReview
 	var raw []byte
 	result, err := selectedResult(client, options.taskID, options.resultID)
 	if err != nil {
 		return review, nil, err
 	}
+	input := inputs.Current
 	if result.TaskID != options.taskID || input.Repo != result.Repo || input.Base != result.Base || input.Head != result.Head {
 		return review, nil, errors.New("binding does not match selected submission")
 	}
 	path := "/v1/tasks/" + options.taskID + "/results/" + options.resultID + "/reviews"
-	if err := client.request(http.MethodPost, path, options.key, input, &review, &raw); err != nil {
+	// Probe before posting current evidence: its expanded roster could match
+	// an old receipt even though the actual findings roster has changed.
+	if inputs.LegacyReplay != nil {
+		err = client.request(http.MethodPost, path+"/legacy-receipt", options.key, inputs.LegacyReplay, &review, &raw)
+	}
+	if inputs.LegacyReplay == nil || err == resultHTTPStatus(http.StatusNotFound) {
+		err = client.request(http.MethodPost, path, options.key, input, &review, &raw)
+	}
+	if err != nil {
 		return review, nil, err
 	}
 	if !validCanonicalID(review.ID) || review.TaskID != options.taskID || review.ResultID != options.resultID ||

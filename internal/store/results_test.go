@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -437,29 +438,52 @@ func TestReviewSourceCountsCannotExceedTotals(t *testing.T) {
 	}
 }
 
-func TestReviewTotalsRequireAttributionButAllowSharedItems(t *testing.T) {
-	result := TaskResult{ID: uuid.NewString(), TaskID: uuid.NewString(), Repo: resultRepoA, Base: resultBase, Head: resultHeadA}
-	input := reviewInput(result, "shared-attribution")
-	input.Sources = append(input.Sources, ReviewSource{Name: "optional", Executor: "pi", Responded: true})
-	input.Findings = 1
-	input.Sources[0].Findings = 1
-	input.Sources[1].Findings = 1
-	if err := validateAttachReview(result.TaskID, result.ID, uuid.NewString(), input); err != nil {
-		t.Fatalf("two sources citing one finding were rejected: %v", err)
-	}
-	for _, counter := range []string{"findings", "pre_existing", "open_questions"} {
-		t.Run(counter, func(t *testing.T) {
-			unattributed := reviewInput(result, "unattributed-"+counter)
-			switch counter {
-			case "findings":
-				unattributed.Findings = 1
-			case "pre_existing":
-				unattributed.PreExisting = 1
-			case "open_questions":
-				unattributed.OpenQuestions = 1
+func TestReviewTotalsRequireCoverageButAllowSharedItems(t *testing.T) {
+	s := openTest(t)
+	_, task := seed(t, s)
+	result := mustSubmitResult(t, s, task.ID, resultMutation("/coverage-submit"), submitInput(resultRepoA, resultHeadA, ""))
+	for _, test := range []struct {
+		name string
+		set  func(*AttachReviewInput, int, int, int)
+	}{
+		{"findings", func(in *AttachReviewInput, total, a, b int) {
+			in.Findings, in.Sources[0].Findings, in.Sources[1].Findings = total, a, b
+		}},
+		{"pre-existing", func(in *AttachReviewInput, total, a, b int) {
+			in.PreExisting, in.Sources[0].PreExisting, in.Sources[1].PreExisting = total, a, b
+		}},
+		{"open questions", func(in *AttachReviewInput, total, a, b int) {
+			in.OpenQuestions, in.Sources[0].OpenQuestions, in.Sources[1].OpenQuestions = total, a, b
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := reviewInput(result, test.name)
+			input.Sources = append(input.Sources, ReviewSource{Name: "optional", Executor: "pi", Responded: true})
+			mutation := resultMutation("/" + test.name)
+			for _, attributed := range []int{0, 1} {
+				test.set(&input, 2, attributed, 0)
+				_, err := s.AttachReview(t.Context(), task.ID, result.ID, mutation, input)
+				requireResultCode(t, err, "invalid_request")
 			}
-			if err := validateAttachReview(result.TaskID, result.ID, uuid.NewString(), unattributed); err == nil {
-				t.Fatal("positive aggregate without source attribution passed validation")
+			legacy, receipt := seedLegacyReviewReceipt(t, s, task.ID, result, mutation, input)
+			page, err := s.CurrentTaskReviews(t.Context(), task.ID, "", 20)
+			if err != nil || len(page.Reviews) == 0 {
+				t.Fatalf("legacy attribution page: %+v %v", page, err)
+			}
+			projected := page.Reviews[len(page.Reviews)-1]
+			if projected.ID != legacy.ID || projected.EvidenceConsistent {
+				t.Fatalf("legacy under-attribution not marked inconsistent: %+v", projected)
+			}
+			replay, err := s.AttachReview(t.Context(), task.ID, result.ID, mutation, input)
+			if err != nil || !bytes.Equal(replay.Body, receipt.Body) {
+				t.Fatalf("legacy under-attribution receipt changed: %+v %v", replay, err)
+			}
+			for _, attributed := range []int{1, 2} {
+				input.Run = test.name + "/" + strconv.Itoa(attributed)
+				test.set(&input, 2, attributed, 1)
+				if review := mustAttachReview(t, s, task.ID, result.ID, resultMutation("/shared"), input); !review.EvidenceConsistent {
+					t.Fatalf("consistent multi-source attribution rejected: %+v", review)
+				}
 			}
 		})
 	}
@@ -597,26 +621,52 @@ func TestLegacyMixedRosterReceiptReplayRequiresExactHashAndKey(t *testing.T) {
 	}
 	mutation := resultMutation("/legacy-normalized-review")
 	_, original := seedLegacyReviewReceipt(t, s, task.ID, result, mutation, legacy)
-	if hash, ok := legacyNormalizedReviewHash(current, original.Body); !ok || hash != observerHash(legacy) {
-		t.Fatal("old actual roster and reasons were not reconstructed exactly")
-	}
 	events := mustEvents(t, s)
-	replayed, err := s.AttachReview(t.Context(), task.ID, result.ID, mutation, current)
-	if err != nil || replayed.Status != 201 || !bytes.Equal(replayed.Body, original.Body) || !reflect.DeepEqual(events, mustEvents(t, s)) {
-		t.Fatalf("old mixed-roster receipt did not recover through new normalization: %+v %v", replayed, err)
+	replayed, err := s.ReplayLegacyReview(t.Context(), task.ID, result.ID, mutation, legacy)
+	if err != nil || replayed.Status != 201 || !bytes.Equal(replayed.Body, original.Body) {
+		t.Fatalf("old mixed-roster receipt did not recover with exact payload: %+v %v", replayed, err)
 	}
-	_, err = s.AttachReview(t.Context(), task.ID, result.ID, resultMutation("/fresh-new-normalization"), current)
+	for _, shape := range []AttachReviewInput{legacy, current} {
+		fresh := resultMutation(mutation.Path)
+		_, err = s.ReplayLegacyReview(t.Context(), task.ID, result.ID, fresh, shape)
+		requireResultCode(t, err, "not_found")
+		var receipts int
+		if err := s.db.QueryRowContext(t.Context(), "SELECT count(*) FROM mutation_receipts WHERE key=?", fresh.Key).Scan(&receipts); err != nil || receipts != 0 {
+			t.Fatalf("legacy lookup wrote a receipt: %d %v", receipts, err)
+		}
+	}
+	for _, shape := range []AttachReviewInput{legacy, current} {
+		for _, change := range []struct {
+			name   string
+			mutate func(*AttachReviewInput)
+		}{
+			{"required flag", func(in *AttachReviewInput) { in.Sources[len(in.Sources)-1].Required = false }},
+			{"source flags", func(in *AttachReviewInput) {
+				last := &in.Sources[len(in.Sources)-1]
+				last.Responded, last.Degraded = true, false
+			}},
+			{"reasons", func(in *AttachReviewInput) { in.IncompleteReasons = []string{"unrelated reason"} }},
+		} {
+			t.Run(change.name, func(t *testing.T) {
+				changed := shape
+				changed.Sources = append([]ReviewSource{}, shape.Sources...)
+				change.mutate(&changed)
+				_, err := s.ReplayLegacyReview(t.Context(), task.ID, result.ID, mutation, changed)
+				requireResultCode(t, err, "conflict")
+				_, err = s.AttachReview(t.Context(), task.ID, result.ID, mutation, changed)
+				requireResultCode(t, err, "conflict")
+			})
+		}
+	}
+	_, err = s.AttachReview(t.Context(), task.ID, result.ID, mutation, current)
 	requireResultCode(t, err, "conflict")
-	changed := current
-	changed.ReportRef = "/reports/not-the-original"
-	_, err = s.AttachReview(t.Context(), task.ID, result.ID, mutation, changed)
+	wrongPath := mutation
+	wrongPath.Path += "/other"
+	_, err = s.ReplayLegacyReview(t.Context(), task.ID, result.ID, wrongPath, legacy)
 	requireResultCode(t, err, "conflict")
-	changed = current
-	changed.Sources = append([]ReviewSource{}, current.Sources...)
-	changed.Sources[1].Findings = 1
-	changed.Findings = 1
-	_, err = s.AttachReview(t.Context(), task.ID, result.ID, mutation, changed)
-	requireResultCode(t, err, "conflict")
+	if !reflect.DeepEqual(events, mustEvents(t, s)) {
+		t.Fatal("legacy lookup wrote events")
+	}
 }
 
 func TestCurrentReceiptRejectsChangedOptionalDegradedRoster(t *testing.T) {
@@ -628,6 +678,12 @@ func TestCurrentReceiptRejectsChangedOptionalDegradedRoster(t *testing.T) {
 	response, err := s.AttachReview(t.Context(), task.ID, result.ID, mutation, original)
 	if err != nil || !bytes.Contains(response.Body, []byte("evidence_consistent")) {
 		t.Fatalf("current receipt fixture: %+v %v", response, err)
+	}
+	_, err = s.ReplayLegacyReview(t.Context(), task.ID, result.ID, mutation, original)
+	requireResultCode(t, err, "not_found")
+	replayed, err := s.AttachReview(t.Context(), task.ID, result.ID, mutation, original)
+	if err != nil || replayed.Status != response.Status || !bytes.Equal(replayed.Body, response.Body) {
+		t.Fatalf("current exact receipt did not replay: %+v %v", replayed, err)
 	}
 	changed := original
 	changed.Sources = append(changed.Sources, ReviewSource{Name: "optional", Executor: "pi", Degraded: true})

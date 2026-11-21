@@ -67,7 +67,8 @@ func writeSyntheticPair(t *testing.T, manifestDoc manifest, findingsDoc findings
 
 func importSynthetic(t *testing.T, manifestDoc manifest, findingsDoc findingsDocument, required []store.ReviewRequirement) (store.AttachReviewInput, error) {
 	t.Helper()
-	return Import(testBinding(t), writeSyntheticPair(t, manifestDoc, findingsDoc), required)
+	inputs, err := Import(testBinding(t), writeSyntheticPair(t, manifestDoc, findingsDoc), required)
+	return inputs.Current, err
 }
 
 func writeDefaultPair(t *testing.T) string {
