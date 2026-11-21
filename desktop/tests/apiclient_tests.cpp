@@ -723,6 +723,88 @@ private slots:
     QVERIFY(!idempotencyKey(answers[0]).isEmpty());
     client.stop();
   }
+  void saturatedLegacyReviewRemainsReadable() {
+    Fixture fixture;
+    const QString resultID = "66666666-6666-4666-8666-666666666666";
+    const QString reviewID = "77777777-7777-4777-8777-777777777777";
+    const QString sha(40, 'a');
+    const auto result = QJsonObject{{"id", resultID},
+                                    {"task_id", taskID},
+                                    {"repo", "/tmp/review/.git"},
+                                    {"base", sha},
+                                    {"head", sha},
+                                    {"summary", "Legacy counters"},
+                                    {"created_at", "2026-11-20T11:00:00Z"}};
+    constexpr double safeMaximum = 9007199254740991.0;
+    const auto source = QJsonObject{{"name", "reviewer"},
+                                    {"executor", "codex"},
+                                    {"required", true},
+                                    {"responded", true},
+                                    {"degraded", false},
+                                    {"findings", safeMaximum},
+                                    {"pre_existing", safeMaximum},
+                                    {"open_questions", safeMaximum}};
+    const auto review = QJsonObject{
+        {"id", reviewID},
+        {"task_id", taskID},
+        {"result_id", resultID},
+        {"repo", result.value("repo")},
+        {"base", sha},
+        {"head", sha},
+        {"revmux_task", "legacy"},
+        {"run", "run-01"},
+        {"range_source", "operator"},
+        {"report_ref", "/tmp/report"},
+        {"complete", true},
+        {"required_sources",
+         QJsonArray{QJsonObject{{"name", "reviewer"}, {"executor", "codex"}}}},
+        {"sources", QJsonArray{source}},
+        {"incomplete_reasons", QJsonArray{}},
+        {"findings", safeMaximum},
+        {"pre_existing", safeMaximum},
+        {"open_questions", safeMaximum},
+        {"created_at", "2026-11-20T12:00:00Z"},
+        {"evidence_consistent", false}};
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/tasks/" + taskID.toUtf8() +
+                             "/results/current "))
+        respond(socket, 200,
+                QJsonDocument(
+                    QJsonObject{{"result", result}, {"reviews", QJsonArray{}}})
+                    .toJson(QJsonDocument::Compact));
+      else if (request.startsWith("GET /v1/tasks/" + taskID.toUtf8() +
+                                  "/results/current/reviews?"))
+        respond(socket, 200,
+                QJsonDocument(QJsonObject{{"result_id", resultID},
+                                          {"reviews", QJsonArray{review}},
+                                          {"next_after", reviewID},
+                                          {"has_more", false}})
+                    .toJson(QJsonDocument::Compact));
+      else
+        fixture.normal(socket, request);
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QSignalSpy received(&client, &ApiClient::currentReviewsReceived);
+    client.loadCurrentResult(taskID);
+    QTRY_COMPARE(received.size(), 1);
+    const auto reviews = received.first().at(1).toList();
+    QCOMPARE(reviews.size(), 1);
+    const auto projected = reviews.first().toMap();
+    QVERIFY(!projected.value("evidence_consistent").toBool());
+    QCOMPARE(projected.value("findings").toDouble(), safeMaximum);
+    QCOMPARE(projected.value("sources")
+                 .toList()
+                 .first()
+                 .toMap()
+                 .value("open_questions")
+                 .toDouble(),
+             safeMaximum);
+    QVERIFY(client.currentResultError().isEmpty());
+    client.stop();
+  }
   void realTemporaryDaemon() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());

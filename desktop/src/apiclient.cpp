@@ -71,6 +71,62 @@ bool validSnapshot(const QJsonObject &obj) {
   }
   return true;
 }
+bool fullSHA(const QString &value) {
+  static const QRegularExpression format(QStringLiteral("^[0-9a-f]{40}$"));
+  return format.match(value).hasMatch();
+}
+bool validResult(const QJsonObject &row, const QString &task) {
+  return uuid(row.value("id").toString()) &&
+         row.value("task_id").toString() == task &&
+         !row.value("repo").toString().isEmpty() &&
+         fullSHA(row.value("base").toString()) &&
+         fullSHA(row.value("head").toString()) &&
+         row.value("summary").isString() && row.value("created_at").isString();
+}
+bool validReview(const QJsonObject &row, const QString &task) {
+  if (!uuid(row.value("id").toString()) ||
+      row.value("task_id").toString() != task ||
+      !uuid(row.value("result_id").toString()) ||
+      row.value("repo").toString().isEmpty() ||
+      !fullSHA(row.value("base").toString()) ||
+      !fullSHA(row.value("head").toString()) ||
+      row.value("revmux_task").toString().isEmpty() ||
+      row.value("run").toString().isEmpty() ||
+      row.value("range_source").toString() != "operator" ||
+      row.value("report_ref").toString().isEmpty() ||
+      !row.value("complete").isBool() ||
+      !row.value("evidence_consistent").isBool() ||
+      !row.value("required_sources").isArray() ||
+      !row.value("sources").isArray() ||
+      !row.value("incomplete_reasons").isArray() ||
+      !row.value("created_at").isString())
+    return false;
+  for (const auto *key : {"findings", "pre_existing", "open_questions"})
+    if (!integer(row.value(key)))
+      return false;
+  for (const auto &value : row.value("required_sources").toArray()) {
+    const auto source = value.toObject();
+    if (!value.isObject() || source.value("name").toString().isEmpty() ||
+        source.value("executor").toString().isEmpty())
+      return false;
+  }
+  for (const auto &value : row.value("sources").toArray()) {
+    const auto source = value.toObject();
+    if (!value.isObject() || source.value("name").toString().isEmpty() ||
+        source.value("executor").toString().isEmpty() ||
+        !source.value("required").isBool() ||
+        !source.value("responded").isBool() ||
+        !source.value("degraded").isBool())
+      return false;
+    for (const auto *key : {"findings", "pre_existing", "open_questions"})
+      if (!integer(source.value(key)))
+        return false;
+  }
+  for (const auto &reason : row.value("incomplete_reasons").toArray())
+    if (!reason.isString() || reason.toString().isEmpty())
+      return false;
+  return true;
+}
 // Open directory components without following symlinks, then validate the
 // opened inode (not a racy QFileInfo check). Never expose bytes to QML.
 QByteArray credential(const QString &path) {
@@ -202,6 +258,7 @@ bool ApiClient::configure(const QUrl &endpoint, const QString &tokenFile) {
   stop();
   m_token.clear();
   m_historyError.clear();
+  m_resultsError.clear();
   m_messagesError.clear();
   m_projects.replace({});
   m_tasks.replace({});
@@ -247,6 +304,7 @@ void ApiClient::stop() {
     m_uncertain = true;
   cancel(m_snapshot);
   cancelHistory();
+  cancelResults();
   cancelMessages();
   cancelQuestions();
   cancel(m_stream);
@@ -520,6 +578,230 @@ void ApiClient::loadHistory(const QString &project, const QString &task,
         }
         emit changed();
       });
+  emit changed();
+}
+void ApiClient::loadCurrentResult(const QString &task) {
+  cancel(m_currentResultReply);
+  cancel(m_currentReviewsReply);
+  m_currentResultRecord = {};
+  m_currentResultTask.clear();
+  m_currentResultError.clear();
+  if (!m_online || m_stopped || !uuid(task))
+    return;
+  const auto instance = m_instance;
+  auto *reply = request("GET", "/v1/tasks/" + task + "/results/current");
+  m_currentResultReply = reply;
+  m_currentResultTask = task;
+  connect(reply, &QIODevice::readyRead, this, [reply] {
+    auto bytes = reply->property("bytes").toByteArray() + reply->readAll();
+    if (bytes.size() > responseLimit) {
+      reply->setProperty("oversized", true);
+      reply->abort();
+    } else {
+      reply->setProperty("bytes", bytes);
+    }
+  });
+  connect(reply, &QNetworkReply::finished, this, [this, reply, task, instance] {
+    reply->deleteLater();
+    if (reply != m_currentResultReply)
+      return;
+    m_currentResultReply = nullptr;
+    if (instance != m_instance || task != m_currentResultTask) {
+      emit changed();
+      return;
+    }
+    const auto obj =
+        QJsonDocument::fromJson(reply->property("bytes").toByteArray())
+            .object();
+    const auto resultValue = obj.value("result");
+    const auto result = resultValue.toObject();
+    const bool valid =
+        reply->error() == QNetworkReply::NoError &&
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() ==
+            200 &&
+        reply->header(QNetworkRequest::ContentTypeHeader)
+            .toString()
+            .startsWith("application/json") &&
+        !reply->property("oversized").toBool() &&
+        (resultValue.isNull() ||
+         (resultValue.isObject() && validResult(result, task))) &&
+        obj.value("reviews").isArray() &&
+        obj.value("reviews").toArray().isEmpty();
+    if (valid) {
+      m_currentResultError.clear();
+      m_currentResultRecord = result;
+      emit currentResultReceived(resultValue.isNull() ? QVariantMap{}
+                                                      : result.toVariantMap());
+      if (!resultValue.isNull())
+        loadCurrentReviews(task, result.value("id").toString(), {});
+    } else {
+      m_currentResultError = tr("Submitted result unavailable or invalid");
+    }
+    emit changed();
+  });
+  emit changed();
+}
+void ApiClient::loadCurrentReviews(const QString &task, const QString &result,
+                                   const QString &after) {
+  cancel(m_currentReviewsReply);
+  if (!m_online || m_stopped || task != m_currentResultTask || !uuid(result) ||
+      (!after.isEmpty() && !uuid(after)))
+    return;
+  const auto instance = m_instance;
+  auto *reply = request("GET", "/v1/tasks/" + task +
+                                   "/results/current/reviews?after=" + after +
+                                   "&limit=20");
+  m_currentReviewsReply = reply;
+  connect(reply, &QIODevice::readyRead, this, [reply] {
+    auto bytes = reply->property("bytes").toByteArray() + reply->readAll();
+    if (bytes.size() > responseLimit) {
+      reply->setProperty("oversized", true);
+      reply->abort();
+    } else {
+      reply->setProperty("bytes", bytes);
+    }
+  });
+  connect(
+      reply, &QNetworkReply::finished, this,
+      [this, reply, task, result, after, instance] {
+        reply->deleteLater();
+        if (reply != m_currentReviewsReply)
+          return;
+        m_currentReviewsReply = nullptr;
+        if (instance != m_instance || task != m_currentResultTask) {
+          emit changed();
+          return;
+        }
+        const auto obj =
+            QJsonDocument::fromJson(reply->property("bytes").toByteArray())
+                .object();
+        const auto reviews = obj.value("reviews").toArray();
+        const auto next = obj.value("next_after").toString();
+        const auto more = obj.value("has_more");
+        bool valid =
+            reply->error() == QNetworkReply::NoError &&
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                    .toInt() == 200 &&
+            reply->header(QNetworkRequest::ContentTypeHeader)
+                .toString()
+                .startsWith("application/json") &&
+            !reply->property("oversized").toBool() &&
+            obj.value("result_id").toString() == result &&
+            obj.value("reviews").isArray() && reviews.size() <= 20 &&
+            obj.value("next_after").isString() &&
+            (next.isEmpty() || uuid(next)) && more.isBool() &&
+            (!more.toBool() || reviews.size() == 20) &&
+            (reviews.isEmpty()
+                 ? next == after
+                 : next == reviews.last().toObject().value("id").toString());
+        // The current read supplied this candidate; do not trust a page
+        // that advanced to another result between requests.
+        valid = valid && m_currentResultRecord.value("id").toString() == result;
+        for (const auto &value : reviews) {
+          const auto review = value.toObject();
+          valid = valid && value.isObject() && validReview(review, task) &&
+                  review.value("result_id").toString() == result &&
+                  review.value("repo") == m_currentResultRecord.value("repo") &&
+                  review.value("base") == m_currentResultRecord.value("base") &&
+                  review.value("head") == m_currentResultRecord.value("head");
+        }
+        if (valid) {
+          m_currentResultError.clear();
+          emit currentReviewsReceived(result, reviews.toVariantList(), after,
+                                      next, more.toBool());
+        } else {
+          m_currentResultError =
+              tr("Submitted result reviews unavailable or invalid");
+        }
+        emit changed();
+      });
+  emit changed();
+}
+void ApiClient::cancelResults() {
+  cancel(m_currentResultReply);
+  cancel(m_currentReviewsReply);
+  m_currentResultRecord = {};
+  m_currentResultTask.clear();
+  m_currentResultError.clear();
+  cancel(m_resultsReply);
+  m_resultsTask.clear();
+  m_resultsError.clear();
+}
+void ApiClient::loadResults(const QString &task, qint64 after) {
+  cancel(m_resultsReply);
+  m_resultsTask.clear();
+  m_resultsError.clear();
+  if (!m_online || m_stopped || !uuid(task) || after < 0)
+    return;
+  const auto instance = m_instance;
+  auto *reply = request("GET", "/v1/tasks/" + task + "/results?after=" +
+                                   QString::number(after) + "&limit=50");
+  m_resultsReply = reply;
+  m_resultsTask = task;
+  m_resultsError.clear();
+  connect(reply, &QIODevice::readyRead, this, [reply] {
+    auto bytes = reply->property("bytes").toByteArray() + reply->readAll();
+    if (bytes.size() > responseLimit) {
+      reply->setProperty("oversized", true);
+      reply->abort();
+    } else {
+      reply->setProperty("bytes", bytes);
+    }
+  });
+  connect(reply, &QNetworkReply::finished, this,
+          [this, reply, task, after, instance] {
+            reply->deleteLater();
+            if (reply != m_resultsReply)
+              return;
+            m_resultsReply = nullptr;
+            if (instance != m_instance || task != m_resultsTask) {
+              emit changed();
+              return;
+            }
+            const auto obj =
+                QJsonDocument::fromJson(reply->property("bytes").toByteArray())
+                    .object();
+            const auto entries = obj.value("entries").toArray();
+            const auto current = obj.value("current_result_id").toString();
+            const auto next = obj.value("next_after");
+            const auto more = obj.value("has_more");
+            bool valid =
+                reply->error() == QNetworkReply::NoError &&
+                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                        .toInt() == 200 &&
+                reply->header(QNetworkRequest::ContentTypeHeader)
+                    .toString()
+                    .startsWith("application/json") &&
+                !reply->property("oversized").toBool() &&
+                obj.value("current_result_id").isString() &&
+                (current.isEmpty() || uuid(current)) &&
+                obj.value("entries").isArray() && entries.size() <= 50 &&
+                integer(next) && next.toInteger() >= after && more.isBool() &&
+                (!more.toBool() || entries.size() == 50);
+            qint64 previous = after;
+            for (const auto &value : entries) {
+              const auto entry = value.toObject();
+              const auto kind = entry.value("kind").toString();
+              const auto seq = entry.value("seq");
+              valid = valid && value.isObject() && integer(seq) &&
+                      seq.toInteger() > previous &&
+                      seq.toInteger() <= next.toInteger() &&
+                      ((kind == "result" && entry.value("result").isObject() &&
+                        validResult(entry.value("result").toObject(), task)) ||
+                       (kind == "review" && entry.value("review").isObject() &&
+                        validReview(entry.value("review").toObject(), task)));
+              previous = seq.toInteger();
+            }
+            if (valid && ((entries.isEmpty() && next.toInteger() == after) ||
+                          (!entries.isEmpty() && next.toInteger() > after))) {
+              m_resultsError.clear();
+              emit resultsReceived(current, entries.toVariantList(), after,
+                                   next.toInteger(), more.toBool());
+            } else {
+              m_resultsError = tr("Submitted results unavailable or invalid");
+            }
+            emit changed();
+          });
   emit changed();
 }
 bool ApiClient::validMessage(const QJsonObject &obj) const {

@@ -45,7 +45,7 @@ export default function observer(pi: ExtensionAPI) {
     const path = process.env.ARTEL_OBSERVER_CONFIG;
     if (!path) return;
     const node = process.versions.node.split(".").map(Number);
-    if (VERSION !== "1.5.2" || (node[0] < 22 || (node[0] === 22 && (node[1] < 23 || (node[1] === 23 && node[2] < 2)))) ||
+    if ((node[0] < 22 || (node[0] === 22 && (node[1] < 23 || (node[1] === 23 && node[2] < 2)))) ||
         typeof ctx.isIdle !== "function" || typeof ctx.sessionManager?.getSessionId !== "function" ||
         (ctx.hasUI && typeof ctx.ui?.setStatus !== "function")) {
       status("Artel: disabled — unsupported Pi/Node capabilities"); return;
@@ -62,7 +62,8 @@ export default function observer(pi: ExtensionAPI) {
       client = new ObserverClient(config, registration, unixTransport(config, token), latest, status);
       status("Artel: connecting");
       client.start();
-      startDeliveryLoop(join(dirname(path), "delivery.json"), registration, ctx);
+      if (typeof pi.sendMessage === "function") startDeliveryLoop(join(dirname(path), "delivery.json"), registration, ctx);
+      else status("Artel: observing — delivery unavailable on this Pi");
     } catch { status("Artel: disabled — config unavailable, pending or unsafe"); }
   });
   // Start the opt-in delivery writer only in the exactly bound runtime with a
@@ -128,6 +129,10 @@ export default function observer(pi: ExtensionAPI) {
         if (client?.boundRuntime() !== registration.runtime_id) return;
         const { config, token } = readDeliveryConfig(deliveryPath);
         if (config.delivery_binding_id === terminalBinding) return;
+        if (config.allow_owner_questions === true && (typeof pi.registerTool !== "function" ||
+          typeof pi.getActiveTools !== "function" || typeof pi.setActiveTools !== "function")) {
+          status("Artel: delivery disabled — owner questions unavailable on this Pi"); return;
+        }
         writer = new DeliveryWriter(config, token, ctx, registration.pi_session_id, registration.runtime_id, status, attempt => {
           if (deliveryShutdown) return;
           const answer = attempt.kind === "answer";

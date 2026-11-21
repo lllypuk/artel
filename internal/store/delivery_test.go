@@ -371,7 +371,7 @@ func TestDeliveryV2UpgradePreservesDomainObserverAndReceipts(t *testing.T) {
 		if err := s.db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil {
 			t.Fatal(err)
 		}
-		if version != 4 {
+		if version != 5 {
 			t.Fatal(version)
 		}
 		for table, want := range map[string]int{"delivery_bindings": 0, "delivery_messages": 0, "delivery_attempts": 0} {

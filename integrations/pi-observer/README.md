@@ -1,6 +1,6 @@
 # Artel Pi observer
 
-Opt-in observation only. Supported host: Pi 1.5.2, Node >=22.23.2.
+Opt-in observation only. The test SDK is pinned to Pi 1.5.2; runtime activation checks capabilities and requires Node >=22.23.2.
 Observation supplies no tools, commands, messages, prompts, model selection or
 global installation. The separate, explicitly enabled delivery modes below are
 the only exceptions. Without ARTEL_OBSERVER_CONFIG the extension is inert.
@@ -10,7 +10,7 @@ permissions or unsupported host capabilities disable observation, not Pi.
 The delivered package contains index.mjs, package.json and this README under
 /usr/share/artel/pi-observer/, outside Pi auto-discovery. Explicitly load with
 `ARTEL_OBSERVER_CONFIG=/ABSOLUTE/PRIVATE/config.json pi -e /usr/share/artel/pi-observer/index.mjs`.
-Pi itself must be separately installed at exactly 1.5.2; Node >=22.23.2 is optional
+Pi must be separately installed; Node >=22.23.2 is optional
 for this integration only. Daemon/CLI/desktop start without either runtime.
 
 For local builds run `npm ci --ignore-scripts` then `npm run build` in this package.

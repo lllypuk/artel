@@ -3066,6 +3066,7 @@ private slots:
     QVERIFY(click(window, "startButton"));
     QTRY_COMPARE(panel.task().value("state").toString(),
                  QString("in_progress"));
+    QTRY_VERIFY(panel.allowed("done"));
     QVERIFY(click(window, "doneButton"));
     QTRY_COMPARE(panel.task().value("state").toString(), QString("done"));
     QCOMPARE(panel.stateLabel("done"), QString("Completed manually"));
@@ -3075,10 +3076,13 @@ private slots:
              QString("owner_manual"));
     QVERIFY(!panel.canArchive());
     QVERIFY(!item(window, "archiveButton")->isEnabled());
+    QTRY_VERIFY(panel.allowed("backlog"));
     QVERIFY(click(window, "reopenButton"));
     QTRY_COMPARE(panel.task().value("state").toString(), QString("backlog"));
+    QTRY_VERIFY(panel.allowed("cancelled"));
     QVERIFY(click(window, "cancelTaskButton"));
     QTRY_COMPARE(panel.task().value("state").toString(), QString("cancelled"));
+    QTRY_VERIFY(panel.allowed("backlog"));
     QVERIFY(click(window, "reopenButton"));
     QTRY_COMPARE(panel.task().value("state").toString(), QString("backlog"));
     for (int i = 0; i < 2; ++i) {

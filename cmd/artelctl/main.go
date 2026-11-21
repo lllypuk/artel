@@ -19,7 +19,7 @@ func run(args []string, out, errOut io.Writer) int {
 	if len(args) == 1 {
 		switch args[0] {
 		case "--help", "-h":
-			return printOutput(out, "Usage: artelctl --help | --version | status|snapshot --json | observer ... | delivery enable|revoke ...")
+			return printOutput(out, "Usage: artelctl --help | --version | status|snapshot --json | observer ... | delivery enable|revoke ... | results submit ... | reviews attach ...")
 		case "--version":
 			return printOutput(out, "artelctl 0.1.0-dev")
 		}
@@ -30,10 +30,16 @@ func run(args []string, out, errOut io.Writer) int {
 	if len(args) > 0 && args[0] == "delivery" {
 		return delivery(args[1:], out, errOut)
 	}
+	if len(args) > 0 && args[0] == "results" {
+		return results(args[1:], out, errOut)
+	}
+	if len(args) > 0 && args[0] == "reviews" {
+		return reviews(args[1:], out, errOut)
+	}
 	if len(args) > 0 && (args[0] == "status" || args[0] == "snapshot") {
 		return diagnostic(args, out, errOut)
 	}
-	_, _ = fmt.Fprintln(errOut, "artelctl: expected --help, --version, status or snapshot")
+	_, _ = fmt.Fprintln(errOut, "artelctl: expected --help, --version, status, snapshot, observer, delivery, results or reviews")
 	return 2
 }
 
@@ -121,6 +127,7 @@ func validResponse(command string, body []byte) bool {
 }
 
 func printOutput(out io.Writer, text string) int {
+	// #nosec G705 -- This is a terminal writer, not an HTML response.
 	if _, err := fmt.Fprintln(out, text); err != nil {
 		return 1
 	}

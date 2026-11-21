@@ -57,6 +57,20 @@ public:
   bool historyLoading() const { return m_historyReply; }
   void loadHistory(const QString &project, const QString &task, qint64 after);
   void cancelHistory();
+  // The bounded candidate read and its bounded review pages are independent
+  // from history. Decisions stay pending until every current review page ends.
+  bool currentResultLoading() const {
+    return m_currentResultReply || m_currentReviewsReply;
+  }
+  QString currentResultError() const { return m_currentResultError; }
+  void loadCurrentResult(const QString &task);
+  void loadCurrentReviews(const QString &task, const QString &result,
+                          const QString &after);
+  // Result reads are task/instance scoped and independent from manual drafts.
+  bool resultsLoading() const { return m_resultsReply; }
+  QString resultsError() const { return m_resultsError; }
+  void loadResults(const QString &task, qint64 after = 0);
+  void cancelResults();
   // Delivery commissions: pages, status refresh and the assignment projection
   // for one selected task. All replies are dropped when the task or database
   // instance changes before they arrive.
@@ -123,6 +137,13 @@ signals:
   void changed();
   void mutationSucceeded(const QVariantMap &result, const QString &instance);
   void historyReceived(const QVariantList &events, qint64 cursor, bool more);
+  void currentResultReceived(const QVariantMap &result);
+  void currentReviewsReceived(const QString &result,
+                              const QVariantList &reviews, const QString &after,
+                              const QString &cursor, bool more);
+  void resultsReceived(const QString &currentResult,
+                       const QVariantList &entries, qint64 after, qint64 cursor,
+                       bool more);
   void messagesReceived(const QVariantList &messages, qint64 after, bool more);
   void messageStatusesReceived(const QVariantList &messages);
   void deliveryReceived(const QVariantMap &projection);
@@ -150,15 +171,18 @@ private:
   QByteArray m_token;
   QNetworkReply *m_snapshot = nullptr, *m_stream = nullptr,
                 *m_mutation = nullptr, *m_historyReply = nullptr,
+                *m_currentResultReply = nullptr,
+                *m_currentReviewsReply = nullptr, *m_resultsReply = nullptr,
                 *m_messagesReply = nullptr, *m_statusReply = nullptr,
                 *m_deliveryReply = nullptr, *m_questionsReply = nullptr,
                 *m_questionStatusReply = nullptr;
   QTimer m_reconnect, m_coalesce;
   quint64 m_generation = 0, m_draftRevision = 0, m_sentRevision = 0;
   QString m_instance, m_status = QStringLiteral("disconnected"), m_error,
-                      m_historyError, m_messagesError;
-  QString m_messagesTask, m_statusTask, m_deliveryTask, m_questionsTask,
-      m_questionStatusTask;
+                      m_historyError, m_currentResultError, m_resultsError,
+                      m_messagesError;
+  QString m_currentResultTask, m_resultsTask, m_messagesTask, m_statusTask,
+      m_deliveryTask, m_questionsTask, m_questionStatusTask;
   bool m_messagesPageLoaded = false;
   qint64 m_sequence = 0, m_cursor = 0;
   bool m_online = false, m_uncertain = false, m_conflict = false,
@@ -166,6 +190,7 @@ private:
   bool m_answerRetryNeedsSnapshot = false;
   int m_timeout = 5000;
   QVariantMap m_draft;
+  QJsonObject m_currentResultRecord;
   QByteArray m_method, m_body, m_key;
   QString m_path, m_mutationInstance;
   QDateTime m_updated;

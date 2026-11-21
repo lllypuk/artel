@@ -32,7 +32,10 @@ var deliverySchema string
 //go:embed questions_schema.sql
 var questionsSchema string
 
-const schemaVersion = 4
+//go:embed results_schema.sql
+var resultsSchema string
+
+const schemaVersion = 5
 
 type Store struct {
 	db              *sql.DB
@@ -50,6 +53,14 @@ type Snapshot struct {
 	Projects   []domain.Project    `json:"projects"`
 	Tasks      []domain.Task       `json:"tasks"`
 	Queues     map[string][]string `json:"queues"`
+	// currentResults is transactional input for transition CAS only. It is not
+	// part of the public snapshot and ordinary task persistence cannot edit it.
+	currentResults map[string]string
+}
+
+func (s Snapshot) CurrentResultID(taskID string) (string, bool) {
+	id, ok := s.currentResults[taskID]
+	return id, ok
 }
 
 type Change struct {
@@ -204,6 +215,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := migrateDeliverySchemas(ctx, tx, version); err != nil {
 		return err
 	}
+	if err := migrateResultsSchema(ctx, tx, version); err != nil {
+		return err
+	}
 	if err := requireSchemaQueries(ctx, tx, []string{
 		"SELECT id,verifier,record FROM observers LIMIT 0",
 		"SELECT observer_id,runtime_id,retired FROM observer_identities LIMIT 0",
@@ -214,6 +228,16 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	return commitAfterSchemaCheck(ctx, tx)
+}
+
+func migrateResultsSchema(ctx context.Context, tx *sql.Tx, version int) error {
+	if version >= 5 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, resultsSchema); err != nil {
+		return fmt.Errorf("upgrade task results schema: %w", err)
+	}
+	return nil
 }
 
 func migrateDeliverySchemas(ctx context.Context, tx *sql.Tx, version int) error {
@@ -240,6 +264,13 @@ func commitAfterSchemaCheck(ctx context.Context, tx *sql.Tx) error {
 	}, "invalid delivery schema"); err != nil {
 		return err
 	}
+	if err := requireSchemaQueries(ctx, tx, []string{
+		"SELECT id,task_id,repo,base_sha,head_sha,record FROM task_results LIMIT 0",
+		"SELECT task_id,result_id FROM current_task_results LIMIT 0",
+		"SELECT id,task_id,result_id,repo,revmux_task,run,payload_hash,record FROM task_reviews LIMIT 0",
+	}, "invalid task results schema"); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -257,7 +288,7 @@ func (s *Store) Snapshot(ctx context.Context) (Snapshot, error) {
 }
 
 func load(ctx context.Context, tx *sql.Tx) (Snapshot, error) {
-	snap := Snapshot{Projects: []domain.Project{}, Tasks: []domain.Task{}, Queues: map[string][]string{}}
+	snap := Snapshot{Projects: []domain.Project{}, Tasks: []domain.Task{}, Queues: map[string][]string{}, currentResults: map[string]string{}}
 	if err := tx.QueryRowContext(ctx, "SELECT instance_id FROM metadata WHERE id=1").Scan(&snap.InstanceID); err != nil {
 		return snap, err
 	}
@@ -269,6 +300,31 @@ func load(ctx context.Context, tx *sql.Tx) (Snapshot, error) {
 	}
 	if err := readRecords(ctx, tx, "SELECT record FROM tasks ORDER BY id", &snap.Tasks); err != nil {
 		return snap, err
+	}
+	var resultTables int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE name='current_task_results'").Scan(&resultTables); err != nil {
+		return snap, err
+	}
+	if resultTables != 0 {
+		rows, err := tx.QueryContext(ctx, "SELECT task_id,result_id FROM current_task_results")
+		if err != nil {
+			return snap, err
+		}
+		for rows.Next() {
+			var taskID, resultID string
+			if err := rows.Scan(&taskID, &resultID); err != nil {
+				_ = rows.Close()
+				return snap, err
+			}
+			snap.currentResults[taskID] = resultID
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return snap, err
+		}
+		if err := rows.Close(); err != nil {
+			return snap, err
+		}
 	}
 	for _, p := range snap.Projects {
 		snap.Queues[p.ID] = []string{}

@@ -106,7 +106,7 @@ Explicitly load the installed artifact in a separately installed supported Pi:
 From source use `make observer-build` and the absolute path to
 `integrations/pi-observer/dist/index.mjs`, or copy the three dist files elsewhere.
 Do not place it in `.pi/extensions` or global settings. No config means inert;
-unsupported version/capabilities or unsafe/pending config disables observation.
+missing observation capabilities, unsupported Node or unsafe/pending config disables observation. The pinned Pi SDK version is a test dependency, not an exact runtime version requirement.
 
 Use the list JSON to select full observer/runtime/project UUIDs and current observer
 version. `artelctl observer bind --id UUID --runtime-id UUID --project-id UUID
@@ -182,6 +182,95 @@ recovery limits.
 Reusing a legacy prune key with an exact-set body returns an idempotency conflict.
 If a legacy prune outcome is uncertain, inspect the current registry and any
 available prior result rather than blindly submitting another prune.
+
+## Submitted Git candidates and imported revmux reviews
+
+A submitted result is an immutable owner assertion about one exact `base`/`head`
+pair. The repository identity is the canonical absolute Git common-dir, not the
+project root or current worktree `HEAD`. Importing a review changes neither task
+state nor queue/assignment. `range_source: operator` records the provenance of
+the SHA claim; it is not independent Git or CI verification. Report references
+are selectable display data only: Artel never opens a path/URI or copies raw
+findings into SQLite.
+
+For an isolated manual cycle, keep the temporary daemon and private variables
+from the first example. Create a project/task in the desktop and copy its UUID
+from the task card. From source, run `make observer-build`, then launch Pi in a
+**separate ordinary terminal**, without agterm:
+
+```sh
+ARTEL_OBSERVER_CONFIG="$ARTEL_CONFIG" pi -e "$PWD/integrations/pi-observer/dist/index.mjs"
+```
+
+Wait until the observer registry shows the runtime and Pi session UUIDs, then
+configure the explicitly opted-in delivery binding above with those values.
+Only after the binding is active, send one commission containing that exact
+task UUID through the card. Pi runs only in that terminal; Artel does not launch
+it or infer a commit/result from activity. After the owner has literal full commit SHAs, create a private pre-run
+binding and submit the selected candidate (all placeholders must be replaced
+with values from this disposable instance):
+
+```sh
+mkdir -m 700 "$ARTEL_TMP/review"
+SUBMIT_JSON=$("$ARTELCTL" results submit --task-id "$TASK_ID" --repo "$REPO" \
+  --base "$BASE" --head "$HEAD" --summary "Ready for owner review" \
+  --expected-result-id "" --binding "$ARTEL_TMP/review/first.binding.json" \
+  --revmux-task "$REVMUX_TASK" --run "$RUN_ID" --request-id "$SUBMIT_REQUEST_ID" \
+  --endpoint "$ARTEL_ENDPOINT" --token-file "$ARTEL_TOKEN")
+RESULT_ID=$(printf '%s\n' "$SUBMIT_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+```
+
+Before the external run, the binding fixes repo/task/run/base/head. Run revmux
+yourself outside Artel in a clean worktree with both SHAs as literals, then put
+its completed `manifest.json` and `findings.json` in one local directory. Import
+only normalized evidence, naming every required `name=executor` pair explicitly:
+
+```sh
+ATTACH_JSON=$("$ARTELCTL" reviews attach --task-id "$TASK_ID" --result-id "$RESULT_ID" \
+  --binding "$ARTEL_TMP/review/first.binding.json" --report-dir "$REPORT_DIR" \
+  --required-source reviewer=pi --request-id "$ATTACH_REQUEST_ID" \
+  --endpoint "$ARTEL_ENDPOINT" --token-file "$ARTEL_TOKEN")
+```
+
+Repeat the **same command with the same request ID** after an uncertain response;
+the diagnostic prints a generated ID when the response is lost. Exact receipt
+replay requires the same normalized payload hash. As a narrow upgrade exception,
+the daemon reconstructs the old actual-source roster and old required-source
+reasons for receipts that omit `evidence_consistent`; it returns the original
+receipt only when that reconstruction matches its stored hash. Current-format
+receipts and fresh requests retain exact payload matching and the new normalization. An
+identical already-attached repo/task/run with a fresh request ID returns the
+original review without another event only while the project is not archived.
+Exact receipt replay with the original request ID remains available after
+archival. The card distinguishes loading, read failure and a confirmed empty
+current result, and shows full SHAs, run ID, provenance, report reference,
+required-source completeness, findings/pre-existing/open-question counts and
+prior candidates. `GET /v1/tasks/{task_id}/results/current` supplies the bounded
+current candidate independently of history; the UI then drains bounded
+`GET /v1/tasks/{task_id}/results/current/reviews` pages before enabling a
+decision. A history-page failure is shown only in history and does not block an
+owner decision. Incomplete/degraded evidence and zero findings are not owner
+acceptance.
+
+After a new commit, submit its full SHA with `--expected-result-id "$RESULT_ID"`,
+a new binding path/run and a new request ID. Capture the returned new result ID
+for subsequent decisions. The old review remains attached to the old candidate
+and is visible in history; it does not review the new SHA. A late identical
+`reviews attach` for the old result is still historical. Accept or return only
+through the card's existing manual actions: they use the current result ID from
+the loaded view, and a conflict requires rereading rather than automatic retry.
+The contract is in the [owner API](../api/openapi.yaml).
+
+`make test-e2e` explicitly invokes the Qt slot `reviewedTaskResult` in two
+isolated modes. The standalone mode proves the UI/SSE/CAS/restart/history
+contract without Pi. `integrations/pi-observer/tests/result_pty.py` then runs
+the same slot against one shared temporary daemon/task with a real bound Pi
+PTY and deterministic local 4a provider. Production QML sends the commission
+and observes its receipt before the **test runner** creates Git commits and
+imports a synthetic manifest/findings pair; Pi answers `Fictional answer`.
+The runner owns and cleans up daemon/Pi/Qt, uses a private environment without
+agterm, and never launches revmux. This proves delivery plus the exact-result
+contract, not creation of a commit by an agent or a real revmux demonstration.
 
 ## Owner questions and asynchronous answers (stage 4b)
 
@@ -267,9 +356,11 @@ There is no editing, TTL, broadcast, remote access, blocking wait in Pi or
 automatic task transition.
 
 Compatibility and SQLite rollback are deliberately one-way. Opening a v3
-database atomically migrates it to v4 and retains existing commissions, attempts
-and receipts; a failed migration rolls back to v3. After a successful migration,
-an old v3 binary refuses the database: in-place downgrade is unsupported.
+database atomically migrates it through v4 to v5 and retains existing
+commissions, attempts, receipts and identity while adding submitted results and
+reviews; a failed migration rolls back to v3. After a successful migration, old
+v3 and 4b/v4 binaries refuse the v5 database without changing its data or
+identity: in-place downgrade is unsupported.
 Absent/false `allow_owner_questions` preserves the v3 enable/revoke wire and
 receipt hashes and ordinary stage-4a delivery. The base extension can continue
 ordinary commissions but cannot ask questions or receive answer text. Opted-in
