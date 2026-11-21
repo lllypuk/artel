@@ -24,6 +24,9 @@ func mountTaskResults(mux *http.ServeMux, s *store.Store) {
 	mux.HandleFunc("GET /v1/tasks/{task_id}/results/current", func(w http.ResponseWriter, r *http.Request) {
 		currentTaskResult(w, r, s)
 	})
+	mux.HandleFunc("GET /v1/tasks/{task_id}/results/current/reviews", func(w http.ResponseWriter, r *http.Request) {
+		currentTaskReviews(w, r, s)
+	})
 	mux.HandleFunc("POST /v1/tasks/{task_id}/results/{result_id}/reviews", func(w http.ResponseWriter, r *http.Request) {
 		attachTaskReview(w, r, s)
 	})
@@ -198,6 +201,53 @@ func currentTaskResult(w http.ResponseWriter, r *http.Request, s *store.Store) {
 		return
 	}
 	data, err := json.Marshal(current)
+	if err != nil {
+		publicError(w, err)
+		return
+	}
+	send(w, 200, data)
+}
+
+func parseCurrentReviewQuery(r *http.Request) (string, int, error) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return "", 0, domain.Invalid("invalid query")
+	}
+	for name, values := range query {
+		if (name != "after" && name != "limit") || len(values) != 1 {
+			return "", 0, domain.Invalid("invalid query parameter")
+		}
+	}
+	after := query.Get("after")
+	if after != "" && !validUUID(after) {
+		return "", 0, domain.Invalid("invalid review cursor")
+	}
+	limit := 20
+	if query.Has("limit") {
+		limit, err = strconv.Atoi(query.Get("limit"))
+		if err != nil || limit < 1 || limit > 50 {
+			return "", 0, domain.Invalid("invalid review limit")
+		}
+	}
+	return after, limit, nil
+}
+
+func currentTaskReviews(w http.ResponseWriter, r *http.Request, s *store.Store) {
+	taskID := r.PathValue("task_id")
+	after, limit, err := parseCurrentReviewQuery(r)
+	if !validUUID(taskID) || err != nil {
+		if err == nil {
+			err = domain.Invalid("invalid task UUID")
+		}
+		publicError(w, err)
+		return
+	}
+	page, err := s.CurrentTaskReviews(r.Context(), taskID, after, limit)
+	if err != nil {
+		publicError(w, err)
+		return
+	}
+	data, err := json.Marshal(page)
 	if err != nil {
 		publicError(w, err)
 		return

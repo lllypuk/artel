@@ -248,6 +248,21 @@ func TestReviewBusinessKeyAuthorityAndLateHistory(t *testing.T) {
 	}
 }
 
+func requireCurrentReviewPage(t *testing.T, page CurrentTaskReviewsPage, resultID, reviewID string, more bool) {
+	t.Helper()
+	if page.ResultID != resultID || len(page.Reviews) != 1 || page.HasMore != more ||
+		page.Reviews[0].ID != reviewID || page.NextAfter != reviewID || !page.Reviews[0].EvidenceConsistent {
+		t.Fatalf("unexpected current review page: %+v", page)
+	}
+}
+
+func requireCurrentResultCandidate(t *testing.T, current CurrentTaskResult, resultID string) {
+	t.Helper()
+	if current.Result == nil || current.Result.ID != resultID || current.Reviews == nil || len(current.Reviews) != 0 {
+		t.Fatalf("bounded current candidate view: %+v", current)
+	}
+}
+
 func TestCurrentTaskResultSeparatesDecisionEvidenceFromHistory(t *testing.T) {
 	s := openTest(t)
 	_, task := seed(t, s)
@@ -261,16 +276,27 @@ func TestCurrentTaskResultSeparatesDecisionEvidenceFromHistory(t *testing.T) {
 	currentOne := mustAttachReview(t, s, task.ID, second.ID, resultMutation("/current-one"), reviewInput(second, "current-one"))
 	currentTwo := mustAttachReview(t, s, task.ID, second.ID, resultMutation("/current-two"), reviewInput(second, "current-two"))
 	current, err := s.CurrentTaskResult(t.Context(), task.ID)
-	if err != nil || current.Result == nil || current.Result.ID != second.ID || len(current.Reviews) != 2 {
-		t.Fatalf("current decision view: %+v %v", current, err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if current.Reviews[0].ID != currentOne.ID || current.Reviews[1].ID != currentTwo.ID {
-		t.Fatalf("current reviews are incomplete or out of insertion order: %+v", current.Reviews)
+	requireCurrentResultCandidate(t, current, second.ID)
+	firstPage, err := s.CurrentTaskReviews(t.Context(), task.ID, "", 1)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, review := range current.Reviews {
+	requireCurrentReviewPage(t, firstPage, second.ID, currentOne.ID, true)
+	secondPage, err := s.CurrentTaskReviews(t.Context(), task.ID, firstPage.NextAfter, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireCurrentReviewPage(t, secondPage, second.ID, currentTwo.ID, false)
+	for _, review := range append(firstPage.Reviews, secondPage.Reviews...) {
 		if review.ResultID != second.ID || review.ID == oldReview.ID {
-			t.Fatalf("superseded review entered current view: %+v", review)
+			t.Fatalf("superseded review entered current pages: %+v", review)
 		}
+	}
+	if _, err := s.CurrentTaskReviews(t.Context(), task.ID, oldReview.ID, 1); !resultCode(err, "invalid_request") {
+		t.Fatalf("superseded review cursor accepted: %v", err)
 	}
 	history, err := s.TaskResultHistory(t.Context(), task.ID, 0, 1)
 	if err != nil || len(history.Entries) != 1 || !history.HasMore || history.Entries[0].Result.ID != first.ID {
@@ -413,12 +439,51 @@ func TestLegacyReviewReceiptReplaysBeforeNewCompleteness(t *testing.T) {
 	if err != nil || replayed.Status != 201 || !bytes.Equal(replayed.Body, response.Body) {
 		t.Fatalf("legacy exact receipt did not replay: %+v %v", replayed, err)
 	}
+	page, err := s.CurrentTaskReviews(t.Context(), task.ID, "", 20)
+	if err != nil || len(page.Reviews) != 1 || page.Reviews[0].EvidenceConsistent {
+		t.Fatalf("legacy complete review was not flagged inconsistent: %+v %v", page, err)
+	}
+	var stored string
+	if err := s.db.QueryRowContext(t.Context(), "SELECT record FROM task_reviews WHERE id=?", legacyReview.ID).Scan(&stored); err != nil || stored != string(encoded) {
+		t.Fatalf("read projection mutated legacy record: %v", err)
+	}
 	changed := legacy
 	changed.ReportRef = "/reports/changed-legacy"
 	_, err = s.AttachReview(t.Context(), task.ID, result.ID, mutation, changed)
 	requireResultCode(t, err, "conflict")
 	_, err = s.AttachReview(t.Context(), task.ID, result.ID, resultMutation("/fresh-legacy-shape"), legacy)
 	requireResultCode(t, err, "invalid_request")
+}
+
+func TestLegacyOptionalDegradedReceiptReplayRequiresExactHashAndKey(t *testing.T) {
+	s := openTest(t)
+	_, task := seed(t, s)
+	result := mustSubmitResult(t, s, task.ID, resultMutation("/legacy-normalized-submit"), submitInput(resultRepoA, resultHeadA, ""))
+	legacy := reviewInput(result, "legacy-normalized")
+	current := legacy
+	current.Sources = []ReviewSource{
+		{Name: "optional", Executor: "pi", Responded: false, Degraded: true},
+		legacy.Sources[0],
+	}
+	if hash, ok := legacyNormalizedReviewHash(current); !ok || hash != observerHash(legacy) {
+		t.Fatal("old normalized payload was not reconstructed exactly")
+	}
+	mutation := resultMutation("/legacy-normalized-review")
+	original, err := s.AttachReview(t.Context(), task.ID, result.ID, mutation, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := mustEvents(t, s)
+	replayed, err := s.AttachReview(t.Context(), task.ID, result.ID, mutation, current)
+	if err != nil || replayed.Status != 201 || !bytes.Equal(replayed.Body, original.Body) || !reflect.DeepEqual(events, mustEvents(t, s)) {
+		t.Fatalf("old receipt did not recover through new normalization: %+v %v", replayed, err)
+	}
+	_, err = s.AttachReview(t.Context(), task.ID, result.ID, resultMutation("/fresh-new-normalization"), current)
+	requireResultCode(t, err, "conflict")
+	changed := current
+	changed.ReportRef = "/reports/not-the-original"
+	_, err = s.AttachReview(t.Context(), task.ID, result.ID, mutation, changed)
+	requireResultCode(t, err, "conflict")
 }
 
 func TestArchivedProjectAllowsReceiptReplayButRejectsFreshResultWrites(t *testing.T) {

@@ -53,7 +53,10 @@ func (c resultOwnerClient) request(method, path, key string, body, result any) e
 	// #nosec G704 -- Numeric loopback endpoint validated before constructing client; no proxy or redirects.
 	response, err := c.client.Do(req)
 	if err != nil {
-		return errors.New("local API unavailable; retry with the same request-id")
+		if key != "" {
+			return fmt.Errorf("local API unavailable; outcome unknown; retry with --request-id %s", key)
+		}
+		return errors.New("local API unavailable")
 	}
 	defer func() { _ = response.Body.Close() }()
 	data, err = io.ReadAll(io.LimitReader(response.Body, 4*1024*1024+1))

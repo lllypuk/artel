@@ -286,6 +286,56 @@ func TestImportRejectsNullMissingAndDuplicateItemIDs(t *testing.T) {
 	}
 }
 
+func TestImportRequiresAttributionForCountedItems(t *testing.T) {
+	for _, kind := range []string{"findings", "pre_existing", "open_questions"} {
+		for _, state := range []string{"missing", "null", "empty"} {
+			t.Run(kind+" "+state, func(t *testing.T) {
+				manifestDoc, findingsDoc := syntheticPair()
+				findingsDoc.Findings = []reviewItem{}
+				findingsDoc.PreExisting = []reviewItem{}
+				findingsDoc.OpenQuestions = []reviewItem{}
+				item := reviewItem{ID: "fictional-unattributed", Sources: nil}
+				if state == "empty" {
+					item.Sources = []string{}
+				}
+				switch kind {
+				case "findings":
+					findingsDoc.Findings = []reviewItem{item}
+				case "pre_existing":
+					findingsDoc.PreExisting = []reviewItem{item}
+				case "open_questions":
+					findingsDoc.OpenQuestions = []reviewItem{item}
+				}
+				directory := writeSyntheticPair(t, manifestDoc, findingsDoc)
+				if state == "missing" {
+					path := filepath.Join(directory, "findings.json")
+					data, err := os.ReadFile(path) // #nosec G304 -- Test-owned synthetic artifact.
+					if err != nil {
+						t.Fatal(err)
+					}
+					var document map[string]any
+					if err := json.Unmarshal(data, &document); err != nil {
+						t.Fatal(err)
+					}
+					delete(document[kind].([]any)[0].(map[string]any), "sources")
+					data, _ = json.Marshal(document)
+					if err := os.WriteFile(path, data, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := Import(testBinding(t), directory, []store.ReviewRequirement{{Name: "reviewer", Executor: "pi"}}); err == nil {
+					t.Fatal("unattributed counted item imported")
+				}
+			})
+		}
+	}
+	manifestDoc, findingsDoc := syntheticPair()
+	findingsDoc.Immaterial = []reviewItem{{ID: "fictional-immaterial", Sources: nil}}
+	if _, err := importSynthetic(t, manifestDoc, findingsDoc, []store.ReviewRequirement{{Name: "reviewer", Executor: "pi"}}); err != nil {
+		t.Fatalf("uncounted immaterial item without attribution rejected: %v", err)
+	}
+}
+
 func TestImportRejectsBrokenOrInconsistentPair(t *testing.T) {
 	tests := []struct {
 		name   string

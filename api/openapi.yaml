@@ -314,15 +314,32 @@ paths:
     get:
       operationId: currentTaskResult
       description: >-
-        Current candidate and all reviews attached to that candidate in one consistent
-        owner read. This decision view does not depend on paginated submission history.
-        A null result with an empty reviews array confirms that no result is current.
+        Bounded current-candidate read, independent of review and submission history.
+        The compatibility reviews array is always empty; read current/reviews pages until
+        has_more is false before making a decision. Null result confirms no current result.
       responses:
         '200':
-          description: Current candidate and its complete review set
+          description: Current candidate without unbounded review evidence
           content:
             application/json:
               schema: {$ref: '#/components/schemas/CurrentTaskResult'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tasks/{task_id}/results/current/reviews:
+    parameters: [{$ref: '#/components/parameters/TaskID'}]
+    get:
+      operationId: currentTaskReviews
+      description: >-
+        Bounded insertion-order reviews for the candidate current in this read transaction.
+        result_id must match the loaded candidate; next_after is the UUID cursor for the next page.
+      parameters:
+        - {name: after, in: query, allowEmptyValue: true, schema: {$ref: '#/components/schemas/ReviewCursor'}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 50, default: 20}}
+      responses:
+        '200':
+          description: One bounded current-candidate review page
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CurrentTaskReviewsPage'}
         default: {$ref: '#/components/responses/Error'}
   /v1/tasks/{task_id}/results/{result_id}/reviews:
     parameters:
@@ -504,6 +521,11 @@ components:
       maxLength: 36
       pattern: '^$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
       description: Canonical current result UUID, or empty to assert that no result exists. Omission is legacy only when no result exists.
+    ReviewCursor:
+      type: string
+      maxLength: 36
+      pattern: '^$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      description: Current-candidate review UUID, or empty for the first page.
     FullSHA: {type: string, pattern: '^[0-9a-f]{40}$'}
     ReviewRequirement:
       type: object
@@ -592,18 +614,33 @@ components:
         pre_existing: {type: integer, minimum: 0}
         open_questions: {type: integer, minimum: 0}
         created_at: {type: string, format: date-time}
+        evidence_consistent: {type: boolean, description: 'Read-only consistency projection; false for legacy complete evidence with no required sources. Never rewrites a receipt, so an original legacy receipt body may omit it.'}
     CurrentTaskResult:
       type: object
       additionalProperties: false
       required: [result, reviews]
       properties:
         result:
-          nullable: true
-          allOf: [{$ref: '#/components/schemas/TaskResult'}]
+          oneOf:
+            - {$ref: '#/components/schemas/TaskResult'}
+            - type: object
+              nullable: true
+              enum: [null]
+              description: Null when no candidate is current; never an empty object.
         reviews:
           type: array
-          description: Every review whose result_id is the returned current result; empty when result is null.
+          maxItems: 0
+          description: Compatibility field, always empty; use the bounded current/reviews endpoint.
           items: {$ref: '#/components/schemas/TaskReview'}
+    CurrentTaskReviewsPage:
+      type: object
+      additionalProperties: false
+      required: [result_id, reviews, next_after, has_more]
+      properties:
+        result_id: {$ref: '#/components/schemas/ExpectedResultID'}
+        reviews: {type: array, maxItems: 50, items: {$ref: '#/components/schemas/TaskReview'}}
+        next_after: {$ref: '#/components/schemas/ExpectedResultID'}
+        has_more: {type: boolean}
     TaskResultHistoryEntry:
       type: object
       additionalProperties: false

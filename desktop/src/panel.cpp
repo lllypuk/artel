@@ -104,14 +104,33 @@ Panel::Panel(ApiClient *client, QObject *parent)
             emit changed();
           });
   connect(client, &ApiClient::currentResultReceived, this,
-          [this](const QVariantMap &result, const QVariantList &reviews) {
+          [this](const QVariantMap &result) {
             if (m_task.isEmpty())
               return;
             m_currentResultData = result;
             m_currentResult = result.value("id").toString();
-            m_currentResultData.insert("reviews", reviews);
-            m_resultsLoaded = true;
+            m_currentResultData.insert("reviews", QVariantList{});
+            m_currentReviewsCursor.clear();
+            m_currentResultLoaded = true;
+            // Confirmed absence needs no review read. A present candidate is
+            // visible now, but decisions wait for every bounded review page.
+            m_resultsLoaded = result.isEmpty();
             emit changed();
+          });
+  connect(client, &ApiClient::currentReviewsReceived, this,
+          [this](const QString &result, const QVariantList &reviews,
+                 const QString &after, const QString &cursor, bool more) {
+            if (m_task.isEmpty() || result != m_currentResult ||
+                after != m_currentReviewsCursor)
+              return;
+            auto all = m_currentResultData.value("reviews").toList();
+            all += reviews;
+            m_currentResultData.insert("reviews", all);
+            m_currentReviewsCursor = cursor;
+            m_resultsLoaded = !more;
+            emit changed();
+            if (more)
+              m_client->loadCurrentReviews(m_task, result, cursor);
           });
   connect(client, &ApiClient::resultsReceived, this,
           [this](const QString &, const QVariantList &entries, qint64 after,
@@ -420,6 +439,8 @@ void Panel::resetResults(bool preserveCurrent) {
   m_client->cancelResults();
   m_resultEntries.clear();
   m_currentResultData.clear();
+  m_currentReviewsCursor.clear();
+  m_currentResultLoaded = false;
   m_resultsCursor = 0;
   m_resultsMore = false;
   m_resultsLoaded = false;
@@ -433,13 +454,13 @@ void Panel::loadResults() {
   }
 }
 QString Panel::resultsError() const {
-  if (m_task.isEmpty())
-    return {};
-  const auto currentError = m_client->currentResultError();
-  return currentError.isEmpty() ? m_client->resultsError() : currentError;
+  return m_task.isEmpty() ? QString{} : m_client->currentResultError();
+}
+QString Panel::resultHistoryError() const {
+  return m_task.isEmpty() ? QString{} : m_client->resultsError();
 }
 QVariant Panel::currentResult() const {
-  return m_resultsLoaded ? QVariant(m_currentResultData) : QVariantMap{};
+  return m_currentResultLoaded ? QVariant(m_currentResultData) : QVariantMap{};
 }
 QVariant Panel::resultHistory() const {
   QVariantList rows;
@@ -949,6 +970,6 @@ void Panel::moreHistory() {
     m_client->loadHistory(m_project, m_task, m_historyCursor);
 }
 void Panel::moreResults() {
-  if (!m_task.isEmpty() && m_resultsMore && !resultsLoading())
+  if (!m_task.isEmpty() && m_resultsMore && !resultHistoryLoading())
     m_client->loadResults(m_task, m_resultsCursor);
 }

@@ -232,15 +232,24 @@ ATTACH_JSON=$("$ARTELCTL" reviews attach --task-id "$TASK_ID" --result-id "$RESU
   --endpoint "$ARTEL_ENDPOINT" --token-file "$ARTEL_TOKEN")
 ```
 
-Repeat the **same command with the same request ID** after an uncertain response.
-An identical already-attached repo/task/run returns the original review without
-another event. The card distinguishes loading, read failure and a confirmed
-empty current result, and shows full SHAs, run ID, provenance, report reference,
+Repeat the **same command with the same request ID** after an uncertain response;
+the diagnostic prints a generated ID when the response is lost. Exact receipt
+replay requires the same normalized payload hash. As a narrow upgrade exception,
+the daemon also reconstructs the old payload that omitted manifest-only optional
+degraded sources, and returns the original receipt only when that reconstruction
+matches its stored hash; fresh requests retain the new normalization. An
+identical already-attached repo/task/run with a fresh request ID returns the
+original review without another event only while the project is not archived.
+Exact receipt replay with the original request ID remains available after
+archival. The card distinguishes loading, read failure and a confirmed empty
+current result, and shows full SHAs, run ID, provenance, report reference,
 required-source completeness, findings/pre-existing/open-question counts and
-prior candidates. `GET /v1/tasks/{task_id}/results/current` supplies the current
-candidate and all of its reviews independently of the paginated history, so a
-later history-page failure does not block an owner decision. Incomplete/degraded
-evidence and zero findings are not owner acceptance.
+prior candidates. `GET /v1/tasks/{task_id}/results/current` supplies the bounded
+current candidate independently of history; the UI then drains bounded
+`GET /v1/tasks/{task_id}/results/current/reviews` pages before enabling a
+decision. A history-page failure is shown only in history and does not block an
+owner decision. Incomplete/degraded evidence and zero findings are not owner
+acceptance.
 
 After a new commit, submit its full SHA with `--expected-result-id "$RESULT_ID"`,
 a new binding path/run and a new request ID. Capture the returned new result ID

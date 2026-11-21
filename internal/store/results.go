@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	TaskResultSubmitted = "task.result.submit"
-	TaskReviewAttached  = "task.review.attach"
-	MaxRequiredSources  = 32
-	resultHistoryMax    = 100
+	TaskResultSubmitted  = "task.result.submit"
+	TaskReviewAttached   = "task.review.attach"
+	MaxRequiredSources   = 32
+	resultHistoryMax     = 100
+	currentReviewPageMax = 50
 )
 
 // TaskResult is an immutable owner assertion about one exact Git candidate.
@@ -39,8 +40,9 @@ type ReviewRequirement struct {
 	Executor string `json:"executor"`
 }
 
-// ReviewSource is normalized evidence about an actually reported source. A
-// responded source may have zero findings; that is distinct from a missing one.
+// ReviewSource is normalized evidence of a response, a degraded report, or a
+// known non-response. A responded source may have zero findings; that is
+// distinct from a missing one.
 type ReviewSource struct {
 	Name          string `json:"name"`
 	Executor      string `json:"executor"`
@@ -72,6 +74,10 @@ type TaskReview struct {
 	PreExisting       int                 `json:"pre_existing"`
 	OpenQuestions     int                 `json:"open_questions"`
 	CreatedAt         string              `json:"created_at"`
+	// EvidenceConsistent is derived on reads and marks legacy complete reviews
+	// whose required-source evidence predates current validation. It never
+	// rewrites the immutable receipt.
+	EvidenceConsistent bool `json:"evidence_consistent"`
 }
 
 type SubmitResultInput struct {
@@ -115,12 +121,22 @@ type TaskResultHistoryPage struct {
 	HasMore         bool                     `json:"has_more"`
 }
 
-// CurrentTaskResult is the decision read model. It contains the current
-// candidate and every review attached to that candidate, independently of the
-// bounded historical event stream.
+// CurrentTaskResult keeps the candidate readable independently of its bounded
+// review pages. Reviews remains an empty compatibility field; callers use
+// CurrentTaskReviews to obtain the complete evidence before making a decision.
 type CurrentTaskResult struct {
 	Result  *TaskResult  `json:"result"`
 	Reviews []TaskReview `json:"reviews"`
+}
+
+// CurrentTaskReviewsPage is a bounded insertion-order page for the candidate
+// that was current when this read transaction started. ResultID lets the UI
+// reject pages from different candidates.
+type CurrentTaskReviewsPage struct {
+	ResultID  string       `json:"result_id"`
+	Reviews   []TaskReview `json:"reviews"`
+	NextAfter string       `json:"next_after"`
+	HasMore   bool         `json:"has_more"`
 }
 
 func validResultText(value string, max int, required bool) bool {
@@ -272,12 +288,34 @@ func validateAttachReview(taskID, resultID, key string, in AttachReviewInput) er
 	return validateReviewCompleteness(in)
 }
 
-func resultReplay(ctx context.Context, tx *sql.Tx, m Mutation) (Result, bool, error) {
+// legacyNormalizedReviewHash reconstructs only the old omission of optional,
+// non-responding degraded roster rows. The stored receipt hash remains the
+// authority: a matching reconstruction can replay that exact request, while a
+// fresh request or any other changed payload is still rejected.
+func legacyNormalizedReviewHash(in AttachReviewInput) (string, bool) {
+	legacy := in
+	legacy.Sources = make([]ReviewSource, 0, len(in.Sources))
+	omitted := false
+	for _, source := range in.Sources {
+		if !source.Required && !source.Responded && source.Degraded &&
+			source.Findings == 0 && source.PreExisting == 0 && source.OpenQuestions == 0 {
+			omitted = true
+			continue
+		}
+		legacy.Sources = append(legacy.Sources, source)
+	}
+	if !omitted {
+		return "", false
+	}
+	return observerHash(legacy), true
+}
+
+func resultReplay(ctx context.Context, tx *sql.Tx, m Mutation, legacyHash string) (Result, bool, error) {
 	var method, path, hash string
 	var result Result
 	err := tx.QueryRowContext(ctx, "SELECT method,path,payload_hash,status,body FROM mutation_receipts WHERE key=?", m.Key).Scan(&method, &path, &hash, &result.Status, &result.Body)
 	if err == nil {
-		if method != m.Method || path != m.Path || hash != m.Hash {
+		if method != m.Method || path != m.Path || hash != m.Hash && (legacyHash == "" || hash != legacyHash) {
 			return Result{}, true, domain.Conflict("idempotency key reused for a different request")
 		}
 		return result, true, nil
@@ -332,7 +370,7 @@ func (s *Store) SubmitResult(ctx context.Context, taskID string, m Mutation, in 
 		return Result{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if replay, matched, err := resultReplay(ctx, tx, m); err != nil || matched {
+	if replay, matched, err := resultReplay(ctx, tx, m, ""); err != nil || matched {
 		if err != nil {
 			return Result{}, err
 		}
@@ -415,12 +453,13 @@ func (s *Store) AttachReview(ctx context.Context, taskID, resultID string, m Mut
 		return Result{}, err
 	}
 	m.Hash = observerHash(in)
+	legacyHash, _ := legacyNormalizedReviewHash(in)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Result{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if replay, matched, err := resultReplay(ctx, tx, m); err != nil || matched {
+	if replay, matched, err := resultReplay(ctx, tx, m, legacyHash); err != nil || matched {
 		if err != nil {
 			return Result{}, err
 		}
@@ -505,6 +544,7 @@ func insertTaskReview(ctx context.Context, tx *sql.Tx, taskID, projectID string,
 		Complete: in.Complete, RequiredSources: in.RequiredSources, Sources: in.Sources,
 		IncompleteReasons: in.IncompleteReasons, Findings: in.Findings,
 		PreExisting: in.PreExisting, OpenQuestions: in.OpenQuestions, CreatedAt: now,
+		EvidenceConsistent: true,
 	}
 	encoded, err := json.Marshal(review)
 	if err != nil {
@@ -521,6 +561,10 @@ func insertTaskReview(ctx context.Context, tx *sql.Tx, taskID, projectID string,
 	return resultResponse(201, review)
 }
 
+func reviewEvidenceConsistent(review TaskReview) bool {
+	return !review.Complete || len(review.RequiredSources) != 0
+}
+
 func loadTaskReview(ctx context.Context, tx *sql.Tx, id string) (TaskReview, error) {
 	var review TaskReview
 	var data string
@@ -528,12 +572,15 @@ func loadTaskReview(ctx context.Context, tx *sql.Tx, id string) (TaskReview, err
 	if err != nil {
 		return review, err
 	}
-	return review, json.Unmarshal([]byte(data), &review)
+	if err := json.Unmarshal([]byte(data), &review); err != nil {
+		return review, err
+	}
+	review.EvidenceConsistent = reviewEvidenceConsistent(review)
+	return review, nil
 }
 
-// CurrentTaskResult reads one consistent decision view without walking the
-// submission/review event history. Reviews for superseded candidates stay in
-// TaskResultHistory and are never promoted into this view.
+// CurrentTaskResult reads the current candidate without walking review or
+// submission history. Its bounded size does not grow with immutable reviews.
 func (s *Store) CurrentTaskResult(ctx context.Context, taskID string) (CurrentTaskResult, error) {
 	current := CurrentTaskResult{Reviews: []TaskReview{}}
 	if !observerUUID(taskID) {
@@ -567,26 +614,90 @@ func (s *Store) CurrentTaskResult(ctx context.Context, taskID string) (CurrentTa
 		return current, errors.New("current task result identity mismatch")
 	}
 	current.Result = &result
-	rows, err := tx.QueryContext(ctx, "SELECT record FROM task_reviews WHERE task_id=? AND result_id=? ORDER BY rowid", taskID, resultID)
+	return current, tx.Commit()
+}
+
+func currentReviewCursorRow(ctx context.Context, tx *sql.Tx, taskID, resultID, after string) (int64, error) {
+	if after == "" {
+		return 0, nil
+	}
+	var row int64
+	if err := tx.QueryRowContext(ctx, "SELECT rowid FROM task_reviews WHERE id=? AND task_id=? AND result_id=?", after, taskID, resultID).Scan(&row); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, domain.Invalid("review cursor is not in the current candidate")
+		}
+		return 0, err
+	}
+	return row, nil
+}
+
+func currentReviewIDs(ctx context.Context, tx *sql.Tx, taskID, resultID string, afterRow int64, limit int) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM task_reviews
+		WHERE task_id=? AND result_id=? AND rowid>? ORDER BY rowid LIMIT ?`, taskID, resultID, afterRow, limit+1)
 	if err != nil {
-		return CurrentTaskResult{Reviews: []TaskReview{}}, err
+		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
+	ids := []string{}
 	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
-			return CurrentTaskResult{Reviews: []TaskReview{}}, err
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
 		}
-		var review TaskReview
-		if err := json.Unmarshal([]byte(data), &review); err != nil {
-			return CurrentTaskResult{Reviews: []TaskReview{}}, err
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// CurrentTaskReviews returns a bounded page for exactly the candidate captured
+// in this read transaction. A UUID cursor cannot cross into another candidate.
+func (s *Store) CurrentTaskReviews(ctx context.Context, taskID, after string, limit int) (CurrentTaskReviewsPage, error) {
+	page := CurrentTaskReviewsPage{Reviews: []TaskReview{}, NextAfter: after}
+	if !observerUUID(taskID) || after != "" && !observerUUID(after) || limit < 1 || limit > currentReviewPageMax {
+		return page, domain.Invalid("invalid current review query")
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return page, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var exists int
+	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM tasks WHERE id=?", taskID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return page, &domain.Error{Code: "not_found", Message: "task not found"}
 		}
-		current.Reviews = append(current.Reviews, review)
+		return page, err
 	}
-	if err := rows.Err(); err != nil {
-		return CurrentTaskResult{Reviews: []TaskReview{}}, err
+	if err := tx.QueryRowContext(ctx, "SELECT result_id FROM current_task_results WHERE task_id=?", taskID).Scan(&page.ResultID); errors.Is(err, sql.ErrNoRows) {
+		if after != "" {
+			return CurrentTaskReviewsPage{Reviews: []TaskReview{}}, domain.Invalid("review cursor has no current candidate")
+		}
+		page.NextAfter = ""
+		return page, tx.Commit()
+	} else if err != nil {
+		return page, err
 	}
-	return current, tx.Commit()
+	afterRow, err := currentReviewCursorRow(ctx, tx, taskID, page.ResultID, after)
+	if err != nil {
+		return page, err
+	}
+	ids, err := currentReviewIDs(ctx, tx, taskID, page.ResultID, afterRow, limit)
+	if err != nil {
+		return page, err
+	}
+	page.HasMore = len(ids) > limit
+	if page.HasMore {
+		ids = ids[:limit]
+	}
+	for _, id := range ids {
+		review, err := loadTaskReview(ctx, tx, id)
+		if err != nil {
+			return page, err
+		}
+		page.Reviews = append(page.Reviews, review)
+		page.NextAfter = id
+	}
+	return page, tx.Commit()
 }
 
 type taskResultHistoryID struct {

@@ -18,8 +18,10 @@ class Panel : public QObject {
   Q_PROPERTY(QVariant currentResult READ currentResult NOTIFY changed)
   Q_PROPERTY(QVariant resultHistory READ resultHistory NOTIFY changed)
   Q_PROPERTY(QString resultsError READ resultsError NOTIFY changed)
+  Q_PROPERTY(QString resultHistoryError READ resultHistoryError NOTIFY changed)
   Q_PROPERTY(bool resultsLoaded READ resultsLoaded NOTIFY changed)
   Q_PROPERTY(bool resultsLoading READ resultsLoading NOTIFY changed)
+  Q_PROPERTY(bool resultHistoryLoading READ resultHistoryLoading NOTIFY changed)
   Q_PROPERTY(bool resultsMore READ resultsMore NOTIFY changed)
   Q_PROPERTY(bool queueStartEligible READ queueStartEligible NOTIFY changed)
   Q_PROPERTY(QVariant project READ project NOTIFY changed)
@@ -65,10 +67,10 @@ public:
   QVariant currentResult() const;
   QVariant resultHistory() const;
   QString resultsError() const;
+  QString resultHistoryError() const;
   bool resultsLoaded() const { return m_resultsLoaded; }
-  bool resultsLoading() const {
-    return m_client->currentResultLoading() || m_client->resultsLoading();
-  }
+  bool resultsLoading() const { return m_client->currentResultLoading(); }
+  bool resultHistoryLoading() const { return m_client->resultsLoading(); }
   bool resultsMore() const { return m_resultsMore; }
   bool queueStartEligible() const;
   QVariantMap project() const;
@@ -180,7 +182,8 @@ private:
   qint64 m_version = 0, m_historyCursor = 0, m_resultsCursor = 0;
   QVariantList m_history, m_resultEntries;
   QVariantMap m_currentResultData;
-  QString m_currentResult;
+  QString m_currentResult, m_currentReviewsCursor;
   bool m_archived = false, m_historyMore = false, m_adopted = false,
-       m_wasOnline = false, m_resultsLoaded = false, m_resultsMore = false;
+       m_wasOnline = false, m_currentResultLoaded = false,
+       m_resultsLoaded = false, m_resultsMore = false;
 };

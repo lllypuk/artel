@@ -529,6 +529,11 @@ func mapSources(manifestDoc manifest, findingsDoc findingsDocument) (map[string]
 
 func countItems(items []reviewItem, sources []store.ReviewSource, indexes map[string]int, selectCount func(*store.ReviewSource) *int) error {
 	for _, item := range items {
+		// Counted items without attribution would inflate only the overall total.
+		// Immaterial entries are not counted and keep their original shape.
+		if len(item.Sources) == 0 {
+			return errors.New("counted finding item has no source attribution")
+		}
 		seen := make(map[string]bool, len(item.Sources))
 		for _, name := range item.Sources {
 			index, ok := indexes[name]

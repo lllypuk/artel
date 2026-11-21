@@ -156,13 +156,25 @@ func TestTaskResultHTTPWorkflowAuthorityAndRegression(t *testing.T) {
 	request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results?unknown=1", "", "", 400)
 }
 
-func TestCurrentTaskResultHTTPReadModel(t *testing.T) {
-	f := newAPIResultFixture(t)
+func requireEmptyCurrentTaskResultHTTP(t *testing.T, f apiResultFixture) {
+	t.Helper()
 	currentBody := request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results/current", "", "", 200)
 	var current store.CurrentTaskResult
 	if err := json.Unmarshal(currentBody, &current); err != nil || current.Result != nil || current.Reviews == nil || len(current.Reviews) != 0 {
 		t.Fatalf("empty current read model: %+v %v", current, err)
 	}
+	emptyReviewsBody := request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results/current/reviews", "", "", 200)
+	var emptyReviews store.CurrentTaskReviewsPage
+	if err := json.Unmarshal(emptyReviewsBody, &emptyReviews); err != nil || emptyReviews.ResultID != "" || emptyReviews.Reviews == nil ||
+		len(emptyReviews.Reviews) != 0 || emptyReviews.NextAfter != "" || emptyReviews.HasMore {
+		t.Fatalf("empty current reviews: %+v %v", emptyReviews, err)
+	}
+}
+
+func TestCurrentTaskResultHTTPReadModel(t *testing.T) {
+	f := newAPIResultFixture(t)
+	requireEmptyCurrentTaskResultHTTP(t, f)
+	var current store.CurrentTaskResult
 	firstBody := apiSubmit(t, f, uuid.NewString(), apiSubmitInput(""), 201)
 	var first store.TaskResult
 	if err := json.Unmarshal(firstBody, &first); err != nil {
@@ -181,12 +193,21 @@ func TestCurrentTaskResultHTTPReadModel(t *testing.T) {
 	if err := json.Unmarshal(currentReviewBody, &currentReview); err != nil {
 		t.Fatal(err)
 	}
-	currentBody = request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results/current", "", "", 200)
+	currentBody := request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results/current", "", "", 200)
 	if err := json.Unmarshal(currentBody, &current); err != nil || current.Result == nil || current.Result.ID != second.ID ||
-		len(current.Reviews) != 1 || current.Reviews[0].ID != currentReview.ID {
-		t.Fatalf("current read model includes wrong history: %+v %v", current, err)
+		current.Reviews == nil || len(current.Reviews) != 0 {
+		t.Fatalf("current candidate read was not bounded: %+v %v", current, err)
+	}
+	reviewPageBody := request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results/current/reviews?after=&limit=1", "", "", 200)
+	var reviewPage store.CurrentTaskReviewsPage
+	if err := json.Unmarshal(reviewPageBody, &reviewPage); err != nil || reviewPage.ResultID != second.ID ||
+		len(reviewPage.Reviews) != 1 || reviewPage.Reviews[0].ID != currentReview.ID || reviewPage.HasMore ||
+		!reviewPage.Reviews[0].EvidenceConsistent {
+		t.Fatalf("current review page includes wrong history: %+v %v", reviewPage, err)
 	}
 	request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results/current?unknown=1", "", "", 400)
+	request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results/current/reviews?limit=51", "", "", 400)
+	request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results/current/reviews?unknown=1", "", "", 400)
 }
 
 func TestOwnerReviewCompletenessAndUTF8ByteLimits(t *testing.T) {
@@ -441,6 +462,7 @@ func TestTaskResultRoutesRequireOwner(t *testing.T) {
 		{"POST", "/v1/tasks/" + f.task.ID + "/results"},
 		{"GET", "/v1/tasks/" + f.task.ID + "/results"},
 		{"GET", "/v1/tasks/" + f.task.ID + "/results/current"},
+		{"GET", "/v1/tasks/" + f.task.ID + "/results/current/reviews"},
 		{"POST", "/v1/tasks/" + f.task.ID + "/results/" + uuid.NewString() + "/reviews"},
 	} {
 		r := httptest.NewRequest(route.method, route.path, nil)

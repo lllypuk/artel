@@ -357,10 +357,12 @@ public:
   bool holdNext = false;
   bool holdSnapshot = false;
   bool failNext = false;
+  bool failNextReviews = false;
   bool failNextHistory = false;
   int delayed = 0;
   int failures = 0;
   int resultReads = 0;
+  int currentReviewReads = 0;
   int resultHistoryReads = 0;
   QList<QJsonObject> transitions;
   QList<QPointer<QTcpSocket>> streams;
@@ -397,6 +399,8 @@ public:
           const QString path = QString::fromUtf8(first[1]);
           const bool currentResultRead =
               first[0] == "GET" && path.endsWith("/results/current");
+          const bool currentReviewRead =
+              first[0] == "GET" && path.contains("/results/current/reviews?");
           const bool historyResultRead =
               first[0] == "GET" && path.contains("/results?");
           if (first[0] == "POST" && path.endsWith("/transition"))
@@ -404,17 +408,22 @@ public:
                 QJsonDocument::fromJson(bytes->mid(split + 4)).object());
           if (currentResultRead)
             ++resultReads;
+          if (currentReviewRead)
+            ++currentReviewReads;
           if (historyResultRead)
             ++resultHistoryReads;
           const bool delay = currentResultRead && holdNext;
           const bool snapshot = first[0] == "GET" && path == "/v1/snapshot";
           const bool hold = delay || (snapshot && holdSnapshot);
           const bool fail = (currentResultRead && failNext) ||
+                            (currentReviewRead && failNextReviews) ||
                             (historyResultRead && failNextHistory);
           if (delay)
             holdNext = false;
           if (currentResultRead && fail)
             failNext = false;
+          if (currentReviewRead && fail)
+            failNextReviews = false;
           if (historyResultRead && fail)
             failNextHistory = false;
           auto *reply = upstream.send(
@@ -830,7 +839,7 @@ private slots:
              freshSnapshot.value("event_seq"));
     ui->panel.reload();
     QTRY_VERIFY_WITH_TIMEOUT(ui->panel.resultsLoaded(), 5000);
-    QVERIFY(item(ui->window, "noTaskResult")->isVisible());
+    QTRY_VERIFY(item(ui->window, "noTaskResult")->isVisible());
     QVERIFY(!item(ui->window, "resultError")->isVisible());
     QVERIFY(item(ui->window, "commissionField"));
     // An unchanged reconnect with loaded evidence is not a new read. Failed
@@ -1008,10 +1017,26 @@ private slots:
         oracle.get("/v1/snapshot").value("event_seq").toInteger();
     QTRY_COMPARE(ui->client.sequence(), settledSequence);
     QTRY_VERIFY(!ui->panel.resultsLoading());
-    // A failed read is an explicit error, never an empty-result claim.
-    proxy.failNext = true;
+    // The candidate stays readable when its separate evidence page fails, but
+    // a decision remains pending until all current reviews have loaded.
+    proxy.failNextReviews = true;
+    auto failures = proxy.failures;
     ui->panel.reload();
-    QTRY_COMPARE(proxy.failures, 2);
+    QTRY_COMPARE(proxy.failures, failures + 1);
+    QTRY_VERIFY(!ui->panel.resultsError().isEmpty());
+    QVERIFY(!ui->panel.resultsLoaded());
+    QCOMPARE(ui->panel.currentResult().toMap().value("id").toString(), firstID);
+    QVERIFY(!ui->panel.allowed("done"));
+    QVERIFY(item(ui->window, "resultError")->isVisible());
+    QVERIFY(!item(ui->window, "resultHistoryError")->isVisible());
+    ui->panel.reload();
+    QTRY_VERIFY(ui->panel.resultsLoaded() && ui->panel.allowed("done"));
+    // A failed candidate read is an explicit error, never an empty-result
+    // claim.
+    proxy.failNext = true;
+    failures = proxy.failures;
+    ui->panel.reload();
+    QTRY_COMPARE(proxy.failures, failures + 1);
     QTRY_VERIFY(!ui->panel.resultsError().isEmpty());
     QVERIFY(!ui->panel.resultsLoaded());
     QVERIFY(!item(ui->window, "noTaskResult")->isVisible());
@@ -1190,32 +1215,50 @@ private slots:
       // The current candidate's first and only review is deliberately the
       // first entry beyond the 50-entry history page; the current read model
       // must still expose it without draining that page.
+      QJsonObject currentReviewInput{
+          {"repo", latest.value("repo")},
+          {"base", base},
+          {"head", secondHead},
+          {"revmux_task", "fictional-review"},
+          {"run", "run-current-later-page"},
+          {"range_source", "operator"},
+          {"report_ref", "/tmp/fictional-later-page"},
+          {"complete", true},
+          {"required_sources",
+           QJsonArray{QJsonObject{{"name", "reviewer"}, {"executor", "pi"}}}},
+          {"sources", QJsonArray{QJsonObject{{"name", "reviewer"},
+                                             {"executor", "pi"},
+                                             {"required", true},
+                                             {"responded", true},
+                                             {"degraded", false},
+                                             {"findings", 0},
+                                             {"pre_existing", 0},
+                                             {"open_questions", 0}}}},
+          {"incomplete_reasons", QJsonArray{}},
+          {"findings", 0},
+          {"pre_existing", 0},
+          {"open_questions", 0}};
       const auto currentReview = oracle.request(
           "POST", "/v1/tasks/" + task + "/results/" + expected + "/reviews",
-          {{"repo", latest.value("repo")},
-           {"base", base},
-           {"head", secondHead},
-           {"revmux_task", "fictional-review"},
-           {"run", "run-current-later-page"},
-           {"range_source", "operator"},
-           {"report_ref", "/tmp/fictional-later-page"},
-           {"complete", true},
-           {"required_sources",
-            QJsonArray{QJsonObject{{"name", "reviewer"}, {"executor", "pi"}}}},
-           {"sources", QJsonArray{QJsonObject{{"name", "reviewer"},
-                                              {"executor", "pi"},
-                                              {"required", true},
-                                              {"responded", true},
-                                              {"degraded", false},
-                                              {"findings", 0},
-                                              {"pre_existing", 0},
-                                              {"open_questions", 0}}}},
-           {"incomplete_reasons", QJsonArray{}},
-           {"findings", 0},
-           {"pre_existing", 0},
-           {"open_questions", 0}});
+          currentReviewInput);
       const auto currentReviewID = currentReview.value("id").toString();
       QVERIFY(!currentReviewID.isEmpty());
+      // Twenty-one immutable reviews require two independent bounded reads;
+      // none of them can make the candidate response grow without limit.
+      for (int index = 0; index < 20; ++index) {
+        currentReviewInput.insert("run",
+                                  QString("run-current-extra-%1").arg(index));
+        currentReviewInput.insert(
+            "report_ref", QString("/tmp/fictional-extra-%1").arg(index));
+        QVERIFY(!oracle
+                     .request("POST",
+                              "/v1/tasks/" + task + "/results/" + expected +
+                                  "/reviews",
+                              currentReviewInput)
+                     .value("id")
+                     .toString()
+                     .isEmpty());
+      }
       proxy.holdNext = true;
       const auto readsBefore = proxy.resultReads;
       const auto historyReadsBefore = proxy.resultHistoryReads;
@@ -1231,6 +1274,10 @@ private slots:
       QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
                    expectedCurrent);
       QTRY_VERIFY(ui->panel.resultsLoaded() && ui->panel.allowed("cancelled"));
+      QCOMPARE(
+          ui->panel.currentResult().toMap().value("reviews").toList().size(),
+          21);
+      QVERIFY(proxy.currentReviewReads >= 2);
       QVERIFY(proxy.resultReads >= readsBefore + 1);
       QVERIFY(proxy.resultHistoryReads >= historyReadsBefore + 1);
       const auto settledHistoryReads = proxy.resultHistoryReads;
@@ -1248,12 +1295,18 @@ private slots:
       const auto historyFailures = proxy.failures;
       ui->panel.moreResults();
       QTRY_COMPARE(proxy.failures, historyFailures + 1);
-      QTRY_VERIFY(!ui->panel.resultsError().isEmpty());
+      QTRY_VERIFY(!ui->panel.resultHistoryError().isEmpty());
+      QVERIFY(ui->panel.resultsError().isEmpty());
+      QVERIFY(item(ui->window, "resultHistoryError")->isVisible());
+      QVERIFY(!item(ui->window, "resultError")->isVisible());
       QVERIFY(ui->panel.resultsLoaded());
       QCOMPARE(ui->panel.currentResult().toMap().value("id").toString(),
                expectedCurrent);
       QVERIFY(ui->panel.allowed("cancelled"));
-      QVERIFY(click(ui->window, "cancelTaskButton"));
+      QVERIFY(item(ui->window, "cancelTaskButton")->isEnabled());
+      // Twenty-one expanded cards put the button below the visible scroll
+      // area; exercise the enabled production action without a mouse warning.
+      QVERIFY(ui->panel.transition("cancelled"));
       QTRY_COMPARE(ui->panel.task().value("state").toString(),
                    QString("cancelled"));
     }

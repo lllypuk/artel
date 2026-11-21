@@ -97,8 +97,8 @@ Item {
         UI.StatusLabel {
             theme: manual.theme
             objectName: reviewDetails.namePrefix + "Outcome_" + reviewDetails.review.id
-            text: reviewDetails.review.complete ? qsTr("Required review sources complete") : qsTr("Required review sources incomplete")
-            severity: reviewDetails.review.complete ? "info" : "warning"
+            text: !reviewDetails.review.evidence_consistent ? qsTr("Review evidence inconsistent: required sources were not recorded") : reviewDetails.review.complete ? qsTr("Required review sources complete") : qsTr("Required review sources incomplete")
+            severity: !reviewDetails.review.evidence_consistent || !reviewDetails.review.complete ? "warning" : "info"
             Layout.fillWidth: true
         }
         Repeater {
@@ -949,11 +949,19 @@ Item {
                             color: theme.border
                         }
                         ColumnLayout {
-                            visible: manual.panel.resultHistory.length > 0
+                            visible: manual.panel.resultHistory.length > 0 || manual.panel.resultHistoryError !== ""
                             Layout.fillWidth: true
                             Caption {
                                 text: qsTr("Submission and review history")
                                 font.bold: true
+                            }
+                            UI.StatusLabel {
+                                theme: manual.theme
+                                objectName: "resultHistoryError"
+                                visible: manual.panel.resultHistoryError !== ""
+                                text: manual.panel.resultHistoryError
+                                severity: "critical"
+                                Layout.fillWidth: true
                             }
                             Repeater {
                                 model: manual.panel.resultHistory
@@ -997,7 +1005,7 @@ Item {
                                 objectName: "resultsMoreButton"
                                 text: qsTr("Load more submitted results")
                                 visible: manual.panel.resultsMore
-                                enabled: manual.panel.resultsMore && !manual.panel.resultsLoading
+                                enabled: manual.panel.resultsMore && !manual.panel.resultHistoryLoading
                                 onClicked: manual.panel.moreResults()
                             }
                         }
