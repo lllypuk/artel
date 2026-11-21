@@ -34,4 +34,11 @@
 - production-QML `reviewedTaskResult`, включая B-only и mixed B+A controls — PASS;
 - `make lint test build` с Go 1.26.3, golangci-lint 2.10.1 и `TMPDIR=/tmp` — **exit 0**; 17 Python tests, все Go tests, 118 ArtelTests и 42 ClientTests, 0 lint issues.
 
-Полные `make check` и `make package-check` выполняются отдельно на зафиксированном коммите и здесь не отмечаются заранее.
+## Финальные гейты на зафиксированном SHA
+
+Проверенный кодовый/документационный кандидат: `605559936e1083ce42e96b3c0afef4173f8f962a`.
+
+- `make check` — **exit 0**: lint, обычные и race-тесты, build, observer-check, production-QML/PTY/E2E, включая observer recovery и 8 тестов owner questions, прошли.
+- `make package-check` — **exit 0**: disposable Arch package, staged negative/cleanup, no-Pi/migration, standalone artifact, unit/privacy проверки прошли; ничего не установлено или активировано.
+
+Логи: `/tmp/artel-5a-75fb7ef/fix-6055599-check.log` и `fix-6055599-package-check.log`; exit codes сохранены рядом. Последующий коммит только фиксирует эти результаты и не меняет проверенный код.
