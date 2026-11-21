@@ -1269,6 +1269,11 @@ private slots:
                      .toString()
                      .isEmpty());
       }
+      // A late snapshot would cancel a held read and start an unheld one.
+      const auto finalReviewSequence =
+          oracle.get("/v1/snapshot").value("event_seq").toInteger();
+      QTRY_COMPARE(ui->client.sequence(), finalReviewSequence);
+      QTRY_VERIFY(!ui->panel.resultsLoading());
       proxy.holdNext = true;
       const auto readsBefore = proxy.resultReads;
       const auto historyReadsBefore = proxy.resultHistoryReads;

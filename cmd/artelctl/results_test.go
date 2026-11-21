@@ -703,6 +703,79 @@ func TestSubmitServerErrorAfterCommitReportsEffectiveRequestID(t *testing.T) {
 	assertCLIBinding(t, bindingPath, result, base, head)
 }
 
+func TestReviewsAttachUnattributedItemOnlyReplaysExactLegacyReceipt(t *testing.T) {
+	h := newCLIResultHarness(t)
+	repo, _, base, head := h.repository(t)
+	binding := filepath.Join(h.root, "bindings", "legacy.json")
+	resultJSON, _ := h.call(t, 0, h.submitArgs(repo, base, head, binding, "01-review", "", uuid.NewString())...)
+	var result store.TaskResult
+	if err := json.Unmarshal([]byte(resultJSON), &result); err != nil {
+		t.Fatal(err)
+	}
+	report := writeCLIReport(t, h.root, "fictional-task", "01-review")
+	path := filepath.Join(report, "findings.json")
+	findings := loadCLIArtifact(t, path)
+	findings["findings"] = append(findings["findings"].([]any), map[string]any{"id": "unattributed", "sources": []string{}})
+	writeCLIArtifact(t, path, findings)
+	key := uuid.NewString()
+	args := h.attachArgs(result.ID, binding, report, key)
+	out, diagnostic := h.call(t, 1, args...)
+	if out != "" || !strings.Contains(diagnostic, "no source attribution") {
+		t.Fatalf("missing receipt did not reject fresh attachment: %q %q", out, diagnostic)
+	}
+	original := store.AttachReviewInput{
+		Repo: result.Repo, Base: base, Head: head, RevmuxTask: "fictional-task", Run: "01-review", RangeSource: "operator", ReportRef: report,
+		RequiredSources: []store.ReviewRequirement{{Name: "reviewer", Executor: "pi"}},
+		Sources: []store.ReviewSource{
+			{Name: "optional", Executor: "codex", Responded: true, OpenQuestions: 1},
+			{Name: "reviewer", Executor: "pi", Required: true, Responded: true, Findings: 1},
+		},
+		Complete: true, IncompleteReasons: []string{}, Findings: 2, OpenQuestions: 1,
+	}
+	legacy := h.seedLegacyCLIReceipt(t, result.ID, key, original)
+	out, _ = h.call(t, 0, args...)
+	if out != string(legacy)+"\n" {
+		t.Fatalf("CLI changed legacy receipt bytes: %q", out)
+	}
+	findings["findings"] = append(findings["findings"].([]any), map[string]any{"id": "changed", "sources": []string{}})
+	writeCLIArtifact(t, path, findings)
+	out, diagnostic = h.call(t, 1, args...)
+	if out != "" || !strings.Contains(diagnostic, "API operation rejected") {
+		t.Fatalf("changed legacy payload did not surface receipt conflict: %q %q", out, diagnostic)
+	}
+}
+
+func TestResultsAndReviewsReportGeneratedRetryKeyOnStdoutFailure(t *testing.T) {
+	h := newCLIResultHarness(t)
+	repo, _, base, head := h.repository(t)
+	binding := filepath.Join(h.root, "bindings", "first.json")
+	retry := func(args []string) string {
+		t.Helper()
+		var diagnostic bytes.Buffer
+		// Pipe closed on the reader side: the receipt committed, but its JSON cannot be written.
+		reader, writer := io.Pipe()
+		if err := reader.Close(); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = writer.Close() }()
+		code := run(append(slices.Clone(args), "--endpoint", h.endpoint, "--token-file", h.tokenPath), writer, &diagnostic)
+		text := strings.TrimSpace(diagnostic.String())
+		message, key, ok := strings.Cut(text, "retry with --request-id ")
+		if code != 1 || !ok || !validCanonicalID(key) || !strings.Contains(message, "operation committed with ID ") {
+			t.Fatalf("exit=%d, missing committed operation or retry ID: %q", code, text)
+		}
+		out, _ := h.call(t, 0, append(args, "--request-id", key)...)
+		var record struct{ ID string }
+		if err := json.Unmarshal([]byte(out), &record); err != nil || !validCanonicalID(record.ID) || !strings.Contains(message, record.ID) {
+			t.Fatalf("retry did not recover the committed operation: %q (%v)", out, err)
+		}
+		return record.ID
+	}
+	resultID := retry(h.submitArgs(repo, base, head, binding, "01-review", "", ""))
+	report := writeCLIReport(t, h.root, "fictional-task", "01-review")
+	retry(h.attachArgs(resultID, binding, report, ""))
+}
+
 func TestReviewsAttachRecoversLegacyReceiptFromActualFindingsRoster(t *testing.T) {
 	for _, name := range []string{"zero-count degraded reporter", "128 plus one manifest-only"} {
 		t.Run(name, func(t *testing.T) {

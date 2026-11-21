@@ -102,6 +102,14 @@ func resultFail(errOut io.Writer, command string, code int, message string) int 
 	return code
 }
 
+func printCommittedResult(out, errOut io.Writer, command, text, id, key string) int {
+	if printOutput(out, text) != 0 {
+		return resultFail(errOut, command, 1, "operation committed with ID "+id+
+			"; could not write stdout; retry with --request-id "+key)
+	}
+	return 0
+}
+
 func validResultArgumentText(value string, max int, required bool) bool {
 	return utf8.ValidString(value) && len(value) <= max && !strings.ContainsRune(value, 0) && (!required || strings.TrimSpace(value) != "")
 }
@@ -336,7 +344,7 @@ func results(args []string, out, errOut io.Writer) int {
 		}
 	}
 	encoded, _ := json.Marshal(result)
-	return printOutput(out, string(encoded))
+	return printCommittedResult(out, errOut, "results", string(encoded), result.ID, options.key)
 }
 
 func parseRequiredSource(value string) (store.ReviewRequirement, error) {
@@ -446,29 +454,37 @@ func attachReview(client resultOwnerClient, options attachOptions, binding revmu
 	if err != nil {
 		return review, nil, err
 	}
-	input := inputs.Current
-	if result.TaskID != options.taskID || input.Repo != result.Repo || input.Base != result.Base || input.Head != result.Head {
+	if result.TaskID != options.taskID || binding.Repo != result.Repo || binding.Base != result.Base || binding.Head != result.Head {
 		return review, nil, errors.New("binding does not match selected submission")
 	}
 	path := "/v1/tasks/" + options.taskID + "/results/" + options.resultID + "/reviews"
-	// Probe before posting current evidence: its expanded roster could match
-	// an old receipt even though the actual findings roster has changed.
-	if inputs.LegacyReplay != nil {
-		err = client.request(http.MethodPost, path+"/legacy-receipt", options.key, inputs.LegacyReplay, &review, &raw)
+	// Probe before checking fresh eligibility or posting the expanded roster.
+	input := inputs.LegacyReplay
+	if input != nil {
+		err = client.request(http.MethodPost, path+"/legacy-receipt", options.key, input, &review, &raw)
 	}
-	if inputs.LegacyReplay == nil || err == resultHTTPStatus(http.StatusNotFound) {
+	if input == nil || err == resultHTTPStatus(http.StatusNotFound) {
+		fresh, freshErr := inputs.FreshAttachment()
+		if freshErr != nil {
+			return review, nil, freshErr
+		}
+		input = &fresh
 		err = client.request(http.MethodPost, path, options.key, input, &review, &raw)
 	}
 	if err != nil {
 		return review, nil, err
 	}
-	if !validCanonicalID(review.ID) || review.TaskID != options.taskID || review.ResultID != options.resultID ||
-		review.Repo != result.Repo || review.Base != result.Base || review.Head != result.Head ||
-		review.RevmuxTask != binding.RevmuxTask || review.Run != binding.Run || review.RangeSource != "operator" ||
-		review.ReportRef != input.ReportRef {
+	if !validAttachedReview(review, result, binding, input.ReportRef) {
 		return review, nil, fmt.Errorf("review response identity mismatch; outcome unknown; retry with --request-id %s", options.key)
 	}
 	return review, raw, nil
+}
+
+func validAttachedReview(review store.TaskReview, result store.TaskResult, binding revmuximport.Binding, reportRef string) bool {
+	return validCanonicalID(review.ID) && review.TaskID == result.TaskID && review.ResultID == result.ID &&
+		review.Repo == result.Repo && review.Base == result.Base && review.Head == result.Head &&
+		review.RevmuxTask == binding.RevmuxTask && review.Run == binding.Run && review.RangeSource == "operator" &&
+		review.ReportRef == reportRef
 }
 
 func reviews(args []string, out, errOut io.Writer) int {
@@ -485,9 +501,9 @@ func reviews(args []string, out, errOut io.Writer) int {
 		return resultFail(errOut, "reviews", 1, err.Error())
 	}
 	defer closeResultClient(client)
-	_, raw, err := attachReview(client, options, binding, input)
+	review, raw, err := attachReview(client, options, binding, input)
 	if err != nil {
 		return resultFail(errOut, "reviews", 1, err.Error())
 	}
-	return printOutput(out, string(raw))
+	return printCommittedResult(out, errOut, "reviews", string(raw), review.ID, options.key)
 }

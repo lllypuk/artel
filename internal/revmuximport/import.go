@@ -529,11 +529,6 @@ func mapSources(manifestDoc manifest, findingsDoc findingsDocument) (map[string]
 
 func countItems(items []reviewItem, sources []store.ReviewSource, indexes map[string]int, selectCount func(*store.ReviewSource) *int) error {
 	for _, item := range items {
-		// Counted items without attribution would inflate only the overall total.
-		// Immaterial entries are not counted and keep their original shape.
-		if len(item.Sources) == 0 {
-			return errors.New("counted finding item has no source attribution")
-		}
 		seen := make(map[string]bool, len(item.Sources))
 		for _, name := range item.Sources {
 			index, ok := indexes[name]
@@ -638,14 +633,30 @@ func completenessReasons(required []store.ReviewRequirement, sources []store.Rev
 	return reasons
 }
 
+func (doc findingsDocument) hasUnattributedItems() bool {
+	for _, items := range [][]reviewItem{doc.Findings, doc.PreExisting, doc.OpenQuestions} {
+		if slices.ContainsFunc(items, func(item reviewItem) bool { return len(item.Sources) == 0 }) {
+			return true
+		}
+	}
+	return false
+}
+
 type ReviewInputs struct {
-	Current      store.AttachReviewInput
+	current      *store.AttachReviewInput
 	LegacyReplay *store.AttachReviewInput
 }
 
-// Import validates one completed pair. If manifest-only rows expanded the
-// roster, LegacyReplay contains the original-format input from the same read
-// of findings.json. It is only suitable for exact receipt lookup.
+func (in ReviewInputs) FreshAttachment() (store.AttachReviewInput, error) {
+	if in.current == nil {
+		return store.AttachReviewInput{}, errors.New("counted finding item has no source attribution")
+	}
+	return *in.current, nil
+}
+
+// Import validates one completed pair. When legacy normalization differs or
+// fresh attribution is invalid, LegacyReplay holds the old payload from the
+// same read of findings.json. It is only suitable for exact receipt lookup.
 func Import(binding Binding, reportDir string, required []store.ReviewRequirement) (ReviewInputs, error) {
 	var inputs ReviewInputs
 	if err := binding.Validate(); err != nil {
@@ -664,18 +675,23 @@ func Import(binding Binding, reportDir string, required []store.ReviewRequiremen
 		return inputs, err
 	}
 	reasons := completenessReasons(requirements, sources)
-	inputs.Current = store.AttachReviewInput{
+	current := store.AttachReviewInput{
 		Repo: binding.Repo, Base: binding.Base, Head: binding.Head,
 		RevmuxTask: binding.RevmuxTask, Run: binding.Run, RangeSource: "operator", ReportRef: reportDir,
 		Complete: len(reasons) == 0, RequiredSources: requirements, Sources: sources,
 		IncompleteReasons: reasons, Findings: len(findingsDoc.Findings),
 		PreExisting: len(findingsDoc.PreExisting), OpenQuestions: len(findingsDoc.OpenQuestions),
 	}
-	if reported != nil {
-		legacy := inputs.Current
-		legacy.Sources = reported
-		legacy.IncompleteReasons = completenessReasons(requirements, reported)
-		legacy.Complete = len(legacy.IncompleteReasons) == 0
+	if !findingsDoc.hasUnattributedItems() {
+		inputs.current = &current
+	}
+	if inputs.current == nil || reported != nil {
+		legacy := current
+		if reported != nil {
+			legacy.Sources = reported
+			legacy.IncompleteReasons = completenessReasons(requirements, reported)
+			legacy.Complete = len(legacy.IncompleteReasons) == 0
+		}
 		inputs.LegacyReplay = &legacy
 	}
 	return inputs, nil

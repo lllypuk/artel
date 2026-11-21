@@ -68,7 +68,10 @@ func writeSyntheticPair(t *testing.T, manifestDoc manifest, findingsDoc findings
 func importSynthetic(t *testing.T, manifestDoc manifest, findingsDoc findingsDocument, required []store.ReviewRequirement) (store.AttachReviewInput, error) {
 	t.Helper()
 	inputs, err := Import(testBinding(t), writeSyntheticPair(t, manifestDoc, findingsDoc), required)
-	return inputs.Current, err
+	if err != nil {
+		return store.AttachReviewInput{}, err
+	}
+	return inputs.FreshAttachment()
 }
 
 func writeDefaultPair(t *testing.T) string {
@@ -324,8 +327,12 @@ func TestImportRequiresAttributionForCountedItems(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if _, err := Import(testBinding(t), directory, []store.ReviewRequirement{{Name: "reviewer", Executor: "pi"}}); err == nil {
-					t.Fatal("unattributed counted item imported")
+				inputs, err := Import(testBinding(t), directory, []store.ReviewRequirement{{Name: "reviewer", Executor: "pi"}})
+				if err != nil || inputs.LegacyReplay == nil {
+					t.Fatalf("old payload unavailable for receipt lookup: %v", err)
+				}
+				if _, err := inputs.FreshAttachment(); err == nil {
+					t.Fatal("unattributed counted item eligible for a fresh attachment")
 				}
 			})
 		}

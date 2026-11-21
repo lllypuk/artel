@@ -350,10 +350,11 @@ paths:
       description: >-
         Attaches normalized review evidence without changing task state, queue or assignment.
         Stored result task/repo/base/head are authoritative; matching request values are only assertions.
-        The business uniqueness key is repo/revmux_task/run. An identical existing attachment returns
-        the original review without another event; transfer or changed normalized payload is 409.
-        Exact request receipt replay remains available after project archival, but a fresh request
-        for the same business key is rejected with 409 by the archive guard. Fresh writes limit every
+        The business uniqueness key is repo/revmux_task/run. With a fresh request ID, the payload must
+        pass current validation before an identical existing attachment can return the original review
+        without another event. Transfer or changed normalized payload is 409. Exact request receipt
+        replay remains available after project archival, but a valid fresh request for the same business
+        key is rejected with 409 by the archive guard. Fresh writes limit every
         counter to 9007199254740991. Each source count is at most its aggregate, and the sum for each
         counter must cover its aggregate (sources can cite the same item). Exact legacy receipt replay
         accepts the original counters and returns the original status and bytes, not a GET projection.
@@ -370,7 +371,7 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/TaskReviewReceipt'}
         '200':
-          description: Existing identical review for the same repo/task/run business key or exact original 200 receipt replay
+          description: Valid identical review for the same repo/task/run business key or exact original 200 receipt replay
           content:
             application/json:
               schema: {$ref: '#/components/schemas/TaskReviewReceipt'}
@@ -384,7 +385,7 @@ paths:
       description: >-
         Looks up an exact legacy attachment receipt, using the original payload derived from
         the actual findings roster. It never creates an attachment or a receipt. Returns 404
-        for a missing key or a current-format receipt (try the normal attach), and 409 if a
+        for a missing key or a current-format receipt (use the normal attach only for valid fresh evidence), and 409 if a
         legacy receipt does not match the exact payload or the key belongs to a different
         operation or path. The stored status and body are returned unchanged.
       parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]

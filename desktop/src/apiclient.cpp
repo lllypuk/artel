@@ -583,6 +583,7 @@ void ApiClient::loadHistory(const QString &project, const QString &task,
 void ApiClient::loadCurrentResult(const QString &task) {
   cancel(m_currentResultReply);
   cancel(m_currentReviewsReply);
+  m_currentReviewIDs.clear();
   m_currentResultRecord = {};
   m_currentResultTask.clear();
   m_currentResultError.clear();
@@ -693,19 +694,26 @@ void ApiClient::loadCurrentReviews(const QString &task, const QString &result,
             (!more.toBool() || reviews.size() == 20) &&
             (reviews.isEmpty()
                  ? next == after
-                 : next == reviews.last().toObject().value("id").toString());
+                 : next != after &&
+                       next ==
+                           reviews.last().toObject().value("id").toString());
         // The current read supplied this candidate; do not trust a page
         // that advanced to another result between requests.
         valid = valid && m_currentResultRecord.value("id").toString() == result;
+        QSet<QString> pageIDs;
         for (const auto &value : reviews) {
           const auto review = value.toObject();
+          const auto id = review.value("id").toString();
           valid = valid && value.isObject() && validReview(review, task) &&
+                  !m_currentReviewIDs.contains(id) && !pageIDs.contains(id) &&
                   review.value("result_id").toString() == result &&
                   review.value("repo") == m_currentResultRecord.value("repo") &&
                   review.value("base") == m_currentResultRecord.value("base") &&
                   review.value("head") == m_currentResultRecord.value("head");
+          pageIDs.insert(id);
         }
         if (valid) {
+          m_currentReviewIDs.unite(pageIDs);
           m_currentResultError.clear();
           emit currentReviewsReceived(result, reviews.toVariantList(), after,
                                       next, more.toBool());
@@ -720,6 +728,7 @@ void ApiClient::loadCurrentReviews(const QString &task, const QString &result,
 void ApiClient::cancelResults() {
   cancel(m_currentResultReply);
   cancel(m_currentReviewsReply);
+  m_currentReviewIDs.clear();
   m_currentResultRecord = {};
   m_currentResultTask.clear();
   m_currentResultError.clear();

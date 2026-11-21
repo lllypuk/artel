@@ -234,19 +234,26 @@ ATTACH_JSON=$("$ARTELCTL" reviews attach --task-id "$TASK_ID" --result-id "$RESU
 
 Repeat the **same command with the same request ID** after an uncertain response;
 the diagnostic prints the effective ID when the outcome is unknown (including
-mutation 5xx responses). Exact receipt replay requires the same normalized
-payload hash. As a narrow upgrade exception, when manifest-only rows expand
-the roster, the CLI first POSTs to `…/reviews/legacy-receipt` with the old
-payload derived from the actual `findings.json` roster and its required-source
-reasons.
-This lookup only returns the exact original legacy receipt and never writes.
-Only if there is no legacy receipt for that key does the CLI submit the current
-normalization. A legacy hash conflict is not retried with the expanded roster.
+mutation 5xx responses) or writing a committed receipt to stdout returns an error.
+Exact receipt replay requires the same normalized payload hash. When the current
+roster includes manifest-only rows or a counted item has no source attribution,
+the CLI first POSTs to `…/reviews/legacy-receipt` with the old payload derived
+from the actual `findings.json` roster and counts. The lookup returns only the
+exact original legacy receipt and never writes. On a miss, the CLI submits the
+current normalization only if every counted item has source attribution. A
+legacy hash conflict is not retried as a fresh attachment.
+
+Artifact files must be regular files even during receipt recovery. If an old
+archive used symlinked `manifest.json` or `findings.json`, replace the links
+with regular copies of the unchanged target files in the same report directory
+before retrying. Changing the canonical report directory changes the payload.
+
 Exact replays retain original bytes and counters, whereas fresh writes are
 limited to 128 source rows and safe-integer counters, and GET projections
 saturate out-of-range legacy counters and flag inconsistent evidence. An
 identical already-attached repo/task/run with a fresh request ID returns the
-original review without another event only while the project is not archived.
+original review without another event only if the payload passes current
+validation and the project is not archived.
 Exact receipt replay with the original request ID remains available after
 archival. The card distinguishes loading, read failure and a confirmed empty
 current result, and shows full SHAs, run ID, provenance, report reference,
@@ -362,11 +369,12 @@ There is no editing, TTL, broadcast, remote access, blocking wait in Pi or
 automatic task transition.
 
 Compatibility and SQLite rollback are deliberately one-way. Opening a v3
-database atomically migrates it through v4 to v5 and retains existing
+database atomically migrates it through v4 and v5 to v6 and retains existing
 commissions, attempts, receipts and identity while adding submitted results and
-reviews; a failed migration rolls back to v3. After a successful migration, old
-v3 and 4b/v4 binaries refuse the v5 database without changing its data or
-identity: in-place downgrade is unsupported.
+reviews. The v6 migration adds the current-candidate review index, including for
+existing v5 databases. A failed migration leaves the previous version intact.
+Older binaries refuse the v6 database without changing its data or identity:
+in-place downgrade is unsupported.
 Absent/false `allow_owner_questions` preserves the v3 enable/revoke wire and
 receipt hashes and ordinary stage-4a delivery. The base extension can continue
 ordinary commissions but cannot ask questions or receive answer text. Opted-in
@@ -493,9 +501,10 @@ See README for shortcuts, wire limits and audit pagination semantics.
 
 The Arch package contains three executables, desktop entry/icon, user service,
 license/attribution and inert `/usr/share/artel/pi-observer/{index.mjs,package.json,README.md}`,
-not credentials or data. Node and separately installed Pi 1.5.2 are optional runtime
-requirements only for explicitly loading the observer. No Pi auto-discovery files
-are installed. Package-check runs staged daemon/CLI/desktop with an empty PATH
+not credentials or data. Node >=22.23.2 and a separately installed,
+capability-compatible Pi are optional runtime requirements only for explicitly
+loading the observer. No Pi auto-discovery files are installed. Package-check
+runs staged daemon/CLI/desktop with an empty PATH
 (no Pi/Node), upgrades an isolated v1 database, and loads the extracted bundle
 through the pinned public SDK with a deterministic local provider. Package-check snapshots current
 source rather than stale HEAD and independently inspects payload/modes/ownership.

@@ -5,7 +5,10 @@ Observation supplies no tools, commands, messages, prompts, model selection or
 global installation. The separate, explicitly enabled delivery modes below are
 the only exceptions. Without ARTEL_OBSERVER_CONFIG the extension is inert.
 Invalid/pending/private-file
-permissions or unsupported host capabilities disable observation, not Pi.
+permissions or missing observation capabilities disable observation, not Pi.
+Missing delivery or owner-question capabilities leave observation running and
+disable the affected delivery setup; the status area shows the capability warning
+separately from the observer connection status.
 
 The delivered package contains index.mjs, package.json and this README under
 /usr/share/artel/pi-observer/, outside Pi auto-discovery. Explicitly load with

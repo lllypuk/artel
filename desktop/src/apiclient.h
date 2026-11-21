@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
+#include <QSet>
 #include <QTimer>
 #include <QUrl>
 
@@ -191,6 +192,7 @@ private:
   int m_timeout = 5000;
   QVariantMap m_draft;
   QJsonObject m_currentResultRecord;
+  QSet<QString> m_currentReviewIDs;
   QByteArray m_method, m_body, m_key;
   QString m_path, m_mutationInstance;
   QDateTime m_updated;

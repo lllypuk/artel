@@ -35,7 +35,10 @@ var questionsSchema string
 //go:embed results_schema.sql
 var resultsSchema string
 
-const schemaVersion = 5
+//go:embed current_reviews_schema.sql
+var currentReviewsSchema string
+
+const schemaVersion = 6
 
 type Store struct {
 	db              *sql.DB
@@ -231,11 +234,15 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 func migrateResultsSchema(ctx context.Context, tx *sql.Tx, version int) error {
-	if version >= 5 {
-		return nil
+	if version < 5 {
+		if _, err := tx.ExecContext(ctx, resultsSchema); err != nil {
+			return fmt.Errorf("upgrade task results schema: %w", err)
+		}
 	}
-	if _, err := tx.ExecContext(ctx, resultsSchema); err != nil {
-		return fmt.Errorf("upgrade task results schema: %w", err)
+	if version < 6 {
+		if _, err := tx.ExecContext(ctx, currentReviewsSchema); err != nil {
+			return fmt.Errorf("upgrade current reviews schema: %w", err)
+		}
 	}
 	return nil
 }

@@ -734,7 +734,7 @@ func assertV3StatePreserved(t *testing.T, s *Store, before populatedV3State) {
 		t.Fatalf("v3 revoke lost-ACK replay: %+v %v", revokeReplay, err)
 	}
 	var version int
-	if err := s.db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil || version != 5 {
+	if err := s.db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil || version != 6 {
 		t.Fatalf("version=%d err=%v", version, err)
 	}
 }
