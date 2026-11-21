@@ -355,11 +355,18 @@ class ResultDelayProxy : public QTcpServer {
 public:
   Oracle &upstream;
   bool holdNext = false;
+  bool holdSnapshot = false;
   bool failNext = false;
   int delayed = 0;
   int failures = 0;
   int resultReads = 0;
   QList<QJsonObject> transitions;
+  QList<QPointer<QTcpSocket>> streams;
+  void dropStreams() {
+    for (const auto &stream : streams)
+      if (stream)
+        stream->abort();
+  }
   explicit ResultDelayProxy(Oracle &oracle) : upstream(oracle) {
     connect(this, &QTcpServer::newConnection, this, [this] {
       while (hasPendingConnections()) {
@@ -394,6 +401,8 @@ public:
           if (resultRead)
             ++resultReads;
           const bool delay = resultRead && holdNext;
+          const bool snapshot = first[0] == "GET" && path == "/v1/snapshot";
+          const bool hold = delay || (snapshot && holdSnapshot);
           const bool fail = resultRead && failNext;
           if (delay)
             holdNext = false;
@@ -404,16 +413,20 @@ public:
               QJsonDocument::fromJson(bytes->mid(split + 4)).object(), key);
           const bool stream = path.startsWith("/v1/stream?");
           if (stream) {
+            streams.append(socket);
             socket->write(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
                 "Connection: close\r\n\r\n");
-            connect(reply, &QNetworkReply::readyRead, socket,
-                    [reply, socket] { socket->write(reply->readAll()); });
+            connect(reply, &QNetworkReply::readyRead, socket, [reply, socket] {
+              const auto data = reply->readAll();
+              if (socket->state() == QAbstractSocket::ConnectedState)
+                socket->write(data);
+            });
           }
           connect(socket, &QTcpSocket::disconnected, reply,
                   [reply] { reply->abort(); });
           connect(reply, &QNetworkReply::finished, socket,
-                  [this, reply, socket, delay, fail, stream] {
+                  [this, reply, socket, delay, hold, fail, stream] {
                     const int status =
                         fail ? 503
                              : reply
@@ -434,10 +447,12 @@ public:
                         QByteArray::number(body.size()) + "\r\n\r\n" + body;
                     if (fail)
                       ++failures;
-                    if (delay) {
-                      ++delayed;
+                    if (hold) {
+                      if (delay)
+                        ++delayed;
                       held.append({socket, response});
-                    } else if (!stream) {
+                    } else if (!stream && socket->state() ==
+                                              QAbstractSocket::ConnectedState) {
                       socket->write(response);
                       socket->disconnectFromHost();
                     }
@@ -449,7 +464,8 @@ public:
   }
   void release() {
     for (auto &pending : held) {
-      if (pending.first) {
+      if (pending.first &&
+          pending.first->state() == QAbstractSocket::ConnectedState) {
         pending.first->write(pending.second);
         pending.first->disconnectFromHost();
       }
@@ -799,6 +815,7 @@ private slots:
     QVERIFY(!ui->panel.allowed("in_progress"));
     QVERIFY(!item(ui->window, "noTaskResult")->isVisible());
     QVERIFY(item(ui->window, "resultError")->isVisible());
+    QVERIFY(!item(ui->window, "queueStartNotice")->isVisible());
     QVERIFY(!click(ui->window, "startButton"));
     QCOMPARE(oracle.get("/v1/snapshot").value("event_seq"),
              freshSnapshot.value("event_seq"));
@@ -965,6 +982,13 @@ private slots:
                 .contains("Open questions: 1"));
     QVERIFY(!item(ui->window, "noTaskResult")->isVisible());
 
+    // Wait for the already-produced SSE events before fault injection. The
+    // proxy counter advances before Qt consumes the failed reply; a late SSE
+    // snapshot would otherwise legitimately cancel it and start a fresh read.
+    const auto settledSequence =
+        oracle.get("/v1/snapshot").value("event_seq").toInteger();
+    QTRY_COMPARE(ui->client.sequence(), settledSequence);
+    QTRY_VERIFY(!ui->panel.resultsLoading());
     // A failed read is an explicit error, never an empty-result claim.
     proxy.failNext = true;
     ui->panel.reload();
@@ -976,6 +1000,22 @@ private slots:
     ui->panel.reload();
     QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
                  firstID);
+
+    // Reloading while SSE is offline clears result evidence without issuing a
+    // read. An unchanged instance/sequence reconnect must still recover it,
+    // even though this selected task's delivery timer is already active.
+    proxy.holdSnapshot = true;
+    proxy.dropStreams();
+    QTRY_VERIFY(!ui->panel.writable());
+    const auto reconnectReads = proxy.resultReads;
+    ui->panel.reload();
+    QVERIFY(!ui->panel.resultsLoaded());
+    proxy.release();
+    proxy.holdSnapshot = false;
+    QTRY_VERIFY_WITH_TIMEOUT(ui->panel.resultsLoaded(), 5000);
+    QCOMPARE(proxy.resultReads, reconnectReads + 1);
+    QCOMPARE(ui->panel.currentResult().toMap().value("id").toString(), firstID);
+    QVERIFY(item(ui->window, "currentReviewRun_" + reviewID));
 
     if (!sharedDelivery) {
       // Switching selection cancels a held read; its late response cannot leak.
@@ -1068,6 +1108,10 @@ private slots:
     // standalone slot also restarts its owned daemon and production QML.
     QVERIFY(item(ui->window, "resultHistory_" + firstID));
     QVERIFY(item(ui->window, "historyReviewRun_" + reviewID));
+    QCOMPARE(item(ui->window, "historyResultBase_" + firstID)
+                 ->property("text")
+                 .toString(),
+             QString("Base: %1").arg(base));
     QCOMPARE(item(ui->window, "historyResultHead_" + firstID)
                  ->property("text")
                  .toString(),
@@ -1092,6 +1136,10 @@ private slots:
       QCOMPARE(ui->panel.task().value("state").toString(), QString("backlog"));
       QVERIFY(item(ui->window, "resultHistory_" + firstID));
       QVERIFY(item(ui->window, "historyReviewRun_" + reviewID));
+      QCOMPARE(item(ui->window, "historyResultBase_" + firstID)
+                   ->property("text")
+                   .toString(),
+               QString("Base: %1").arg(base));
       QCOMPARE(item(ui->window, "historyResultHead_" + firstID)
                    ->property("text")
                    .toString(),
@@ -1121,6 +1169,34 @@ private slots:
       }
       expectedCurrent = expected;
       expectedFirstPage = 50;
+      // The current candidate's first and only review is deliberately beyond
+      // the 50-entry first result page; it must not disappear from the card.
+      const auto currentReview = oracle.request(
+          "POST", "/v1/tasks/" + task + "/results/" + expected + "/reviews",
+          {{"repo", latest.value("repo")},
+           {"base", base},
+           {"head", secondHead},
+           {"revmux_task", "fictional-review"},
+           {"run", "run-current-later-page"},
+           {"range_source", "operator"},
+           {"report_ref", "/tmp/fictional-later-page"},
+           {"complete", true},
+           {"required_sources",
+            QJsonArray{QJsonObject{{"name", "reviewer"}, {"executor", "pi"}}}},
+           {"sources", QJsonArray{QJsonObject{{"name", "reviewer"},
+                                              {"executor", "pi"},
+                                              {"required", true},
+                                              {"responded", true},
+                                              {"degraded", false},
+                                              {"findings", 0},
+                                              {"pre_existing", 0},
+                                              {"open_questions", 0}}}},
+           {"incomplete_reasons", QJsonArray{}},
+           {"findings", 0},
+           {"pre_existing", 0},
+           {"open_questions", 0}});
+      const auto currentReviewID = currentReview.value("id").toString();
+      QVERIFY(!currentReviewID.isEmpty());
       proxy.holdNext = true;
       const auto readsBefore = proxy.resultReads;
       ui->panel.reload();
@@ -1140,6 +1216,7 @@ private slots:
                QString("Fictional paginated candidate 50"));
       QCOMPARE(item(ui->window, "resultHead")->property("text").toString(),
                QString("Head: %1").arg(secondHead));
+      QVERIFY(item(ui->window, "currentReviewRun_" + currentReviewID));
     }
     const auto wire =
         oracle.get("/v1/tasks/" + task + "/results?after=0&limit=50");

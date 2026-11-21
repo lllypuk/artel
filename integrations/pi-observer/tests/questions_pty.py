@@ -798,8 +798,8 @@ class OwnerQuestions(unittest.TestCase):
         out, err = child.communicate(timeout=10)
         self.assertEqual(child.returncode, 1)
         self.assertNotIn(b'listening', out)
-        # The real 4b/v4 base binary deliberately masks the store's
-        # unsupported-version error. Its v3 startup is the positive control below.
+        # The real base binary uses store schema v3 and deliberately masks the
+        # store's unsupported-version error. Its v3 startup is the positive control below.
         self.assertEqual(err.strip(), b'arteld: cannot initialize database')
         self.assertEqual(database_identity(), before)
 

@@ -493,18 +493,18 @@ components:
       additionalProperties: false
       required: [name, executor]
       properties:
-        name: {type: string, minLength: 1, maxLength: 200}
-        executor: {type: string, minLength: 1, maxLength: 120}
+        name: {type: string, minLength: 1, maxLength: 200, description: 'Non-empty valid UTF-8, additionally limited to 200 bytes; no NUL.'}
+        executor: {type: string, minLength: 1, maxLength: 120, description: 'Non-empty valid UTF-8, additionally limited to 120 bytes; no NUL.'}
     ReviewSource:
       type: object
       additionalProperties: false
       required: [name, executor, required, responded, degraded, findings, pre_existing, open_questions]
       properties:
-        name: {type: string, minLength: 1, maxLength: 200}
-        executor: {type: string, minLength: 1, maxLength: 120}
-        required: {type: boolean}
-        responded: {type: boolean, description: A responded source with zero findings is not missing.}
-        degraded: {type: boolean}
+        name: {type: string, minLength: 1, maxLength: 200, description: 'Non-empty valid UTF-8, additionally limited to 200 bytes; no NUL.'}
+        executor: {type: string, minLength: 1, maxLength: 120, description: 'Non-empty valid UTF-8, additionally limited to 120 bytes; no NUL.'}
+        required: {type: boolean, description: Derived from exact membership in required_sources.}
+        responded: {type: boolean, description: 'A responded source with zero findings is not missing. Exactly one of responded and degraded is true.'}
+        degraded: {type: boolean, description: 'Includes roster-only non-response evidence; a degraded reporter can still have counts.'}
         findings: {type: integer, minimum: 0}
         pre_existing: {type: integer, minimum: 0}
         open_questions: {type: integer, minimum: 0}
@@ -516,10 +516,10 @@ components:
         repo:
           type: string
           maxLength: 4096
-          description: Canonical absolute, symlink-resolved Git common-dir identity; not the project root or worktree path.
+          description: Canonical absolute, symlink-resolved Git common-dir identity; valid UTF-8, additionally limited to 4096 bytes, no NUL; not the project root or worktree path.
         base: {$ref: '#/components/schemas/FullSHA'}
         head: {$ref: '#/components/schemas/FullSHA'}
-        summary: {type: string, maxLength: 4096, description: Optional owner summary; no automatic verdict.}
+        summary: {type: string, maxLength: 4096, description: 'Optional owner summary; valid UTF-8, additionally limited to 4096 bytes, no NUL; no automatic verdict.'}
         expected_result_id: {$ref: '#/components/schemas/ExpectedResultID'}
     TaskResult:
       type: object
@@ -538,17 +538,17 @@ components:
       additionalProperties: false
       required: [repo, base, head, revmux_task, run, range_source, report_ref, complete, required_sources, sources, incomplete_reasons, findings, pre_existing, open_questions]
       properties:
-        repo: {type: string, maxLength: 4096}
+        repo: {type: string, maxLength: 4096, description: 'Valid UTF-8, additionally limited to 4096 bytes; no NUL.'}
         base: {$ref: '#/components/schemas/FullSHA'}
         head: {$ref: '#/components/schemas/FullSHA'}
-        revmux_task: {type: string, minLength: 1, maxLength: 200}
-        run: {type: string, minLength: 1, maxLength: 200}
+        revmux_task: {type: string, minLength: 1, maxLength: 200, description: 'Non-empty valid UTF-8, additionally limited to 200 bytes; no NUL.'}
+        run: {type: string, minLength: 1, maxLength: 200, description: 'Non-empty valid UTF-8, additionally limited to 200 bytes; no NUL.'}
         range_source: {type: string, enum: [operator], description: 'Owner assertion, never independent Git attestation.'}
-        report_ref: {type: string, minLength: 1, maxLength: 4096, description: Display-only local path or URI; never opened by the daemon.}
-        complete: {type: boolean, description: 'Completeness of required sources only, not acceptance or a clean review.'}
+        report_ref: {type: string, minLength: 1, maxLength: 4096, description: 'Display-only local path or URI; never opened by the daemon. Valid UTF-8, additionally limited to 4096 bytes; no NUL.'}
+        complete: {type: boolean, description: 'Completeness of required sources only, not acceptance or a clean review. Complete requires at least one required pair and a responding, non-degraded exact match for every pair.'}
         required_sources: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ReviewRequirement'}}
         sources: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/ReviewSource'}}
-        incomplete_reasons: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 500}}
+        incomplete_reasons: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 500, description: 'Non-empty valid UTF-8, additionally limited to 500 bytes; no NUL.'}}
         findings: {type: integer, minimum: 0}
         pre_existing: {type: integer, minimum: 0}
         open_questions: {type: integer, minimum: 0}
@@ -560,17 +560,17 @@ components:
         id: {$ref: '#/components/schemas/UUID'}
         task_id: {$ref: '#/components/schemas/UUID'}
         result_id: {$ref: '#/components/schemas/UUID'}
-        repo: {type: string, maxLength: 4096}
+        repo: {type: string, maxLength: 4096, description: 'Valid UTF-8, additionally limited to 4096 bytes; no NUL.'}
         base: {$ref: '#/components/schemas/FullSHA'}
         head: {$ref: '#/components/schemas/FullSHA'}
-        revmux_task: {type: string, minLength: 1, maxLength: 200}
-        run: {type: string, minLength: 1, maxLength: 200}
+        revmux_task: {type: string, minLength: 1, maxLength: 200, description: 'Non-empty valid UTF-8, additionally limited to 200 bytes; no NUL.'}
+        run: {type: string, minLength: 1, maxLength: 200, description: 'Non-empty valid UTF-8, additionally limited to 200 bytes; no NUL.'}
         range_source: {type: string, enum: [operator]}
-        report_ref: {type: string, minLength: 1, maxLength: 4096}
+        report_ref: {type: string, minLength: 1, maxLength: 4096, description: 'Valid UTF-8, additionally limited to 4096 bytes; no NUL.'}
         complete: {type: boolean}
         required_sources: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ReviewRequirement'}}
         sources: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/ReviewSource'}}
-        incomplete_reasons: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 500}}
+        incomplete_reasons: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 500, description: 'Non-empty valid UTF-8, additionally limited to 500 bytes; no NUL.'}}
         findings: {type: integer, minimum: 0}
         pre_existing: {type: integer, minimum: 0}
         open_questions: {type: integer, minimum: 0}

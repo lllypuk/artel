@@ -127,11 +127,31 @@ func closeResultClient(client resultOwnerClient) {
 	}
 }
 
+func isolatedGitEnvironment() []string {
+	blocked := map[string]bool{
+		"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_COMMON_DIR": true,
+		"GIT_OBJECT_DIRECTORY": true, "GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
+		"GIT_INDEX_FILE": true, "GIT_NAMESPACE": true, "GIT_CEILING_DIRECTORIES": true,
+		"GIT_DISCOVERY_ACROSS_FILESYSTEM": true, "GIT_CONFIG_PARAMETERS": true, "GIT_CONFIG_COUNT": true,
+	}
+	environment := make([]string, 0, len(os.Environ())+3)
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if blocked[name] || strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_") {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	// Disable both prompts and promisor-remote lazy fetching: candidate
+	// validation is strictly local and replacement refs must not change it.
+	return append(environment, "GIT_TERMINAL_PROMPT=0", "GIT_NO_LAZY_FETCH=1", "GIT_NO_REPLACE_OBJECTS=1")
+}
+
 func gitOutput(ctx context.Context, repo string, args ...string) (string, error) {
 	commandArgs := append([]string{"-C", repo}, args...)
 	// #nosec G204 G702 -- Fixed local Git executable and argument vector; no shell or report-provided command.
 	command := exec.CommandContext(ctx, "git", commandArgs...)
-	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	command.Env = isolatedGitEnvironment()
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return "", errors.New("local Git validation failed")
@@ -160,8 +180,9 @@ func validateGitCandidate(repo, base, head string) (string, error) {
 		return "", errors.New("canonical repository common-dir unavailable")
 	}
 	for _, sha := range []string{base, head} {
-		if _, err := gitOutput(ctx, absolute, "cat-file", "-e", sha+"^{commit}"); err != nil {
-			return "", errors.New("base and head must be commits in this repository")
+		objectType, err := gitOutput(ctx, absolute, "cat-file", "-t", sha)
+		if err != nil || objectType != "commit" {
+			return "", errors.New("base and head must be literal commits in this repository")
 		}
 	}
 	return commonDir, nil
@@ -226,6 +247,11 @@ func submitResult(client resultOwnerClient, options submitOptions, canonicalRepo
 	return result, nil
 }
 
+func submissionBinding(options submitOptions, canonicalRepo string) revmuximport.Binding {
+	return revmuximport.Binding{Version: 1, Repo: canonicalRepo, RevmuxTask: options.revmuxTask, Run: options.run,
+		Base: options.base, Head: options.head, RangeSource: "operator"}
+}
+
 func results(args []string, out, errOut io.Writer) int {
 	options, err := parseSubmitOptions(args)
 	if err != nil {
@@ -234,6 +260,11 @@ func results(args []string, out, errOut io.Writer) int {
 	canonicalRepo, err := validateGitCandidate(options.repo, options.base, options.head)
 	if err != nil {
 		return resultFail(errOut, "results", 2, err.Error())
+	}
+	if options.hasBinding {
+		if err := revmuximport.ValidateBindingDestination(options.bindingPath, submissionBinding(options, canonicalRepo)); err != nil {
+			return resultFail(errOut, "results", 1, err.Error())
+		}
 	}
 	client, err := newResultClient(options.endpoint, options.tokenPath)
 	if err != nil {
@@ -245,10 +276,9 @@ func results(args []string, out, errOut io.Writer) int {
 		return resultFail(errOut, "results", 1, err.Error())
 	}
 	if options.hasBinding {
-		binding := revmuximport.Binding{Version: 1, Repo: canonicalRepo, RevmuxTask: options.revmuxTask, Run: options.run,
-			Base: options.base, Head: options.head, RangeSource: "operator"}
-		if err := revmuximport.SaveBinding(options.bindingPath, binding); err != nil {
-			return resultFail(errOut, "results", 1, err.Error())
+		if err := revmuximport.SaveBinding(options.bindingPath, submissionBinding(options, canonicalRepo)); err != nil {
+			return resultFail(errOut, "results", 1, err.Error()+"; result committed with ID "+result.ID+
+				"; fix the binding destination and retry with the same request-id")
 		}
 	}
 	encoded, _ := json.Marshal(result)

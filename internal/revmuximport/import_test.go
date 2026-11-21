@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/lllypuk/artel/internal/store"
 )
@@ -195,6 +197,69 @@ func TestImportCompletenessUsesRequiredPairs(t *testing.T) {
 	}
 }
 
+func TestImportRetainsManifestOnlyOptionalDegradation(t *testing.T) {
+	manifestDoc, findingsDoc := syntheticPair()
+	manifestDoc.Degraded = json.RawMessage(`["optional"]`)
+	findingsDoc.Sources.Agents = findingsDoc.Sources.Agents[:1]
+	findingsDoc.Sources.Reported = 1
+	findingsDoc.OpenQuestions = []reviewItem{}
+	input, err := importSynthetic(t, manifestDoc, findingsDoc, []store.ReviewRequirement{{Name: "reviewer", Executor: "pi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !input.Complete || len(input.Sources) != 2 {
+		t.Fatalf("optional degradation changed required completeness or disappeared: %+v", input)
+	}
+	optional := input.Sources[0]
+	if optional.Name != "optional" || optional.Executor != "codex" || optional.Required || optional.Responded || !optional.Degraded ||
+		optional.Findings != 0 || optional.PreExisting != 0 || optional.OpenQuestions != 0 {
+		t.Fatalf("manifest-only optional source was not retained as non-response evidence: %+v", optional)
+	}
+}
+
+func TestImportRejectsNullMissingAndDuplicateItemIDs(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*findingsDocument)
+	}{
+		{name: "missing ID", mutate: func(doc *findingsDocument) { doc.Findings[0].ID = "" }},
+		{name: "blank ID", mutate: func(doc *findingsDocument) { doc.Findings[0].ID = " \t" }},
+		{name: "duplicate finding ID", mutate: func(doc *findingsDocument) {
+			doc.Findings = append(doc.Findings, doc.Findings[0])
+		}},
+		{name: "duplicate ID across item kinds", mutate: func(doc *findingsDocument) {
+			doc.OpenQuestions[0].ID = doc.Findings[0].ID
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manifestDoc, findingsDoc := syntheticPair()
+			test.mutate(&findingsDoc)
+			if _, err := importSynthetic(t, manifestDoc, findingsDoc, nil); err == nil {
+				t.Fatal("invalid or repeated item ID imported")
+			}
+		})
+	}
+	directory := writeDefaultPair(t)
+	path := filepath.Join(directory, "findings.json")
+	data, err := os.ReadFile(path) // #nosec G304 -- Test-owned synthetic artifact.
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["findings"] = []any{nil}
+	data, _ = json.Marshal(document)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Import(testBinding(t), directory, nil); err == nil {
+		t.Fatal("null finding imported as a zero-value row")
+	}
+}
+
 func TestImportRejectsBrokenOrInconsistentPair(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -271,6 +336,76 @@ func TestImportRejectsMalformedUnsupportedAndOversizedArtifacts(t *testing.T) {
 			t.Fatal("oversized artifact imported")
 		}
 	})
+}
+
+func TestArtifactsRejectDuplicateAndCaseAliasedKeys(t *testing.T) {
+	tests := []struct {
+		name, file, old, replacement string
+	}{
+		{name: "duplicate manifest identity", file: "manifest.json", old: `"run":"01-review"`, replacement: `"run":"other","run":"01-review"`},
+		{name: "case alias manifest identity", file: "manifest.json", old: `"task":"fictional-task"`, replacement: `"Task":"fictional-task"`},
+		{name: "duplicate nested identity", file: "findings.json", old: `"run":"01-review"`, replacement: `"run":"other","run":"01-review"`},
+		{name: "case alias nested identity", file: "findings.json", old: `"task":"fictional-task"`, replacement: `"Task":"fictional-task"`},
+		{name: "case alias source role", file: "findings.json", old: `"executor":"pi"`, replacement: `"Executor":"pi"`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			directory := writeDefaultPair(t)
+			path := filepath.Join(directory, test.file)
+			data, err := os.ReadFile(path) // #nosec G304 -- Test-owned synthetic artifact.
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed := strings.Replace(string(data), test.old, test.replacement, 1)
+			if changed == string(data) {
+				t.Fatal("fixture key not found")
+			}
+			if err := os.WriteFile(path, []byte(changed), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Import(testBinding(t), directory, nil); err == nil {
+				t.Fatal("duplicate or case-aliased artifact key imported")
+			}
+		})
+	}
+	binding := testBinding(t)
+	data, _ := json.Marshal(binding)
+	for _, changed := range []string{
+		strings.Replace(string(data), `"run":"01-review"`, `"run":"other","run":"01-review"`, 1),
+		strings.Replace(string(data), `"run":"01-review"`, `"Run":"01-review"`, 1),
+	} {
+		path := filepath.Join(t.TempDir(), "binding.json")
+		if err := os.WriteFile(path, []byte(changed), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadBinding(path); err == nil {
+			t.Fatal("duplicate or case-aliased binding key accepted")
+		}
+	}
+}
+
+func TestArtifactFIFORejectsWithoutBlocking(t *testing.T) {
+	directory := writeDefaultPair(t)
+	path := filepath.Join(directory, "manifest.json")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() {
+		_, err := Import(testBinding(t), directory, nil)
+		finished <- err
+	}()
+	select {
+	case err := <-finished:
+		if err == nil {
+			t.Fatal("FIFO artifact imported")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("FIFO artifact blocked import")
+	}
 }
 
 func TestBindingReplayAndValidation(t *testing.T) {

@@ -57,11 +57,14 @@ Panel::Panel(ApiClient *client, QObject *parent)
         loadCommissionPage();
         loadResults();
       }
-    } else if (reconnected && !m_task.isEmpty() && !m_deliveryPoll.isActive()) {
-      // A selection made offline still needs its first reads on a same-snapshot
-      // reconnect.
-      moreHistory();
-      loadCommissionPage();
+    } else if (reconnected && !m_task.isEmpty()) {
+      // A selection or reload made offline still needs its first reads on a
+      // same-snapshot reconnect. Result recovery is independent of the
+      // delivery timer, which may already be active for this selected task.
+      if (!m_deliveryPoll.isActive()) {
+        moreHistory();
+        loadCommissionPage();
+      }
       loadResults();
     }
     if (!m_client->dirty() && !m_client->pending() && !m_client->uncertain())
@@ -115,16 +118,20 @@ Panel::Panel(ApiClient *client, QObject *parent)
             m_currentResult = current;
             m_resultsCursor = cursor;
             m_resultsMore = more;
-            m_resultsLoaded = m_currentResult.isEmpty();
+            bool foundCurrent = m_currentResult.isEmpty();
             for (const auto &value : m_resultEntries) {
               const auto entry = value.toMap();
               if (entry.value("kind").toString() == "result" &&
                   entry.value("result").toMap().value("id").toString() ==
                       m_currentResult) {
-                m_resultsLoaded = true;
+                foundCurrent = true;
                 break;
               }
             }
+            // Finding the result row is not enough: its only review can be on
+            // a later page. Finish the bounded pages before exposing a partial
+            // current-review view as fully loaded.
+            m_resultsLoaded = foundCurrent && !m_resultsMore;
             emit changed();
             if (!m_resultsLoaded && m_resultsMore)
               moreResults();
@@ -920,20 +927,25 @@ bool Panel::queue(const QString &id, int direction) {
       {{"expected_queue_version", project().value("queue_version")},
        {"task_ids", ids}});
 }
+bool Panel::queueStartEligible() const {
+  const auto state = task().value("state").toString();
+  const auto ids = queueIds();
+  if (state != "queued" || ids.isEmpty() || ids.first().toString() != m_task)
+    return false;
+  for (const auto &row : tasks())
+    if (row.toMap().value("state") == "in_progress")
+      return false;
+  return true;
+}
 bool Panel::allowed(const QString &target) const {
   if (!writable() || dirty() || project().value("archived").toBool() ||
       task().isEmpty() || !m_resultsLoaded)
     return false;
   const auto state = task().value("state").toString();
-  if (target == "in_progress") {
-    const auto ids = queueIds();
-    if (state != "queued" || ids.isEmpty() || ids.first().toString() != m_task)
-      return false;
-    for (const auto &row : tasks())
-      if (row.toMap().value("state") == "in_progress")
-        return false;
+  if (target == "in_progress" && !queueStartEligible())
+    return false;
+  if (target == "in_progress")
     return true;
-  }
   if (target == "done")
     return state == "in_progress";
   if (target == "cancelled")

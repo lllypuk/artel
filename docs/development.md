@@ -194,18 +194,19 @@ are selectable display data only: Artel never opens a path/URI or copies raw
 findings into SQLite.
 
 For an isolated manual cycle, keep the temporary daemon and private variables
-from the first example. Create a project/task in the desktop, copy its UUID from
-the task card, and configure the explicitly opted-in delivery binding above.
-From source, run `make observer-build`, then launch Pi in a **separate ordinary
-terminal**, without agterm:
+from the first example. Create a project/task in the desktop and copy its UUID
+from the task card. From source, run `make observer-build`, then launch Pi in a
+**separate ordinary terminal**, without agterm:
 
 ```sh
 ARTEL_OBSERVER_CONFIG="$ARTEL_CONFIG" pi -e "$PWD/integrations/pi-observer/dist/index.mjs"
 ```
 
-Send one commission containing that exact task UUID through the card. Pi runs
-only in that terminal; Artel does not launch it or infer a commit/result from
-activity. After the owner has literal full commit SHAs, create a private pre-run
+Wait until the observer registry shows the runtime and Pi session UUIDs, then
+configure the explicitly opted-in delivery binding above with those values.
+Only after the binding is active, send one commission containing that exact
+task UUID through the card. Pi runs only in that terminal; Artel does not launch
+it or infer a commit/result from activity. After the owner has literal full commit SHAs, create a private pre-run
 binding and submit the selected candidate (all placeholders must be replaced
 with values from this disposable instance):
 

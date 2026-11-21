@@ -21,6 +21,7 @@ class Panel : public QObject {
   Q_PROPERTY(bool resultsLoaded READ resultsLoaded NOTIFY changed)
   Q_PROPERTY(bool resultsLoading READ resultsLoading NOTIFY changed)
   Q_PROPERTY(bool resultsMore READ resultsMore NOTIFY changed)
+  Q_PROPERTY(bool queueStartEligible READ queueStartEligible NOTIFY changed)
   Q_PROPERTY(QVariant project READ project NOTIFY changed)
   Q_PROPERTY(QVariant task READ task NOTIFY changed)
   Q_PROPERTY(QVariant editor READ editor NOTIFY changed)
@@ -67,6 +68,7 @@ public:
   bool resultsLoaded() const { return m_resultsLoaded; }
   bool resultsLoading() const { return m_client->resultsLoading(); }
   bool resultsMore() const { return m_resultsMore; }
+  bool queueStartEligible() const;
   QVariantMap project() const;
   QVariantMap task() const;
   QVariantMap editor() const { return m_client->draft(); }

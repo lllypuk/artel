@@ -698,7 +698,7 @@ Item {
                         Caption {
                             objectName: "queueStartNotice"
                             text: qsTr("Only the queue head can start, with no task already in progress.")
-                            visible: manual.panel.task.state === "queued" && !manual.panel.allowed("in_progress")
+                            visible: manual.panel.task.state === "queued" && !manual.panel.queueStartEligible
                             color: theme.muted
                             wrapMode: Text.Wrap
                             Layout.fillWidth: true
@@ -966,6 +966,10 @@ Item {
                                         text: qsTr("Submitted candidate · event #%1").arg(resultHistoryRow.modelData.seq)
                                         color: theme.muted
                                         font.pixelSize: theme.secondary
+                                    }
+                                    CopyText {
+                                        objectName: "historyResultBase_" + resultHistoryRow.modelData.result.id
+                                        text: qsTr("Base: %1").arg(resultHistoryRow.modelData.result.base)
                                     }
                                     CopyText {
                                         objectName: "historyResultHead_" + resultHistoryRow.modelData.result.id

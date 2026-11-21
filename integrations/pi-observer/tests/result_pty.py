@@ -158,6 +158,11 @@ class ResultFixture:
             if value:
                 return value
             if self.pi is not None and self.pi.poll() is not None:
+                # The requested exit can land between the predicate and this
+                # poll; recheck before calling a successful quit premature.
+                value = predicate()
+                if value:
+                    return value
                 break
         raise AssertionError(f'{label}: terminal={bytes(self.output[-2000:])!r}')
 

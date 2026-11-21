@@ -188,6 +188,35 @@ func validateReviewSummary(in AttachReviewInput) error {
 	return nil
 }
 
+func validateReviewCompleteness(in AttachReviewInput) error {
+	required := make(map[string]bool, len(in.RequiredSources))
+	for _, requirement := range in.RequiredSources {
+		required[requirement.Name+"\x00"+requirement.Executor] = true
+	}
+	actual := make(map[string]ReviewSource, len(in.Sources))
+	for _, source := range in.Sources {
+		key := source.Name + "\x00" + source.Executor
+		// A source is either responding evidence or explicitly degraded/missing
+		// roster evidence. Required is derived from the exact pair, not asserted
+		// independently by the client.
+		if source.Responded == source.Degraded || source.Required != required[key] {
+			return domain.Invalid("invalid review source state")
+		}
+		actual[key] = source
+	}
+	complete := len(in.RequiredSources) != 0
+	for _, requirement := range in.RequiredSources {
+		source, ok := actual[requirement.Name+"\x00"+requirement.Executor]
+		if !ok || !source.Responded || source.Degraded {
+			complete = false
+		}
+	}
+	if in.Complete != complete {
+		return domain.Invalid("review completeness contradicts required sources")
+	}
+	return nil
+}
+
 func validateAttachReview(taskID, resultID, key string, in AttachReviewInput) error {
 	if !observerUUID(taskID) || !observerUUID(resultID) || !observerUUID(key) {
 		return domain.Invalid("invalid review identity")
@@ -206,6 +235,9 @@ func validateAttachReview(taskID, resultID, key string, in AttachReviewInput) er
 		return err
 	}
 	if err := validateReviewSources(in.Sources); err != nil {
+		return err
+	}
+	if err := validateReviewCompleteness(in); err != nil {
 		return err
 	}
 	for _, reason := range in.IncompleteReasons {
@@ -283,11 +315,16 @@ func (s *Store) SubmitResult(ctx context.Context, taskID string, m Mutation, in 
 		return replay, tx.Commit()
 	}
 	var projectID string
-	if err := tx.QueryRowContext(ctx, "SELECT project_id FROM tasks WHERE id=?", taskID).Scan(&projectID); err != nil {
+	var archived bool
+	if err := tx.QueryRowContext(ctx, `SELECT t.project_id,p.archived FROM tasks t
+		JOIN projects p ON p.id=t.project_id WHERE t.id=?`, taskID).Scan(&projectID, &archived); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Result{}, &domain.Error{Code: "not_found", Message: "task not found"}
 		}
 		return Result{}, err
+	}
+	if archived {
+		return Result{}, domain.Conflict("project is archived")
 	}
 	var current string
 	err = tx.QueryRowContext(ctx, "SELECT result_id FROM current_task_results WHERE task_id=?", taskID).Scan(&current)
@@ -374,8 +411,13 @@ func (s *Store) AttachReview(ctx context.Context, taskID, resultID string, m Mut
 		return Result{}, domain.Conflict("task result identity mismatch")
 	}
 	var projectID string
-	if err := tx.QueryRowContext(ctx, "SELECT project_id FROM tasks WHERE id=?", taskID).Scan(&projectID); err != nil {
+	var archived bool
+	if err := tx.QueryRowContext(ctx, `SELECT t.project_id,p.archived FROM tasks t
+		JOIN projects p ON p.id=t.project_id WHERE t.id=?`, taskID).Scan(&projectID, &archived); err != nil {
 		return Result{}, err
+	}
+	if archived {
+		return Result{}, domain.Conflict("project is archived")
 	}
 	response, matched, err := attachExistingReview(ctx, tx, taskID, result, m, in)
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -153,6 +154,40 @@ func TestTaskResultHTTPWorkflowAuthorityAndRegression(t *testing.T) {
 	}
 	request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results?limit=101", "", "", 400)
 	request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results?unknown=1", "", "", 400)
+}
+
+func TestOwnerReviewCompletenessAndUTF8ByteLimits(t *testing.T) {
+	f := newAPIResultFixture(t)
+	resultBody := apiSubmit(t, f, uuid.NewString(), apiSubmitInput(""), 201)
+	var result store.TaskResult
+	if err := json.Unmarshal(resultBody, &result); err != nil {
+		t.Fatal(err)
+	}
+	empty := apiReviewInput(result, "empty-complete")
+	empty.Complete = true
+	empty.RequiredSources = []store.ReviewRequirement{}
+	empty.Sources = []store.ReviewSource{}
+	empty.IncompleteReasons = []string{}
+	empty.Findings, empty.PreExisting, empty.OpenQuestions = 0, 0, 0
+	apiAttach(t, f, result.ID, uuid.NewString(), empty, 400)
+	empty.Complete = false
+	empty.Run = "empty-incomplete"
+	empty.IncompleteReasons = []string{"required source list is empty"}
+	apiAttach(t, f, result.ID, uuid.NewString(), empty, 201)
+
+	missing := apiReviewInput(result, "missing-required")
+	missing.Complete = true
+	missing.Sources = []store.ReviewSource{}
+	missing.IncompleteReasons = []string{}
+	apiAttach(t, f, result.ID, uuid.NewString(), missing, 400)
+
+	other := newAPIResultFixture(t)
+	accepted := apiSubmitInput("")
+	accepted.Summary = strings.Repeat("é", 2048)
+	apiSubmit(t, other, uuid.NewString(), accepted, 201)
+	rejected := apiSubmitInput("")
+	rejected.Summary = strings.Repeat("é", 2049)
+	apiSubmit(t, other, uuid.NewString(), rejected, 400)
 }
 
 func TestResultWireRejectsNullOmittedAndAliasFields(t *testing.T) {
@@ -340,7 +375,11 @@ func TestTransitionExpectedResultAndReceiptRecovery(t *testing.T) {
 	firstTransition := request(t, f.h, "POST", path, successBody, transitionKey, 200)
 	secondInput := apiSubmitInput(result.ID)
 	secondInput.Head = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	apiSubmit(t, f, uuid.NewString(), secondInput, 201)
+	secondBody := apiSubmit(t, f, uuid.NewString(), secondInput, 201)
+	var second store.TaskResult
+	if err := json.Unmarshal(secondBody, &second); err != nil {
+		t.Fatal(err)
+	}
 	before, err := f.store.Snapshot(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -351,6 +390,14 @@ func TestTransitionExpectedResultAndReceiptRecovery(t *testing.T) {
 	after, err := f.store.Snapshot(t.Context())
 	if err != nil || !reflect.DeepEqual(before, after) {
 		t.Fatalf("replayed transition mutated after resubmission: %v", err)
+	}
+	// The superseded real ID, not an arbitrary UUID, must fail with the current
+	// task version and a fresh idempotency key after the pointer advanced.
+	staleBody := `{"state":"backlog","expected_version":2,"expected_result_id":"` + result.ID + `"}`
+	request(t, f.h, "POST", path, staleBody, uuid.NewString(), 409)
+	after, err = f.store.Snapshot(t.Context())
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("superseded result transition mutated task %s (current %s): %v", result.ID, second.ID, err)
 	}
 }
 

@@ -260,10 +260,13 @@ func TestResultsAndReviewsCLIWithTemporaryDaemon(t *testing.T) {
 	// Literal commits and object types are checked locally before owner HTTP.
 	invalidSHA := strings.Repeat("f", 40)
 	blobSHA := h.git(t, repo, "hash-object", filepath.Join(repo, "candidate.txt"))
+	h.git(t, repo, "tag", "-a", "-m", "Fictional annotated tag", "fictional-tag", head)
+	tagSHA := h.git(t, repo, "rev-parse", "fictional-tag")
 	for _, args := range [][]string{
 		h.submitArgs(repo, "HEAD", head, bindingPath, "invalid-ref", "", uuid.NewString()),
 		h.submitArgs(repo, invalidSHA, head, bindingPath, "missing-commit", "", uuid.NewString()),
 		h.submitArgs(repo, blobSHA, head, bindingPath, "blob-not-commit", "", uuid.NewString()),
+		h.submitArgs(repo, tagSHA, head, bindingPath, "tag-not-commit", "", uuid.NewString()),
 	} {
 		h.call(t, 2, args...)
 	}
@@ -313,6 +316,65 @@ func TestResultsAndReviewsCLIWithTemporaryDaemon(t *testing.T) {
 	if history.CurrentResultID != second.ID || len(history.Entries) != 3 || history.Entries[1].Review.ResultID != first.ID {
 		t.Fatalf("late history lost original review: %+v", history)
 	}
+}
+
+func TestGitCandidateEnvironmentIsolation(t *testing.T) {
+	h := newCLIResultHarness(t)
+	repo, _, base, head := h.repository(t)
+	for _, variable := range []string{
+		"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_INDEX_FILE", "GIT_NAMESPACE",
+		"GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_CONFIG_PARAMETERS",
+	} {
+		t.Setenv(variable, filepath.Join(h.root, "inherited-override"))
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.repositoryFormatVersion")
+	t.Setenv("GIT_CONFIG_VALUE_0", "invalid")
+	canonical, err := validateGitCandidate(repo, base, head)
+	if err != nil || canonical != filepath.Join(repo, ".git") {
+		t.Fatalf("inherited Git environment changed selected repository: %q %v", canonical, err)
+	}
+	environment := isolatedGitEnvironment()
+	if !strings.Contains(strings.Join(environment, "\n"), "GIT_NO_LAZY_FETCH=1") {
+		t.Fatal("Git validation did not disable lazy remote fetching")
+	}
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, "GIT_DIR=") || strings.HasPrefix(entry, "GIT_OBJECT_DIRECTORY=") || strings.HasPrefix(entry, "GIT_CONFIG_KEY_") {
+			t.Fatalf("repository override survived isolation: %q", entry)
+		}
+	}
+}
+
+func TestBindingDestinationCheckedBeforeSubmitAndFailureReportsCommittedID(t *testing.T) {
+	h := newCLIResultHarness(t)
+	repo, _, base, head := h.repository(t)
+	bindingPath := filepath.Join(h.root, "bindings", "first.json")
+	conflicting := revmuximport.Binding{Version: 1, Repo: filepath.Join(repo, ".git"), RevmuxTask: "fictional-task",
+		Run: "other-run", Base: base, Head: head, RangeSource: "operator"}
+	if err := revmuximport.SaveBinding(bindingPath, conflicting); err != nil {
+		t.Fatal(err)
+	}
+	h.call(t, 1, h.submitArgs(repo, base, head, bindingPath, "01-review", "", uuid.NewString())...)
+	var history store.TaskResultHistoryPage
+	h.ownerRequest(t, http.MethodGet, "/v1/tasks/"+h.task.ID+"/results?after=0&limit=100", "", nil, http.StatusOK, &history)
+	if len(history.Entries) != 0 || history.CurrentResultID != "" {
+		t.Fatalf("conflicting binding destination did not block submission: %+v", history)
+	}
+
+	requestID := uuid.NewString()
+	_, diagnostic := h.call(t, 1, h.submitArgs(repo, base, head, "/proc/artel-review-binding.json", "01-review", "", requestID)...)
+	h.ownerRequest(t, http.MethodGet, "/v1/tasks/"+h.task.ID+"/results?after=0&limit=100", "", nil, http.StatusOK, &history)
+	if len(history.Entries) != 1 || history.CurrentResultID == "" || !strings.Contains(diagnostic, "result committed with ID "+history.CurrentResultID) {
+		t.Fatalf("post-commit binding failure did not identify result: history=%+v diagnostic=%q", history, diagnostic)
+	}
+	retryBinding := filepath.Join(h.root, "bindings", "recovered.json")
+	output, _ := h.call(t, 0, h.submitArgs(repo, base, head, retryBinding, "01-review", "", requestID)...)
+	var result store.TaskResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil || result.ID != history.CurrentResultID {
+		t.Fatalf("same-request recovery changed committed result: %s %v", output, err)
+	}
+	assertCLIBinding(t, retryBinding, result, base, head)
 }
 
 func TestReviewsAttachEmptyRequirementsIsSavedIncomplete(t *testing.T) {

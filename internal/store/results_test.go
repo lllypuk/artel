@@ -248,6 +248,103 @@ func TestReviewBusinessKeyAuthorityAndLateHistory(t *testing.T) {
 	}
 }
 
+func TestReviewCompletenessRequiresExactRespondingPairs(t *testing.T) {
+	result := TaskResult{ID: uuid.NewString(), TaskID: uuid.NewString(), Repo: resultRepoA, Base: resultBase, Head: resultHeadA}
+	valid := reviewInput(result, "complete")
+	if err := validateAttachReview(result.TaskID, result.ID, uuid.NewString(), valid); err != nil {
+		t.Fatalf("responding required pair rejected: %v", err)
+	}
+	validIncomplete := valid
+	validIncomplete.Complete = false
+	validIncomplete.IncompleteReasons = []string{"operator marked evidence incomplete"}
+	if err := validateAttachReview(result.TaskID, result.ID, uuid.NewString(), validIncomplete); err == nil {
+		t.Fatal("complete required pair accepted an incomplete summary")
+	}
+	tests := []struct {
+		name   string
+		mutate func(*AttachReviewInput)
+	}{
+		{name: "empty requirements cannot be complete", mutate: func(in *AttachReviewInput) {
+			in.RequiredSources = []ReviewRequirement{}
+			in.Sources[0].Required = false
+		}},
+		{name: "required pair missing", mutate: func(in *AttachReviewInput) { in.Sources = []ReviewSource{} }},
+		{name: "required executor mismatch", mutate: func(in *AttachReviewInput) {
+			in.Sources[0].Executor = "pi"
+		}},
+		{name: "required source degraded", mutate: func(in *AttachReviewInput) {
+			in.Sources[0].Responded = false
+			in.Sources[0].Degraded = true
+		}},
+		{name: "responded and degraded", mutate: func(in *AttachReviewInput) { in.Sources[0].Degraded = true }},
+		{name: "neither responded nor degraded", mutate: func(in *AttachReviewInput) { in.Sources[0].Responded = false }},
+		{name: "required flag omitted", mutate: func(in *AttachReviewInput) { in.Sources[0].Required = false }},
+		{name: "optional source marked required", mutate: func(in *AttachReviewInput) {
+			in.Sources = append(in.Sources, ReviewSource{Name: "optional", Executor: "pi", Required: true, Responded: true})
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := reviewInput(result, "invalid")
+			test.mutate(&input)
+			if err := validateAttachReview(result.TaskID, result.ID, uuid.NewString(), input); err == nil {
+				t.Fatal("contradictory source state accepted")
+			}
+		})
+	}
+	empty := reviewInput(result, "empty")
+	empty.Complete = false
+	empty.RequiredSources = []ReviewRequirement{}
+	empty.Sources[0].Required = false
+	empty.IncompleteReasons = []string{"required source list is empty"}
+	if err := validateAttachReview(result.TaskID, result.ID, uuid.NewString(), empty); err != nil {
+		t.Fatalf("explicit empty-requirement incomplete review rejected: %v", err)
+	}
+	degraded := reviewInput(result, "degraded")
+	degraded.Complete = false
+	degraded.Sources[0].Responded = false
+	degraded.Sources[0].Degraded = true
+	degraded.IncompleteReasons = []string{"required source degraded"}
+	if err := validateAttachReview(result.TaskID, result.ID, uuid.NewString(), degraded); err != nil {
+		t.Fatalf("valid degraded incomplete review rejected: %v", err)
+	}
+	degraded.Sources[0].Findings = 1
+	if err := validateAttachReview(result.TaskID, result.ID, uuid.NewString(), degraded); err != nil {
+		t.Fatalf("degraded reporter's counts were rejected: %v", err)
+	}
+}
+
+func TestArchivedProjectAllowsReceiptReplayButRejectsFreshResultWrites(t *testing.T) {
+	s := openTest(t)
+	project, task := seed(t, s)
+	submitMutation := resultMutation("/archived-submit")
+	submit := submitInput(resultRepoA, resultHeadA, "")
+	first := mustSubmitResult(t, s, task.ID, submitMutation, submit)
+	reviewMutation := resultMutation("/archived-review")
+	review := reviewInput(first, "archived-review")
+	mustAttachReview(t, s, task.ID, first.ID, reviewMutation, review)
+	if _, err := s.db.ExecContext(t.Context(), "UPDATE projects SET archived=1 WHERE id=?", project.ID); err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents := mustEvents(t, s)
+	if replay, err := s.SubmitResult(t.Context(), task.ID, submitMutation, submit); err != nil || replay.Status != 201 {
+		t.Fatalf("archived submit receipt did not replay: %+v %v", replay, err)
+	}
+	if replay, err := s.AttachReview(t.Context(), task.ID, first.ID, reviewMutation, review); err != nil || replay.Status != 201 {
+		t.Fatalf("archived review receipt did not replay: %+v %v", replay, err)
+	}
+	_, err := s.SubmitResult(t.Context(), task.ID, resultMutation("/archived-fresh"), submitInput(resultRepoA, resultHeadB, first.ID))
+	requireResultCode(t, err, "conflict")
+	_, err = s.AttachReview(t.Context(), task.ID, first.ID, resultMutation("/archived-fresh-review"), reviewInput(first, "fresh-review"))
+	requireResultCode(t, err, "conflict")
+	_, err = s.AttachReview(t.Context(), task.ID, first.ID, resultMutation("/archived-business-replay"), review)
+	requireResultCode(t, err, "conflict")
+	current, ok := mustSnapshot(t, s).CurrentResultID(task.ID)
+	if !ok || current != first.ID || countRows(t, s, "task_results") != 1 || countRows(t, s, "task_reviews") != 1 || !reflect.DeepEqual(beforeEvents, mustEvents(t, s)) {
+		t.Fatal("archived project accepted a fresh result/review mutation")
+	}
+}
+
 func TestResultValidationAndAtomicReceiptRollback(t *testing.T) {
 	s := openTest(t)
 	_, task := seed(t, s)

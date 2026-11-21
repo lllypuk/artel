@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 
 	"github.com/lllypuk/artel/internal/local"
@@ -66,7 +67,115 @@ func (b Binding) Validate() error {
 	return nil
 }
 
+func rejectDuplicateKeys(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var scan func() error
+	scan = func() error {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		delimiter, ok := token.(json.Delim)
+		if !ok {
+			return nil
+		}
+		switch delimiter {
+		case '{':
+			seen := make(map[string]bool)
+			for decoder.More() {
+				keyToken, err := decoder.Token()
+				if err != nil {
+					return err
+				}
+				key, ok := keyToken.(string)
+				if !ok || seen[key] {
+					return errors.New("duplicate JSON key")
+				}
+				seen[key] = true
+				if err := scan(); err != nil {
+					return err
+				}
+			}
+		case '[':
+			for decoder.More() {
+				if err := scan(); err != nil {
+					return err
+				}
+			}
+		default:
+			return errors.New("unexpected JSON delimiter")
+		}
+		_, err = decoder.Token()
+		return err
+	}
+	if err := scan(); err != nil {
+		return errors.New("invalid or duplicate JSON object keys")
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return errors.New("trailing JSON value")
+	}
+	return nil
+}
+
+// validateJSONKeys applies struct tags exactly at every consumed object. The
+// standard decoder otherwise accepts case aliases such as Task for task.
+func validateJSONKeys(data []byte, target reflect.Type) error {
+	if target.Kind() == reflect.Pointer {
+		if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+			return nil
+		}
+		return validateJSONKeys(data, target.Elem())
+	}
+	if target == reflect.TypeOf(json.RawMessage{}) {
+		return nil
+	}
+	switch target.Kind() {
+	case reflect.Struct:
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
+			return errors.New("invalid JSON object")
+		}
+		known := make(map[string]reflect.Type, target.NumField())
+		for index := 0; index < target.NumField(); index++ {
+			field := target.Field(index)
+			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			if field.PkgPath == "" && name != "" && name != "-" {
+				known[name] = field.Type
+			}
+		}
+		for name, value := range fields {
+			field, ok := known[name]
+			if !ok {
+				return errors.New("unsupported or case-aliased JSON key")
+			}
+			if err := validateJSONKeys(value, field); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+			return nil
+		}
+		var values []json.RawMessage
+		if err := json.Unmarshal(data, &values); err != nil {
+			return errors.New("invalid JSON array")
+		}
+		for _, value := range values {
+			if err := validateJSONKeys(value, target.Elem()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func decodeStrict(data []byte, target any, required ...string) error {
+	if err := rejectDuplicateKeys(data); err != nil {
+		return err
+	}
+	if err := validateJSONKeys(data, reflect.TypeOf(target)); err != nil {
+		return err
+	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return errors.New("invalid JSON object")
@@ -98,6 +207,25 @@ func LoadBinding(path string) (Binding, error) {
 		return Binding{}, errors.New("invalid revmux binding")
 	}
 	return binding, binding.Validate()
+}
+
+// ValidateBindingDestination rejects an unsafe or conflicting existing record
+// before the CLI commits a submission. The final SaveBinding still rechecks the
+// destination to close the check/write race as far as the filesystem permits.
+func ValidateBindingDestination(path string, binding Binding) error {
+	if err := binding.Validate(); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return errors.New("revmux binding unavailable or unsafe")
+	}
+	existing, err := LoadBinding(path)
+	if err != nil || !reflect.DeepEqual(existing, binding) {
+		return errors.New("revmux binding exists with different content")
+	}
+	return nil
 }
 
 // SaveBinding publishes a binding once. An identical record is a safe command
@@ -205,8 +333,11 @@ type stats struct {
 }
 
 func readArtifact(path string, target any, required ...string) error {
+	// O_NONBLOCK makes a FIFO rejectable by fstat instead of hanging in open.
+	// O_NOFOLLOW also keeps the validated report directory from redirecting a
+	// consumed artifact through a final-component symlink.
 	// #nosec G304 -- The owner explicitly selects a local report directory; URLs are never opened.
-	file, err := os.Open(path)
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return errors.New("revmux artifact unavailable")
 	}
@@ -325,47 +456,65 @@ func readPair(binding Binding, reportDir string) (manifest, findingsDocument, er
 	if findingsDoc.Stats.FinishedAt != "" && findingsDoc.Stats.FinishedAt != manifestDoc.FinishedAt {
 		return manifestDoc, findingsDoc, errors.New("revmux completion metadata mismatch")
 	}
+	if err := validateReviewItemIDs(findingsDoc); err != nil {
+		return manifestDoc, findingsDoc, err
+	}
 	return manifestDoc, findingsDoc, nil
 }
 
-func mapSources(manifestDoc manifest, findingsDoc findingsDocument) (map[string]agent, map[string]bool, error) {
+func validateReviewItemIDs(findingsDoc findingsDocument) error {
+	seen := make(map[string]bool)
+	for _, items := range [][]reviewItem{findingsDoc.Findings, findingsDoc.PreExisting, findingsDoc.OpenQuestions, findingsDoc.Immaterial} {
+		for _, item := range items {
+			if !validText(item.ID, 200, true) || seen[item.ID] {
+				return errors.New("finding item has a missing, null or duplicate ID")
+			}
+			seen[item.ID] = true
+		}
+	}
+	return nil
+}
+
+func mapSources(manifestDoc manifest, findingsDoc findingsDocument) (map[string]agent, map[string]agent, map[string]bool, error) {
 	roster, err := indexAgents(manifestDoc.Agents, "manifest")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	actual, err := indexAgents(findingsDoc.Sources.Agents, "reported")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	manifestDegraded, err := degradedSet(manifestDoc.Degraded)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	findingsDegraded, err := listedDegraded(findingsDoc.Sources.Degraded)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	for name, reported := range actual {
 		expected, ok := roster[name]
 		if !ok || expected.Executor != reported.Executor {
-			return nil, nil, errors.New("contradictory source role in revmux pair")
+			return nil, nil, nil, errors.New("contradictory source role in revmux pair")
 		}
 	}
 	for name := range manifestDegraded {
 		if _, ok := roster[name]; !ok {
-			return nil, nil, errors.New("manifest degradation names an unknown source")
+			return nil, nil, nil, errors.New("manifest degradation names an unknown source")
 		}
 	}
 	for name := range findingsDegraded {
 		if _, ok := actual[name]; !ok {
-			return nil, nil, errors.New("findings degradation names an unreported source")
+			return nil, nil, nil, errors.New("findings degradation names an unreported source")
 		}
 	}
-	degraded := make(map[string]bool, len(actual))
-	for name, reported := range actual {
-		degraded[name] = *reported.Degraded || *roster[name].Degraded || manifestDegraded[name] || findingsDegraded[name]
+	degraded := make(map[string]bool, len(roster))
+	for name, expected := range roster {
+		reported, ok := actual[name]
+		reportedDegraded := ok && *reported.Degraded
+		degraded[name] = *expected.Degraded || manifestDegraded[name] || reportedDegraded || findingsDegraded[name]
 	}
-	return actual, degraded, nil
+	return roster, actual, degraded, nil
 }
 
 func countItems(items []reviewItem, sources []store.ReviewSource, indexes map[string]int, selectCount func(*store.ReviewSource) *int) error {
@@ -384,7 +533,7 @@ func countItems(items []reviewItem, sources []store.ReviewSource, indexes map[st
 }
 
 func normalizeSources(manifestDoc manifest, findingsDoc findingsDocument, required map[string]bool) ([]store.ReviewSource, map[string]int, error) {
-	actual, degraded, err := mapSources(manifestDoc, findingsDoc)
+	roster, actual, degraded, err := mapSources(manifestDoc, findingsDoc)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -400,6 +549,17 @@ func normalizeSources(manifestDoc manifest, findingsDoc findingsDocument, requir
 		sources = append(sources, store.ReviewSource{
 			Name: name, Executor: reported.Executor, Required: required[sourceKey(name, reported.Executor)],
 			Responded: !degraded[name], Degraded: degraded[name],
+		})
+	}
+	for name, expected := range roster {
+		if _, ok := actual[name]; ok || !degraded[name] {
+			continue
+		}
+		// A manifest-only degradation is known non-response evidence, including
+		// for an optional source; do not erase it from the normalized card.
+		sources = append(sources, store.ReviewSource{
+			Name: name, Executor: expected.Executor, Required: required[sourceKey(name, expected.Executor)],
+			Responded: false, Degraded: true,
 		})
 	}
 	if findingsDoc.Sources.Reported != responded || findingsDoc.Sources.Reported < 0 {
