@@ -156,6 +156,39 @@ func TestTaskResultHTTPWorkflowAuthorityAndRegression(t *testing.T) {
 	request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results?unknown=1", "", "", 400)
 }
 
+func TestCurrentTaskResultHTTPReadModel(t *testing.T) {
+	f := newAPIResultFixture(t)
+	currentBody := request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results/current", "", "", 200)
+	var current store.CurrentTaskResult
+	if err := json.Unmarshal(currentBody, &current); err != nil || current.Result != nil || current.Reviews == nil || len(current.Reviews) != 0 {
+		t.Fatalf("empty current read model: %+v %v", current, err)
+	}
+	firstBody := apiSubmit(t, f, uuid.NewString(), apiSubmitInput(""), 201)
+	var first store.TaskResult
+	if err := json.Unmarshal(firstBody, &first); err != nil {
+		t.Fatal(err)
+	}
+	secondInput := apiSubmitInput(first.ID)
+	secondInput.Head = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	secondBody := apiSubmit(t, f, uuid.NewString(), secondInput, 201)
+	var second store.TaskResult
+	if err := json.Unmarshal(secondBody, &second); err != nil {
+		t.Fatal(err)
+	}
+	apiAttach(t, f, first.ID, uuid.NewString(), apiReviewInput(first, "run-old"), 201)
+	currentReviewBody := apiAttach(t, f, second.ID, uuid.NewString(), apiReviewInput(second, "run-current"), 201)
+	var currentReview store.TaskReview
+	if err := json.Unmarshal(currentReviewBody, &currentReview); err != nil {
+		t.Fatal(err)
+	}
+	currentBody = request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results/current", "", "", 200)
+	if err := json.Unmarshal(currentBody, &current); err != nil || current.Result == nil || current.Result.ID != second.ID ||
+		len(current.Reviews) != 1 || current.Reviews[0].ID != currentReview.ID {
+		t.Fatalf("current read model includes wrong history: %+v %v", current, err)
+	}
+	request(t, f.h, "GET", "/v1/tasks/"+f.task.ID+"/results/current?unknown=1", "", "", 400)
+}
+
 func TestOwnerReviewCompletenessAndUTF8ByteLimits(t *testing.T) {
 	f := newAPIResultFixture(t)
 	resultBody := apiSubmit(t, f, uuid.NewString(), apiSubmitInput(""), 201)
@@ -407,6 +440,7 @@ func TestTaskResultRoutesRequireOwner(t *testing.T) {
 	for _, route := range []struct{ method, path string }{
 		{"POST", "/v1/tasks/" + f.task.ID + "/results"},
 		{"GET", "/v1/tasks/" + f.task.ID + "/results"},
+		{"GET", "/v1/tasks/" + f.task.ID + "/results/current"},
 		{"POST", "/v1/tasks/" + f.task.ID + "/results/" + uuid.NewString() + "/reviews"},
 	} {
 		r := httptest.NewRequest(route.method, route.path, nil)

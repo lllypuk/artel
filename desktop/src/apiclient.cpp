@@ -579,13 +579,84 @@ void ApiClient::loadHistory(const QString &project, const QString &task,
       });
   emit changed();
 }
+void ApiClient::loadCurrentResult(const QString &task) {
+  cancel(m_currentResultReply);
+  m_currentResultTask.clear();
+  m_currentResultError.clear();
+  if (!m_online || m_stopped || !uuid(task))
+    return;
+  const auto instance = m_instance;
+  auto *reply = request("GET", "/v1/tasks/" + task + "/results/current");
+  m_currentResultReply = reply;
+  m_currentResultTask = task;
+  connect(reply, &QIODevice::readyRead, this, [reply] {
+    auto bytes = reply->property("bytes").toByteArray() + reply->readAll();
+    if (bytes.size() > responseLimit) {
+      reply->setProperty("oversized", true);
+      reply->abort();
+    } else {
+      reply->setProperty("bytes", bytes);
+    }
+  });
+  connect(reply, &QNetworkReply::finished, this, [this, reply, task, instance] {
+    reply->deleteLater();
+    if (reply != m_currentResultReply)
+      return;
+    m_currentResultReply = nullptr;
+    if (instance != m_instance || task != m_currentResultTask) {
+      emit changed();
+      return;
+    }
+    const auto obj =
+        QJsonDocument::fromJson(reply->property("bytes").toByteArray())
+            .object();
+    const auto resultValue = obj.value("result");
+    const auto result = resultValue.toObject();
+    const auto reviews = obj.value("reviews").toArray();
+    bool valid =
+        reply->error() == QNetworkReply::NoError &&
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() ==
+            200 &&
+        reply->header(QNetworkRequest::ContentTypeHeader)
+            .toString()
+            .startsWith("application/json") &&
+        !reply->property("oversized").toBool() &&
+        (resultValue.isNull() ||
+         (resultValue.isObject() && validResult(result, task))) &&
+        obj.value("reviews").isArray();
+    for (const auto &value : reviews) {
+      const auto review = value.toObject();
+      valid = valid && value.isObject() && !resultValue.isNull() &&
+              validReview(review, task) &&
+              review.value("result_id") == result.value("id") &&
+              review.value("repo") == result.value("repo") &&
+              review.value("base") == result.value("base") &&
+              review.value("head") == result.value("head");
+    }
+    if (valid) {
+      m_currentResultError.clear();
+      emit currentResultReceived(resultValue.isNull() ? QVariantMap{}
+                                                      : result.toVariantMap(),
+                                 reviews.toVariantList());
+    } else {
+      m_currentResultError = tr("Submitted result unavailable or invalid");
+    }
+    emit changed();
+  });
+  emit changed();
+}
 void ApiClient::cancelResults() {
+  cancel(m_currentResultReply);
+  m_currentResultTask.clear();
+  m_currentResultError.clear();
   cancel(m_resultsReply);
   m_resultsTask.clear();
   m_resultsError.clear();
 }
 void ApiClient::loadResults(const QString &task, qint64 after) {
-  cancelResults();
+  cancel(m_resultsReply);
+  m_resultsTask.clear();
+  m_resultsError.clear();
   if (!m_online || m_stopped || !uuid(task) || after < 0)
     return;
   const auto instance = m_instance;

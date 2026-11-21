@@ -65,7 +65,8 @@ Panel::Panel(ApiClient *client, QObject *parent)
         moreHistory();
         loadCommissionPage();
       }
-      loadResults();
+      if (!m_resultsLoaded)
+        loadResults();
     }
     if (!m_client->dirty() && !m_client->pending() && !m_client->uncertain())
       m_kind.clear();
@@ -102,39 +103,27 @@ Panel::Panel(ApiClient *client, QObject *parent)
             m_historyMore = more;
             emit changed();
           });
+  connect(client, &ApiClient::currentResultReceived, this,
+          [this](const QVariantMap &result, const QVariantList &reviews) {
+            if (m_task.isEmpty())
+              return;
+            m_currentResultData = result;
+            m_currentResult = result.value("id").toString();
+            m_currentResultData.insert("reviews", reviews);
+            m_resultsLoaded = true;
+            emit changed();
+          });
   connect(client, &ApiClient::resultsReceived, this,
-          [this](const QString &current, const QVariantList &entries,
-                 qint64 after, qint64 cursor, bool more) {
+          [this](const QString &, const QVariantList &entries, qint64 after,
+                 qint64 cursor, bool more) {
             if (m_task.isEmpty() || (after != 0 && after != m_resultsCursor))
               return;
-            if (after != 0 && current != m_currentResult) {
-              resetResults();
-              loadResults();
-              return;
-            }
             if (after == 0)
               m_resultEntries.clear();
             m_resultEntries += entries;
-            m_currentResult = current;
             m_resultsCursor = cursor;
             m_resultsMore = more;
-            bool foundCurrent = m_currentResult.isEmpty();
-            for (const auto &value : m_resultEntries) {
-              const auto entry = value.toMap();
-              if (entry.value("kind").toString() == "result" &&
-                  entry.value("result").toMap().value("id").toString() ==
-                      m_currentResult) {
-                foundCurrent = true;
-                break;
-              }
-            }
-            // Finding the result row is not enough: its only review can be on
-            // a later page. Finish the bounded pages before exposing a partial
-            // current-review view as fully loaded.
-            m_resultsLoaded = foundCurrent && !m_resultsMore;
             emit changed();
-            if (!m_resultsLoaded && m_resultsMore)
-              moreResults();
           });
   connect(client, &ApiClient::messagesReceived, this,
           [this](const QVariantList &rows, qint64 after, bool more) {
@@ -430,6 +419,7 @@ void Panel::resetQuestions() {
 void Panel::resetResults(bool preserveCurrent) {
   m_client->cancelResults();
   m_resultEntries.clear();
+  m_currentResultData.clear();
   m_resultsCursor = 0;
   m_resultsMore = false;
   m_resultsLoaded = false;
@@ -437,29 +427,19 @@ void Panel::resetResults(bool preserveCurrent) {
     m_currentResult.clear();
 }
 void Panel::loadResults() {
-  if (!m_task.isEmpty() && m_client->online())
+  if (!m_task.isEmpty() && m_client->online()) {
     m_client->loadResults(m_task, 0);
+    m_client->loadCurrentResult(m_task);
+  }
 }
 QString Panel::resultsError() const {
-  return m_task.isEmpty() ? QString() : m_client->resultsError();
+  if (m_task.isEmpty())
+    return {};
+  const auto currentError = m_client->currentResultError();
+  return currentError.isEmpty() ? m_client->resultsError() : currentError;
 }
 QVariant Panel::currentResult() const {
-  if (!m_resultsLoaded)
-    return QVariantMap{};
-  QVariantMap current;
-  QVariantList reviews;
-  for (const auto &value : m_resultEntries) {
-    const auto entry = value.toMap();
-    if (entry.value("kind").toString() == "result" &&
-        entry.value("result").toMap().value("id").toString() == m_currentResult)
-      current = entry.value("result").toMap();
-    const auto review = entry.value("review").toMap();
-    if (review.value("result_id").toString() == m_currentResult)
-      reviews.append(review);
-  }
-  if (!current.isEmpty())
-    current.insert("reviews", reviews);
-  return current;
+  return m_resultsLoaded ? QVariant(m_currentResultData) : QVariantMap{};
 }
 QVariant Panel::resultHistory() const {
   QVariantList rows;

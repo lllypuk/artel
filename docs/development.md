@@ -235,10 +235,12 @@ ATTACH_JSON=$("$ARTELCTL" reviews attach --task-id "$TASK_ID" --result-id "$RESU
 Repeat the **same command with the same request ID** after an uncertain response.
 An identical already-attached repo/task/run returns the original review without
 another event. The card distinguishes loading, read failure and a confirmed
-empty history, and shows full SHAs, run ID, provenance, report reference,
+empty current result, and shows full SHAs, run ID, provenance, report reference,
 required-source completeness, findings/pre-existing/open-question counts and
-prior candidates. Incomplete/degraded evidence and zero findings are not owner
-acceptance.
+prior candidates. `GET /v1/tasks/{task_id}/results/current` supplies the current
+candidate and all of its reviews independently of the paginated history, so a
+later history-page failure does not block an owner decision. Incomplete/degraded
+evidence and zero findings are not owner acceptance.
 
 After a new commit, submit its full SHA with `--expected-result-id "$RESULT_ID"`,
 a new binding path/run and a new request ID. Capture the returned new result ID

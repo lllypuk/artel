@@ -217,6 +217,32 @@ func TestImportRetainsManifestOnlyOptionalDegradation(t *testing.T) {
 	}
 }
 
+func TestImportRejectsAttributionToManifestOnlyDegradedSource(t *testing.T) {
+	for _, kind := range []string{"findings", "pre_existing", "open_questions"} {
+		t.Run(kind, func(t *testing.T) {
+			manifestDoc, findingsDoc := syntheticPair()
+			manifestDoc.Degraded = json.RawMessage(`["optional"]`)
+			findingsDoc.Sources.Agents = findingsDoc.Sources.Agents[:1]
+			findingsDoc.Sources.Reported = 1
+			findingsDoc.Findings = findingsDoc.Findings[:0]
+			findingsDoc.PreExisting = findingsDoc.PreExisting[:0]
+			findingsDoc.OpenQuestions = findingsDoc.OpenQuestions[:0]
+			item := reviewItem{ID: "fictional-roster-only", Sources: []string{"optional"}}
+			switch kind {
+			case "findings":
+				findingsDoc.Findings = []reviewItem{item}
+			case "pre_existing":
+				findingsDoc.PreExisting = []reviewItem{item}
+			case "open_questions":
+				findingsDoc.OpenQuestions = []reviewItem{item}
+			}
+			if _, err := importSynthetic(t, manifestDoc, findingsDoc, []store.ReviewRequirement{{Name: "reviewer", Executor: "pi"}}); err == nil {
+				t.Fatal("manifest-only degraded source received item attribution")
+			}
+		})
+	}
+}
+
 func TestImportRejectsNullMissingAndDuplicateItemIDs(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -384,6 +410,17 @@ func TestArtifactsRejectDuplicateAndCaseAliasedKeys(t *testing.T) {
 	}
 }
 
+func TestRejectDuplicateKeysBoundsNestingBeforeRecursion(t *testing.T) {
+	data := []byte(strings.Repeat("[", maxArtifactNesting+1) + strings.Repeat("]", maxArtifactNesting+1))
+	if err := rejectDuplicateKeys(data); err == nil || !strings.Contains(err.Error(), "invalid or duplicate") {
+		t.Fatalf("excessive JSON nesting was not rejected: %v", err)
+	}
+	valid := []byte(strings.Repeat("[", maxArtifactNesting) + strings.Repeat("]", maxArtifactNesting))
+	if err := rejectDuplicateKeys(valid); err != nil {
+		t.Fatalf("nesting at the explicit bound rejected: %v", err)
+	}
+}
+
 func TestArtifactFIFORejectsWithoutBlocking(t *testing.T) {
 	directory := writeDefaultPair(t)
 	path := filepath.Join(directory, "manifest.json")
@@ -439,6 +476,41 @@ func TestBindingReplayAndValidation(t *testing.T) {
 		if err := invalid.Validate(); err == nil {
 			t.Fatalf("invalid binding accepted: %+v", invalid)
 		}
+	}
+}
+
+func TestBindingDestinationPreflightRejectsUnsafeParent(t *testing.T) {
+	binding := testBinding(t)
+	root := t.TempDir()
+	for _, mode := range []os.FileMode{0o755, 0o700} {
+		parent := filepath.Join(root, fmt.Sprintf("parent-%o", mode))
+		if err := os.Mkdir(parent, mode); err != nil {
+			t.Fatal(err)
+		}
+		if mode == 0o700 {
+			// #nosec G302 -- Deliberately unsafe directory verifies preflight rejection.
+			if err := os.Chmod(parent, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		path := filepath.Join(parent, "binding.json")
+		if err := ValidateBindingDestination(path, binding); err == nil {
+			t.Fatalf("binding in mode-%o parent passed preflight", 0o755)
+		}
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("preflight created binding in unsafe parent: %v", err)
+		}
+	}
+	private := filepath.Join(root, "private")
+	if err := os.Mkdir(private, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "linked")
+	if err := os.Symlink(private, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateBindingDestination(filepath.Join(link, "binding.json"), binding); err == nil {
+		t.Fatal("symlink binding parent passed preflight")
 	}
 }
 

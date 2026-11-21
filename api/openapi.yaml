@@ -309,6 +309,21 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/TaskResultHistoryPage'}
         default: {$ref: '#/components/responses/Error'}
+  /v1/tasks/{task_id}/results/current:
+    parameters: [{$ref: '#/components/parameters/TaskID'}]
+    get:
+      operationId: currentTaskResult
+      description: >-
+        Current candidate and all reviews attached to that candidate in one consistent
+        owner read. This decision view does not depend on paginated submission history.
+        A null result with an empty reviews array confirms that no result is current.
+      responses:
+        '200':
+          description: Current candidate and its complete review set
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CurrentTaskResult'}
+        default: {$ref: '#/components/responses/Error'}
   /v1/tasks/{task_id}/results/{result_id}/reviews:
     parameters:
       - {$ref: '#/components/parameters/TaskID'}
@@ -320,6 +335,8 @@ paths:
         Stored result task/repo/base/head are authoritative; matching request values are only assertions.
         The business uniqueness key is repo/revmux_task/run. An identical existing attachment returns
         the original review without another event; transfer or changed normalized payload is 409.
+        Exact request receipt replay remains available after project archival, but a fresh request
+        for the same business key is rejected with 409 by the archive guard.
       parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
         required: true
@@ -575,6 +592,18 @@ components:
         pre_existing: {type: integer, minimum: 0}
         open_questions: {type: integer, minimum: 0}
         created_at: {type: string, format: date-time}
+    CurrentTaskResult:
+      type: object
+      additionalProperties: false
+      required: [result, reviews]
+      properties:
+        result:
+          nullable: true
+          allOf: [{$ref: '#/components/schemas/TaskResult'}]
+        reviews:
+          type: array
+          description: Every review whose result_id is the returned current result; empty when result is null.
+          items: {$ref: '#/components/schemas/TaskReview'}
     TaskResultHistoryEntry:
       type: object
       additionalProperties: false

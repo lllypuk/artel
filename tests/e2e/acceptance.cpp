@@ -357,9 +357,11 @@ public:
   bool holdNext = false;
   bool holdSnapshot = false;
   bool failNext = false;
+  bool failNextHistory = false;
   int delayed = 0;
   int failures = 0;
   int resultReads = 0;
+  int resultHistoryReads = 0;
   QList<QJsonObject> transitions;
   QList<QPointer<QTcpSocket>> streams;
   void dropStreams() {
@@ -393,21 +395,28 @@ public:
           socket->setProperty("sent", true);
           const auto first = bytes->split('\n').first().split(' ');
           const QString path = QString::fromUtf8(first[1]);
-          const bool resultRead =
+          const bool currentResultRead =
+              first[0] == "GET" && path.endsWith("/results/current");
+          const bool historyResultRead =
               first[0] == "GET" && path.contains("/results?");
           if (first[0] == "POST" && path.endsWith("/transition"))
             transitions.append(
                 QJsonDocument::fromJson(bytes->mid(split + 4)).object());
-          if (resultRead)
+          if (currentResultRead)
             ++resultReads;
-          const bool delay = resultRead && holdNext;
+          if (historyResultRead)
+            ++resultHistoryReads;
+          const bool delay = currentResultRead && holdNext;
           const bool snapshot = first[0] == "GET" && path == "/v1/snapshot";
           const bool hold = delay || (snapshot && holdSnapshot);
-          const bool fail = resultRead && failNext;
+          const bool fail = (currentResultRead && failNext) ||
+                            (historyResultRead && failNextHistory);
           if (delay)
             holdNext = false;
-          if (fail)
+          if (currentResultRead && fail)
             failNext = false;
+          if (historyResultRead && fail)
+            failNextHistory = false;
           auto *reply = upstream.send(
               first[0], path,
               QJsonDocument::fromJson(bytes->mid(split + 4)).object(), key);
@@ -824,6 +833,16 @@ private slots:
     QVERIFY(item(ui->window, "noTaskResult")->isVisible());
     QVERIFY(!item(ui->window, "resultError")->isVisible());
     QVERIFY(item(ui->window, "commissionField"));
+    // An unchanged reconnect with loaded evidence is not a new read. Failed
+    // replacement reads are impossible here, so confirmed-empty decisions stay
+    // tied to the evidence the owner actually saw.
+    proxy.dropStreams();
+    QTRY_VERIFY(!ui->panel.writable());
+    const auto settledReconnectReads = proxy.resultReads;
+    QTRY_VERIFY(ui->panel.writable());
+    QTRY_VERIFY(ui->panel.resultsLoaded());
+    QCOMPARE(proxy.resultReads, settledReconnectReads);
+    QVERIFY(item(ui->window, "noTaskResult")->isVisible());
     if (sharedDelivery) {
       const auto commission = "Fictional result commission for " + task;
       QTRY_VERIFY_WITH_TIMEOUT(
@@ -1150,12 +1169,11 @@ private slots:
     QString expectedCurrent = secondID;
     int expectedFirstPage = 3;
     if (!sharedDelivery) {
-      // The newest candidate starts outside the 50-entry first page. A held
-      // read must remain visibly pending and read-only; release auto-loads the
-      // exact current object before any owner transition becomes available.
+      // Three earlier result/review events plus 47 submissions put the current
+      // candidate exactly at history entry 50. Its only review is entry 51.
       QString expected = secondID;
       QJsonObject latest = second;
-      for (int index = 0; index < 51; ++index) {
+      for (int index = 0; index < 47; ++index) {
         latest = oracle.request(
             "POST", "/v1/tasks/" + task + "/results",
             {{"repo", second.value("repo")},
@@ -1169,8 +1187,9 @@ private slots:
       }
       expectedCurrent = expected;
       expectedFirstPage = 50;
-      // The current candidate's first and only review is deliberately beyond
-      // the 50-entry first result page; it must not disappear from the card.
+      // The current candidate's first and only review is deliberately the
+      // first entry beyond the 50-entry history page; the current read model
+      // must still expose it without draining that page.
       const auto currentReview = oracle.request(
           "POST", "/v1/tasks/" + task + "/results/" + expected + "/reviews",
           {{"repo", latest.value("repo")},
@@ -1199,6 +1218,7 @@ private slots:
       QVERIFY(!currentReviewID.isEmpty());
       proxy.holdNext = true;
       const auto readsBefore = proxy.resultReads;
+      const auto historyReadsBefore = proxy.resultHistoryReads;
       ui->panel.reload();
       QTRY_COMPARE(proxy.delayed, 4);
       QVERIFY(!ui->panel.resultsLoaded());
@@ -1211,17 +1231,58 @@ private slots:
       QTRY_COMPARE(ui->panel.currentResult().toMap().value("id").toString(),
                    expectedCurrent);
       QTRY_VERIFY(ui->panel.resultsLoaded() && ui->panel.allowed("cancelled"));
-      QVERIFY(proxy.resultReads >= readsBefore + 2);
+      QVERIFY(proxy.resultReads >= readsBefore + 1);
+      QVERIFY(proxy.resultHistoryReads >= historyReadsBefore + 1);
+      const auto settledHistoryReads = proxy.resultHistoryReads;
+      QTest::qWait(50);
+      QCOMPARE(proxy.resultHistoryReads, settledHistoryReads);
       QCOMPARE(ui->panel.currentResult().toMap().value("summary").toString(),
-               QString("Fictional paginated candidate 50"));
+               QString("Fictional paginated candidate 46"));
       QCOMPARE(item(ui->window, "resultHead")->property("text").toString(),
                QString("Head: %1").arg(secondHead));
       QVERIFY(item(ui->window, "currentReviewRun_" + currentReviewID));
+      QVERIFY(ui->panel.allowed("cancelled"));
+      // A later history-page failure is visible but does not unload current
+      // evidence or disable the owner's decision.
+      proxy.failNextHistory = true;
+      const auto historyFailures = proxy.failures;
+      ui->panel.moreResults();
+      QTRY_COMPARE(proxy.failures, historyFailures + 1);
+      QTRY_VERIFY(!ui->panel.resultsError().isEmpty());
+      QVERIFY(ui->panel.resultsLoaded());
+      QCOMPARE(ui->panel.currentResult().toMap().value("id").toString(),
+               expectedCurrent);
+      QVERIFY(ui->panel.allowed("cancelled"));
+      QVERIFY(click(ui->window, "cancelTaskButton"));
+      QTRY_COMPARE(ui->panel.task().value("state").toString(),
+                   QString("cancelled"));
     }
     const auto wire =
         oracle.get("/v1/tasks/" + task + "/results?after=0&limit=50");
     QCOMPARE(wire.value("current_result_id").toString(), expectedCurrent);
     QCOMPARE(wire.value("entries").toArray().size(), expectedFirstPage);
+    if (!sharedDelivery) {
+      const auto firstEntries = wire.value("entries").toArray();
+      QCOMPARE(firstEntries.at(49)
+                   .toObject()
+                   .value("result")
+                   .toObject()
+                   .value("id")
+                   .toString(),
+               expectedCurrent);
+      const auto secondPage = oracle.get(
+          "/v1/tasks/" + task + "/results?after=" +
+          QString::number(wire.value("next_after").toInteger()) + "&limit=50");
+      const auto secondEntries = secondPage.value("entries").toArray();
+      QVERIFY(!secondEntries.isEmpty());
+      QCOMPARE(secondEntries.at(0)
+                   .toObject()
+                   .value("review")
+                   .toObject()
+                   .value("result_id")
+                   .toString(),
+               expectedCurrent);
+    }
   }
   void restartConcurrencyAndRecovery() {
     Daemon daemon;

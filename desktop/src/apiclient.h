@@ -57,6 +57,10 @@ public:
   bool historyLoading() const { return m_historyReply; }
   void loadHistory(const QString &project, const QString &task, qint64 after);
   void cancelHistory();
+  // Current-result decisions and paginated history are independent reads.
+  bool currentResultLoading() const { return m_currentResultReply; }
+  QString currentResultError() const { return m_currentResultError; }
+  void loadCurrentResult(const QString &task);
   // Result reads are task/instance scoped and independent from manual drafts.
   bool resultsLoading() const { return m_resultsReply; }
   QString resultsError() const { return m_resultsError; }
@@ -128,6 +132,8 @@ signals:
   void changed();
   void mutationSucceeded(const QVariantMap &result, const QString &instance);
   void historyReceived(const QVariantList &events, qint64 cursor, bool more);
+  void currentResultReceived(const QVariantMap &result,
+                             const QVariantList &reviews);
   void resultsReceived(const QString &currentResult,
                        const QVariantList &entries, qint64 after, qint64 cursor,
                        bool more);
@@ -158,15 +164,17 @@ private:
   QByteArray m_token;
   QNetworkReply *m_snapshot = nullptr, *m_stream = nullptr,
                 *m_mutation = nullptr, *m_historyReply = nullptr,
-                *m_resultsReply = nullptr, *m_messagesReply = nullptr,
-                *m_statusReply = nullptr, *m_deliveryReply = nullptr,
-                *m_questionsReply = nullptr, *m_questionStatusReply = nullptr;
+                *m_currentResultReply = nullptr, *m_resultsReply = nullptr,
+                *m_messagesReply = nullptr, *m_statusReply = nullptr,
+                *m_deliveryReply = nullptr, *m_questionsReply = nullptr,
+                *m_questionStatusReply = nullptr;
   QTimer m_reconnect, m_coalesce;
   quint64 m_generation = 0, m_draftRevision = 0, m_sentRevision = 0;
   QString m_instance, m_status = QStringLiteral("disconnected"), m_error,
-                      m_historyError, m_resultsError, m_messagesError;
-  QString m_resultsTask, m_messagesTask, m_statusTask, m_deliveryTask,
-      m_questionsTask, m_questionStatusTask;
+                      m_historyError, m_currentResultError, m_resultsError,
+                      m_messagesError;
+  QString m_currentResultTask, m_resultsTask, m_messagesTask, m_statusTask,
+      m_deliveryTask, m_questionsTask, m_questionStatusTask;
   bool m_messagesPageLoaded = false;
   qint64 m_sequence = 0, m_cursor = 0;
   bool m_online = false, m_uncertain = false, m_conflict = false,

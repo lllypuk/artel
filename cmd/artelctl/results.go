@@ -152,11 +152,13 @@ func gitOutput(ctx context.Context, repo string, args ...string) (string, error)
 	// #nosec G204 G702 -- Fixed local Git executable and argument vector; no shell or report-provided command.
 	command := exec.CommandContext(ctx, "git", commandArgs...)
 	command.Env = isolatedGitEnvironment()
-	output, err := command.CombinedOutput()
+	output, err := command.Output()
 	if err != nil {
 		return "", errors.New("local Git validation failed")
 	}
-	return strings.TrimSpace(string(output)), nil
+	// Git diagnostics belong to stderr and must not alter parsed stdout. Strip
+	// exactly one line terminator so valid paths ending in spaces survive.
+	return strings.TrimSuffix(string(output), "\n"), nil
 }
 
 // validateGitCandidate resolves common-dir identity for main and linked
@@ -171,6 +173,10 @@ func validateGitCandidate(repo, base, head string) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	objectFormat, err := gitOutput(ctx, absolute, "rev-parse", "--show-object-format=storage")
+	if err != nil || objectFormat != "sha1" {
+		return "", errors.New("repository must use SHA-1 object storage for 40-character commit IDs")
+	}
 	commonDir, err := gitOutput(ctx, absolute, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil || !filepath.IsAbs(commonDir) || filepath.Clean(commonDir) != commonDir {
 		return "", errors.New("repository common-dir unavailable")
@@ -278,7 +284,7 @@ func results(args []string, out, errOut io.Writer) int {
 	if options.hasBinding {
 		if err := revmuximport.SaveBinding(options.bindingPath, submissionBinding(options, canonicalRepo)); err != nil {
 			return resultFail(errOut, "results", 1, err.Error()+"; result committed with ID "+result.ID+
-				"; fix the binding destination and retry with the same request-id")
+				"; fix the binding destination and retry with --request-id "+options.key)
 		}
 	}
 	encoded, _ := json.Marshal(result)

@@ -115,6 +115,14 @@ type TaskResultHistoryPage struct {
 	HasMore         bool                     `json:"has_more"`
 }
 
+// CurrentTaskResult is the decision read model. It contains the current
+// candidate and every review attached to that candidate, independently of the
+// bounded historical event stream.
+type CurrentTaskResult struct {
+	Result  *TaskResult  `json:"result"`
+	Reviews []TaskReview `json:"reviews"`
+}
+
 func validResultText(value string, max int, required bool) bool {
 	return utf8.ValidString(value) && len(value) <= max && !strings.ContainsRune(value, 0) && (!required || strings.TrimSpace(value) != "")
 }
@@ -188,6 +196,15 @@ func validateReviewSummary(in AttachReviewInput) error {
 	return nil
 }
 
+func validateReviewSourceTotals(in AttachReviewInput) error {
+	for _, source := range in.Sources {
+		if source.Findings > in.Findings || source.PreExisting > in.PreExisting || source.OpenQuestions > in.OpenQuestions {
+			return domain.Invalid("review source counts exceed review totals")
+		}
+	}
+	return nil
+}
+
 func validateReviewCompleteness(in AttachReviewInput) error {
 	required := make(map[string]bool, len(in.RequiredSources))
 	for _, requirement := range in.RequiredSources {
@@ -217,7 +234,7 @@ func validateReviewCompleteness(in AttachReviewInput) error {
 	return nil
 }
 
-func validateAttachReview(taskID, resultID, key string, in AttachReviewInput) error {
+func validateAttachReviewIdentity(taskID, resultID, key string, in AttachReviewInput) error {
 	if !observerUUID(taskID) || !observerUUID(resultID) || !observerUUID(key) {
 		return domain.Invalid("invalid review identity")
 	}
@@ -237,15 +254,22 @@ func validateAttachReview(taskID, resultID, key string, in AttachReviewInput) er
 	if err := validateReviewSources(in.Sources); err != nil {
 		return err
 	}
-	if err := validateReviewCompleteness(in); err != nil {
-		return err
-	}
 	for _, reason := range in.IncompleteReasons {
 		if !validResultText(reason, 500, true) {
 			return domain.Invalid("invalid incomplete review reason")
 		}
 	}
 	return nil
+}
+
+func validateAttachReview(taskID, resultID, key string, in AttachReviewInput) error {
+	if err := validateAttachReviewIdentity(taskID, resultID, key, in); err != nil {
+		return err
+	}
+	if err := validateReviewSourceTotals(in); err != nil {
+		return err
+	}
+	return validateReviewCompleteness(in)
 }
 
 func resultReplay(ctx context.Context, tx *sql.Tx, m Mutation) (Result, bool, error) {
@@ -385,7 +409,9 @@ func loadTaskResult(ctx context.Context, tx *sql.Tx, id string) (TaskResult, err
 // AttachReview uses the stored result as authority for task/repo/base/head.
 // The request values are checked, never copied into the persisted identity.
 func (s *Store) AttachReview(ctx context.Context, taskID, resultID string, m Mutation, in AttachReviewInput) (Result, error) {
-	if err := validateAttachReview(taskID, resultID, m.Key, in); err != nil {
+	// Structural identity and the exact payload hash precede receipt lookup.
+	// Newer semantic checks must not make a legacy exact receipt unreplayable.
+	if err := validateAttachReviewIdentity(taskID, resultID, m.Key, in); err != nil {
 		return Result{}, err
 	}
 	m.Hash = observerHash(in)
@@ -399,6 +425,12 @@ func (s *Store) AttachReview(ctx context.Context, taskID, resultID string, m Mut
 			return Result{}, err
 		}
 		return replay, tx.Commit()
+	}
+	if err := validateReviewSourceTotals(in); err != nil {
+		return Result{}, err
+	}
+	if err := validateReviewCompleteness(in); err != nil {
+		return Result{}, err
 	}
 	result, err := loadTaskResult(ctx, tx, resultID)
 	if err != nil {
@@ -497,6 +529,64 @@ func loadTaskReview(ctx context.Context, tx *sql.Tx, id string) (TaskReview, err
 		return review, err
 	}
 	return review, json.Unmarshal([]byte(data), &review)
+}
+
+// CurrentTaskResult reads one consistent decision view without walking the
+// submission/review event history. Reviews for superseded candidates stay in
+// TaskResultHistory and are never promoted into this view.
+func (s *Store) CurrentTaskResult(ctx context.Context, taskID string) (CurrentTaskResult, error) {
+	current := CurrentTaskResult{Reviews: []TaskReview{}}
+	if !observerUUID(taskID) {
+		return current, domain.Invalid("invalid task UUID")
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return current, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var exists int
+	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM tasks WHERE id=?", taskID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return current, &domain.Error{Code: "not_found", Message: "task not found"}
+		}
+		return current, err
+	}
+	var resultID string
+	err = tx.QueryRowContext(ctx, "SELECT result_id FROM current_task_results WHERE task_id=?", taskID).Scan(&resultID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return current, tx.Commit()
+	}
+	if err != nil {
+		return current, err
+	}
+	result, err := loadTaskResult(ctx, tx, resultID)
+	if err != nil {
+		return current, err
+	}
+	if result.TaskID != taskID {
+		return current, errors.New("current task result identity mismatch")
+	}
+	current.Result = &result
+	rows, err := tx.QueryContext(ctx, "SELECT record FROM task_reviews WHERE task_id=? AND result_id=? ORDER BY rowid", taskID, resultID)
+	if err != nil {
+		return CurrentTaskResult{Reviews: []TaskReview{}}, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return CurrentTaskResult{Reviews: []TaskReview{}}, err
+		}
+		var review TaskReview
+		if err := json.Unmarshal([]byte(data), &review); err != nil {
+			return CurrentTaskResult{Reviews: []TaskReview{}}, err
+		}
+		current.Reviews = append(current.Reviews, review)
+	}
+	if err := rows.Err(); err != nil {
+		return CurrentTaskResult{Reviews: []TaskReview{}}, err
+	}
+	return current, tx.Commit()
 }
 
 type taskResultHistoryID struct {

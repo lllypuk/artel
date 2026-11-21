@@ -248,6 +248,36 @@ func TestReviewBusinessKeyAuthorityAndLateHistory(t *testing.T) {
 	}
 }
 
+func TestCurrentTaskResultSeparatesDecisionEvidenceFromHistory(t *testing.T) {
+	s := openTest(t)
+	_, task := seed(t, s)
+	empty, err := s.CurrentTaskResult(t.Context(), task.ID)
+	if err != nil || empty.Result != nil || empty.Reviews == nil || len(empty.Reviews) != 0 {
+		t.Fatalf("confirmed empty current view: %+v %v", empty, err)
+	}
+	first := mustSubmitResult(t, s, task.ID, resultMutation("/first-current"), submitInput(resultRepoA, resultHeadA, ""))
+	second := mustSubmitResult(t, s, task.ID, resultMutation("/second-current"), submitInput(resultRepoA, resultHeadB, first.ID))
+	oldReview := mustAttachReview(t, s, task.ID, first.ID, resultMutation("/old-current-review"), reviewInput(first, "old-current"))
+	currentOne := mustAttachReview(t, s, task.ID, second.ID, resultMutation("/current-one"), reviewInput(second, "current-one"))
+	currentTwo := mustAttachReview(t, s, task.ID, second.ID, resultMutation("/current-two"), reviewInput(second, "current-two"))
+	current, err := s.CurrentTaskResult(t.Context(), task.ID)
+	if err != nil || current.Result == nil || current.Result.ID != second.ID || len(current.Reviews) != 2 {
+		t.Fatalf("current decision view: %+v %v", current, err)
+	}
+	if current.Reviews[0].ID != currentOne.ID || current.Reviews[1].ID != currentTwo.ID {
+		t.Fatalf("current reviews are incomplete or out of insertion order: %+v", current.Reviews)
+	}
+	for _, review := range current.Reviews {
+		if review.ResultID != second.ID || review.ID == oldReview.ID {
+			t.Fatalf("superseded review entered current view: %+v", review)
+		}
+	}
+	history, err := s.TaskResultHistory(t.Context(), task.ID, 0, 1)
+	if err != nil || len(history.Entries) != 1 || !history.HasMore || history.Entries[0].Result.ID != first.ID {
+		t.Fatalf("bounded history changed while reading current evidence: %+v %v", history, err)
+	}
+}
+
 func TestReviewCompletenessRequiresExactRespondingPairs(t *testing.T) {
 	result := TaskResult{ID: uuid.NewString(), TaskID: uuid.NewString(), Repo: resultRepoA, Base: resultBase, Head: resultHeadA}
 	valid := reviewInput(result, "complete")
@@ -309,9 +339,86 @@ func TestReviewCompletenessRequiresExactRespondingPairs(t *testing.T) {
 		t.Fatalf("valid degraded incomplete review rejected: %v", err)
 	}
 	degraded.Sources[0].Findings = 1
+	degraded.Findings = 1
 	if err := validateAttachReview(result.TaskID, result.ID, uuid.NewString(), degraded); err != nil {
-		t.Fatalf("degraded reporter's counts were rejected: %v", err)
+		t.Fatalf("degraded reporter's consistent counts were rejected: %v", err)
 	}
+	degraded.Findings = 0
+	if err := validateAttachReview(result.TaskID, result.ID, uuid.NewString(), degraded); err == nil {
+		t.Fatal("per-source findings exceeded the review total")
+	}
+}
+
+func TestReviewSourceCountsCannotExceedTotals(t *testing.T) {
+	result := TaskResult{ID: uuid.NewString(), TaskID: uuid.NewString(), Repo: resultRepoA, Base: resultBase, Head: resultHeadA}
+	for _, test := range []struct {
+		name  string
+		apply func(*AttachReviewInput)
+	}{
+		{name: "findings", apply: func(in *AttachReviewInput) { in.Sources[0].Findings = 1 }},
+		{name: "pre-existing", apply: func(in *AttachReviewInput) { in.Sources[0].PreExisting = 1 }},
+		{name: "open questions", apply: func(in *AttachReviewInput) { in.Sources[0].OpenQuestions = 1 }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := reviewInput(result, "counts")
+			test.apply(&input)
+			if err := validateAttachReview(result.TaskID, result.ID, uuid.NewString(), input); err == nil {
+				t.Fatal("source count greater than its total passed validation")
+			}
+		})
+	}
+}
+
+func TestLegacyReviewReceiptReplaysBeforeNewCompleteness(t *testing.T) {
+	s := openTest(t)
+	_, task := seed(t, s)
+	result := mustSubmitResult(t, s, task.ID, resultMutation("/legacy-submit"), submitInput(resultRepoA, resultHeadA, ""))
+	legacy := reviewInput(result, "legacy-complete-empty")
+	legacy.RequiredSources = []ReviewRequirement{}
+	legacy.Sources = []ReviewSource{}
+	legacyReview := TaskReview{ID: uuid.NewString(), TaskID: task.ID, ResultID: result.ID,
+		Repo: result.Repo, Base: result.Base, Head: result.Head, RevmuxTask: legacy.RevmuxTask, Run: legacy.Run,
+		RangeSource: "operator", ReportRef: legacy.ReportRef, Complete: true,
+		RequiredSources: []ReviewRequirement{}, Sources: []ReviewSource{}, IncompleteReasons: []string{}, CreatedAt: "2026-11-20T12:00:00Z"}
+	encoded, err := json.Marshal(legacyReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutation := resultMutation("/legacy-review")
+	mutation.Hash = observerHash(legacy)
+	response, err := resultResponse(201, legacyReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(t.Context(), `INSERT INTO task_reviews(id,task_id,result_id,repo,revmux_task,run,payload_hash,record)
+		VALUES(?,?,?,?,?,?,?,?)`, legacyReview.ID, task.ID, result.ID, result.Repo, legacy.RevmuxTask, legacy.Run, observerHash(legacy), string(encoded)); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := resultReceipt(t.Context(), tx, mutation, response); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateReviewCompleteness(legacy); err == nil {
+		t.Fatal("legacy fixture unexpectedly satisfies current completeness rules")
+	}
+	replayed, err := s.AttachReview(t.Context(), task.ID, result.ID, mutation, legacy)
+	if err != nil || replayed.Status != 201 || !bytes.Equal(replayed.Body, response.Body) {
+		t.Fatalf("legacy exact receipt did not replay: %+v %v", replayed, err)
+	}
+	changed := legacy
+	changed.ReportRef = "/reports/changed-legacy"
+	_, err = s.AttachReview(t.Context(), task.ID, result.ID, mutation, changed)
+	requireResultCode(t, err, "conflict")
+	_, err = s.AttachReview(t.Context(), task.ID, result.ID, resultMutation("/fresh-legacy-shape"), legacy)
+	requireResultCode(t, err, "invalid_request")
 }
 
 func TestArchivedProjectAllowsReceiptReplayButRejectsFreshResultWrites(t *testing.T) {

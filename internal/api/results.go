@@ -21,6 +21,9 @@ func mountTaskResults(mux *http.ServeMux, s *store.Store) {
 	mux.HandleFunc("GET /v1/tasks/{task_id}/results", func(w http.ResponseWriter, r *http.Request) {
 		listTaskResults(w, r, s)
 	})
+	mux.HandleFunc("GET /v1/tasks/{task_id}/results/current", func(w http.ResponseWriter, r *http.Request) {
+		currentTaskResult(w, r, s)
+	})
 	mux.HandleFunc("POST /v1/tasks/{task_id}/results/{result_id}/reviews", func(w http.ResponseWriter, r *http.Request) {
 		attachTaskReview(w, r, s)
 	})
@@ -181,6 +184,25 @@ func parseResultHistoryQuery(r *http.Request) (int64, int, error) {
 		}
 	}
 	return after, limit, nil
+}
+
+func currentTaskResult(w http.ResponseWriter, r *http.Request, s *store.Store) {
+	taskID := r.PathValue("task_id")
+	if !validUUID(taskID) || r.URL.RawQuery != "" {
+		publicError(w, domain.Invalid("invalid current result query"))
+		return
+	}
+	current, err := s.CurrentTaskResult(r.Context(), taskID)
+	if err != nil {
+		publicError(w, err)
+		return
+	}
+	data, err := json.Marshal(current)
+	if err != nil {
+		publicError(w, err)
+		return
+	}
+	send(w, 200, data)
 }
 
 func listTaskResults(w http.ResponseWriter, r *http.Request, s *store.Store) {

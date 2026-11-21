@@ -66,7 +66,9 @@ public:
   QVariant resultHistory() const;
   QString resultsError() const;
   bool resultsLoaded() const { return m_resultsLoaded; }
-  bool resultsLoading() const { return m_client->resultsLoading(); }
+  bool resultsLoading() const {
+    return m_client->currentResultLoading() || m_client->resultsLoading();
+  }
   bool resultsMore() const { return m_resultsMore; }
   bool queueStartEligible() const;
   QVariantMap project() const;
@@ -177,6 +179,7 @@ private:
   qint64 m_seenSequence = -1;
   qint64 m_version = 0, m_historyCursor = 0, m_resultsCursor = 0;
   QVariantList m_history, m_resultEntries;
+  QVariantMap m_currentResultData;
   QString m_currentResult;
   bool m_archived = false, m_historyMore = false, m_adopted = false,
        m_wasOnline = false, m_resultsLoaded = false, m_resultsMore = false;

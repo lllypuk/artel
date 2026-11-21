@@ -346,7 +346,99 @@ func TestGitCandidateEnvironmentIsolation(t *testing.T) {
 	}
 }
 
-func TestBindingDestinationCheckedBeforeSubmitAndFailureReportsCommittedID(t *testing.T) {
+func TestGitCandidateRejectsSHA256StorageAndAbbreviation(t *testing.T) {
+	h := newCLIResultHarness(t)
+	repo := filepath.Join(h.root, "sha256")
+	if err := os.Mkdir(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	h.git(t, repo, "init", "-q", "--object-format=sha256")
+	h.git(t, repo, "config", "user.name", "Fictional Owner")
+	h.git(t, repo, "config", "user.email", "owner@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "candidate.txt"), []byte("sha256\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.git(t, repo, "add", "candidate.txt")
+	h.git(t, repo, "commit", "-q", "-m", "Fictional SHA-256 commit")
+	full := h.git(t, repo, "rev-parse", "HEAD")
+	if len(full) != 64 {
+		t.Fatalf("SHA-256 fixture produced %q", full)
+	}
+	if _, err := validateGitCandidate(repo, full[:40], full[:40]); err == nil {
+		t.Fatal("40-character SHA-256 abbreviation passed SHA-1 candidate validation")
+	}
+}
+
+func TestGitCandidateUsesStdoutAndPreservesCommonDirWhitespace(t *testing.T) {
+	h := newCLIResultHarness(t)
+	repo, _, base, head := h.repository(t)
+	// A ref named like the object makes Git warn on stderr while cat-file still
+	// successfully reports the literal object's type on stdout.
+	h.git(t, repo, "tag", base, base)
+	if _, err := validateGitCandidate(repo, base, head); err != nil {
+		t.Fatalf("successful Git stdout was rejected because of stderr: %v", err)
+	}
+	bare := filepath.Join(h.root, "bare-repository ")
+	h.git(t, h.root, "clone", "-q", "--bare", repo, bare)
+	canonical, err := validateGitCandidate(bare, base, head)
+	if err != nil || canonical != bare {
+		t.Fatalf("trailing-space common-dir=%q want=%q err=%v", canonical, bare, err)
+	}
+}
+
+func TestGitCandidatePartialCloneDoesNotContactPromisor(t *testing.T) {
+	h := newCLIResultHarness(t)
+	repo, _, base, head := h.repository(t)
+	h.git(t, repo, "config", "uploadpack.allowFilter", "true")
+	h.git(t, repo, "config", "uploadpack.allowAnySHA1InWant", "true")
+	missing := h.git(t, repo, "commit-tree", head+"^{tree}", "-p", head, "-m", "Fictional unreferenced candidate")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := func(name string) (string, string) {
+		t.Helper()
+		logPath := filepath.Join(h.root, name+".contacted")
+		wrapper := filepath.Join(h.root, name+"-upload-pack")
+		script := "#!/bin/sh\nprintf contacted >>" + logPath + "\nexec \"" + realGit + "\" upload-pack \"$@\"\n"
+		// #nosec G306 -- Test-owned upload-pack wrapper must be executable.
+		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		destination := filepath.Join(h.root, name)
+		h.git(t, h.root, "clone", "-q", "--bare", "--filter=blob:none", "--upload-pack="+wrapper, "file://"+repo, destination)
+		h.git(t, destination, "config", "remote.origin.uploadpack", wrapper)
+		if err := os.WriteFile(logPath, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return destination, logPath
+	}
+	control, controlLog := clone("promisor-control")
+	// #nosec G204 -- Fixed Git executable and test-owned partial clone/object ID.
+	command := exec.CommandContext(t.Context(), "git", "-C", control, "cat-file", "-t", missing)
+	for _, entry := range isolatedGitEnvironment() {
+		if !strings.HasPrefix(entry, "GIT_NO_LAZY_FETCH=") {
+			command.Env = append(command.Env, entry)
+		}
+	}
+	output, err := command.Output()
+	if err != nil || string(output) != "commit\n" {
+		t.Fatalf("local promisor control did not resolve missing commit: %q %v", output, err)
+	}
+	if info, err := os.Stat(controlLog); err != nil || info.Size() == 0 {
+		t.Fatalf("instrumented local promisor was not contacted by control: %v", err)
+	}
+
+	partial, partialLog := clone("promisor-no-contact")
+	if _, err := validateGitCandidate(partial, base, missing); err == nil {
+		t.Fatal("missing candidate object passed validation")
+	}
+	if info, err := os.Stat(partialLog); err != nil || info.Size() != 0 {
+		t.Fatalf("candidate validation contacted local promisor: info=%v err=%v", info, err)
+	}
+}
+
+func TestBindingDestinationCheckedBeforeSubmit(t *testing.T) {
 	h := newCLIResultHarness(t)
 	repo, _, base, head := h.repository(t)
 	bindingPath := filepath.Join(h.root, "bindings", "first.json")
@@ -356,25 +448,73 @@ func TestBindingDestinationCheckedBeforeSubmitAndFailureReportsCommittedID(t *te
 		t.Fatal(err)
 	}
 	h.call(t, 1, h.submitArgs(repo, base, head, bindingPath, "01-review", "", uuid.NewString())...)
+	insecureParent := filepath.Join(h.root, "insecure-bindings")
+	// #nosec G301 -- Deliberately unsafe parent verifies pre-POST rejection.
+	if err := os.Mkdir(insecureParent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h.call(t, 1, h.submitArgs(repo, base, head, filepath.Join(insecureParent, "first.json"), "01-review", "", "")...)
 	var history store.TaskResultHistoryPage
 	h.ownerRequest(t, http.MethodGet, "/v1/tasks/"+h.task.ID+"/results?after=0&limit=100", "", nil, http.StatusOK, &history)
 	if len(history.Entries) != 0 || history.CurrentResultID != "" {
-		t.Fatalf("conflicting binding destination did not block submission: %+v", history)
+		t.Fatalf("unsafe binding destination did not block submission: %+v", history)
 	}
+}
 
-	requestID := uuid.NewString()
-	_, diagnostic := h.call(t, 1, h.submitArgs(repo, base, head, "/proc/artel-review-binding.json", "01-review", "", requestID)...)
-	h.ownerRequest(t, http.MethodGet, "/v1/tasks/"+h.task.ID+"/results?after=0&limit=100", "", nil, http.StatusOK, &history)
-	if len(history.Entries) != 1 || history.CurrentResultID == "" || !strings.Contains(diagnostic, "result committed with ID "+history.CurrentResultID) {
-		t.Fatalf("post-commit binding failure did not identify result: history=%+v diagnostic=%q", history, diagnostic)
+func TestPostCommitBindingFailureReportsGeneratedRequestID(t *testing.T) {
+	h := newCLIResultHarness(t)
+	repo, _, base, head := h.repository(t)
+	parent := filepath.Join(h.root, "post-commit-binding")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	retryBinding := filepath.Join(h.root, "bindings", "recovered.json")
-	output, _ := h.call(t, 0, h.submitArgs(repo, base, head, retryBinding, "01-review", "", requestID)...)
-	var result store.TaskResult
-	if err := json.Unmarshal([]byte(output), &result); err != nil || result.ID != history.CurrentResultID {
-		t.Fatalf("same-request recovery changed committed result: %s %v", output, err)
+	bindingPath := filepath.Join(parent, "first.json")
+	result := store.TaskResult{ID: uuid.NewString(), TaskID: h.task.ID, Repo: filepath.Join(repo, ".git"),
+		Base: base, Head: head, Summary: "Fictional owner summary", CreatedAt: "2026-11-20T12:00:00Z"}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("Idempotency-Key") == "" {
+			t.Error("generated request ID was not sent")
+		}
+		if requests == 1 {
+			// #nosec G302 -- Inject an unsafe directory after preflight and before SaveBinding.
+			if err := os.Chmod(parent, 0o755); err != nil {
+				t.Error(err)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(result)
+	}))
+	defer server.Close()
+	args := h.submitArgs(repo, base, head, bindingPath, "01-review", "", "")
+	args = append(args, "--endpoint", server.URL, "--token-file", h.tokenPath)
+	var out, diagnostic bytes.Buffer
+	if code := run(args, &out, &diagnostic); code != 1 {
+		t.Fatalf("post-commit failure exit=%d stderr=%s", code, diagnostic.String())
 	}
-	assertCLIBinding(t, retryBinding, result, base, head)
+	fields := strings.Fields(diagnostic.String())
+	if len(fields) == 0 {
+		t.Fatal("post-commit failure omitted recovery diagnostic")
+	}
+	requestID := fields[len(fields)-1]
+	if !validCanonicalID(requestID) || !strings.Contains(diagnostic.String(), "result committed with ID "+result.ID) ||
+		!strings.Contains(diagnostic.String(), "--request-id "+requestID) {
+		t.Fatalf("post-commit failure omitted effective recovery IDs: %q", diagnostic.String())
+	}
+	// #nosec G302 -- Restore the test-owned private directory for same-key recovery.
+	if err := os.Chmod(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	retry := h.submitArgs(repo, base, head, bindingPath, "01-review", "", requestID)
+	retry = append(retry, "--endpoint", server.URL, "--token-file", h.tokenPath)
+	out.Reset()
+	diagnostic.Reset()
+	if code := run(retry, &out, &diagnostic); code != 0 {
+		t.Fatalf("same-request recovery exit=%d stderr=%s", code, diagnostic.String())
+	}
+	assertCLIBinding(t, bindingPath, result, base, head)
 }
 
 func TestReviewsAttachEmptyRequirementsIsSavedIncomplete(t *testing.T) {

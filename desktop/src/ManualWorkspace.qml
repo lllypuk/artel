@@ -623,7 +623,7 @@ Item {
                             }
                             Caption {
                                 objectName: "noTaskResult"
-                                visible: manual.panel.resultsLoaded && !manual.panel.resultsLoading && !manual.panel.currentResult.id && !manual.panel.resultsMore && manual.panel.resultsError === ""
+                                visible: manual.panel.resultsLoaded && !manual.panel.resultsLoading && !manual.panel.currentResult.id && manual.panel.resultsError === ""
                                 text: qsTr("No result has been submitted for this task.")
                                 color: theme.muted
                                 wrapMode: Text.Wrap

@@ -23,8 +23,9 @@ import (
 const (
 	// MaxArtifactSize bounds each independently read report file. Raw findings
 	// are never copied into the owner request or response.
-	MaxArtifactSize = 4 * 1024 * 1024
-	bindingVersion  = 1
+	MaxArtifactSize    = 4 * 1024 * 1024
+	maxArtifactNesting = 100
+	bindingVersion     = 1
 )
 
 // Binding is the owner's pre-run assertion. Base and Head are literal commits,
@@ -69,8 +70,8 @@ func (b Binding) Validate() error {
 
 func rejectDuplicateKeys(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	var scan func() error
-	scan = func() error {
+	var scan func(int) error
+	scan = func(depth int) error {
 		token, err := decoder.Token()
 		if err != nil {
 			return err
@@ -78,6 +79,12 @@ func rejectDuplicateKeys(data []byte) error {
 		delimiter, ok := token.(json.Delim)
 		if !ok {
 			return nil
+		}
+		if delimiter != '{' && delimiter != '[' {
+			return errors.New("unexpected JSON delimiter")
+		}
+		if depth >= maxArtifactNesting {
+			return errors.New("JSON nesting limit exceeded")
 		}
 		switch delimiter {
 		case '{':
@@ -92,13 +99,13 @@ func rejectDuplicateKeys(data []byte) error {
 					return errors.New("duplicate JSON key")
 				}
 				seen[key] = true
-				if err := scan(); err != nil {
+				if err := scan(depth + 1); err != nil {
 					return err
 				}
 			}
 		case '[':
 			for decoder.More() {
-				if err := scan(); err != nil {
+				if err := scan(depth + 1); err != nil {
 					return err
 				}
 			}
@@ -108,7 +115,7 @@ func rejectDuplicateKeys(data []byte) error {
 		_, err = decoder.Token()
 		return err
 	}
-	if err := scan(); err != nil {
+	if err := scan(0); err != nil {
 		return errors.New("invalid or duplicate JSON object keys")
 	}
 	if _, err := decoder.Token(); err != io.EOF {
@@ -217,6 +224,9 @@ func ValidateBindingDestination(path string, binding Binding) error {
 		return err
 	}
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		if err := local.ValidatePrivateFileDestination(path); err != nil {
+			return errors.New("revmux binding destination unavailable or unsafe")
+		}
 		return nil
 	} else if err != nil {
 		return errors.New("revmux binding unavailable or unsafe")
@@ -572,8 +582,12 @@ func normalizeSources(manifestDoc manifest, findingsDoc findingsDocument, requir
 		return strings.Compare(a.Executor, b.Executor)
 	})
 	indexes := make(map[string]int, len(sources))
+	attributionIndexes := make(map[string]int, len(actual))
 	for index := range sources {
 		indexes[sources[index].Name] = index
+		if _, reported := actual[sources[index].Name]; reported {
+			attributionIndexes[sources[index].Name] = index
+		}
 	}
 	counts := []struct {
 		items       []reviewItem
@@ -584,7 +598,7 @@ func normalizeSources(manifestDoc manifest, findingsDoc findingsDocument, requir
 		{findingsDoc.OpenQuestions, func(source *store.ReviewSource) *int { return &source.OpenQuestions }},
 	}
 	for _, count := range counts {
-		if err := countItems(count.items, sources, indexes, count.selectCount); err != nil {
+		if err := countItems(count.items, sources, attributionIndexes, count.selectCount); err != nil {
 			return nil, nil, err
 		}
 	}
