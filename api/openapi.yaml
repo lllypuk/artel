@@ -544,9 +544,9 @@ components:
         required: {type: boolean, description: Derived from exact membership in required_sources.}
         responded: {type: boolean, description: 'A responded source with zero findings is not missing. Exactly one of responded and degraded is true.'}
         degraded: {type: boolean, description: 'Includes roster-only non-response evidence; a degraded reporter can still have counts.'}
-        findings: {type: integer, minimum: 0}
-        pre_existing: {type: integer, minimum: 0}
-        open_questions: {type: integer, minimum: 0}
+        findings: {type: integer, minimum: 0, maximum: 9007199254740991}
+        pre_existing: {type: integer, minimum: 0, maximum: 9007199254740991}
+        open_questions: {type: integer, minimum: 0, maximum: 9007199254740991}
     SubmitTaskResult:
       type: object
       additionalProperties: false
@@ -588,9 +588,9 @@ components:
         required_sources: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ReviewRequirement'}}
         sources: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/ReviewSource'}}
         incomplete_reasons: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 500, description: 'Non-empty valid UTF-8, additionally limited to 500 bytes; no NUL.'}}
-        findings: {type: integer, minimum: 0}
-        pre_existing: {type: integer, minimum: 0}
-        open_questions: {type: integer, minimum: 0}
+        findings: {type: integer, minimum: 0, maximum: 9007199254740991}
+        pre_existing: {type: integer, minimum: 0, maximum: 9007199254740991}
+        open_questions: {type: integer, minimum: 0, maximum: 9007199254740991}
     TaskReview:
       type: object
       additionalProperties: false
@@ -610,11 +610,11 @@ components:
         required_sources: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ReviewRequirement'}}
         sources: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/ReviewSource'}}
         incomplete_reasons: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 500, description: 'Non-empty valid UTF-8, additionally limited to 500 bytes; no NUL.'}}
-        findings: {type: integer, minimum: 0}
-        pre_existing: {type: integer, minimum: 0}
-        open_questions: {type: integer, minimum: 0}
+        findings: {type: integer, minimum: 0, maximum: 9007199254740991}
+        pre_existing: {type: integer, minimum: 0, maximum: 9007199254740991}
+        open_questions: {type: integer, minimum: 0, maximum: 9007199254740991}
         created_at: {type: string, format: date-time}
-        evidence_consistent: {type: boolean, description: 'Read-only consistency projection; false for legacy complete evidence with no required sources. Never rewrites a receipt, so an original legacy receipt body may omit it.'}
+        evidence_consistent: {type: boolean, description: 'Read-only consistency projection; false when legacy required-source flags/pairs or counters are inconsistent. Out-of-range persisted counters are saturated to the safe-integer limit on reads. Never rewrites a receipt, so an original legacy receipt body may omit it.'}
     CurrentTaskResult:
       type: object
       additionalProperties: false

@@ -71,6 +71,48 @@ func mustAttachReview(t *testing.T, s *Store, taskID, resultID string, m Mutatio
 	return review
 }
 
+func seedLegacyReviewReceipt(t *testing.T, s *Store, taskID string, result TaskResult, mutation Mutation, in AttachReviewInput) (TaskReview, Result) {
+	t.Helper()
+	review := TaskReview{ID: uuid.NewString(), TaskID: taskID, ResultID: result.ID,
+		Repo: result.Repo, Base: result.Base, Head: result.Head, RevmuxTask: in.RevmuxTask, Run: in.Run,
+		RangeSource: "operator", ReportRef: in.ReportRef, Complete: in.Complete,
+		RequiredSources: in.RequiredSources, Sources: in.Sources, IncompleteReasons: in.IncompleteReasons,
+		Findings: in.Findings, PreExisting: in.PreExisting, OpenQuestions: in.OpenQuestions,
+		CreatedAt: "2026-11-20T12:00:00Z"}
+	encoded, err := json.Marshal(review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	delete(fields, "evidence_consistent")
+	encoded, err = json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutation.Hash = observerHash(in)
+	response := Result{Status: 201, Body: encoded}
+	tx, err := s.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(t.Context(), `INSERT INTO task_reviews(id,task_id,result_id,repo,revmux_task,run,payload_hash,record)
+		VALUES(?,?,?,?,?,?,?,?)`, review.ID, taskID, result.ID, result.Repo, in.RevmuxTask, in.Run, observerHash(in), string(encoded)); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := resultReceipt(t.Context(), tx, mutation, response); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	return review, response
+}
+
 func TestResultReceiptBeforeCASRestartAndHistory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "results.sqlite")
 	s, err := Open(t.Context(), path)
@@ -395,42 +437,114 @@ func TestReviewSourceCountsCannotExceedTotals(t *testing.T) {
 	}
 }
 
+func TestReviewTotalsRequireAttributionButAllowSharedItems(t *testing.T) {
+	result := TaskResult{ID: uuid.NewString(), TaskID: uuid.NewString(), Repo: resultRepoA, Base: resultBase, Head: resultHeadA}
+	input := reviewInput(result, "shared-attribution")
+	input.Sources = append(input.Sources, ReviewSource{Name: "optional", Executor: "pi", Responded: true})
+	input.Findings = 1
+	input.Sources[0].Findings = 1
+	input.Sources[1].Findings = 1
+	if err := validateAttachReview(result.TaskID, result.ID, uuid.NewString(), input); err != nil {
+		t.Fatalf("two sources citing one finding were rejected: %v", err)
+	}
+	for _, counter := range []string{"findings", "pre_existing", "open_questions"} {
+		t.Run(counter, func(t *testing.T) {
+			unattributed := reviewInput(result, "unattributed-"+counter)
+			switch counter {
+			case "findings":
+				unattributed.Findings = 1
+			case "pre_existing":
+				unattributed.PreExisting = 1
+			case "open_questions":
+				unattributed.OpenQuestions = 1
+			}
+			if err := validateAttachReview(result.TaskID, result.ID, uuid.NewString(), unattributed); err == nil {
+				t.Fatal("positive aggregate without source attribution passed validation")
+			}
+		})
+	}
+}
+
+func TestLegacyOutOfRangeCountersRemainReadableAndInconsistent(t *testing.T) {
+	s := openTest(t)
+	_, task := seed(t, s)
+	result := mustSubmitResult(t, s, task.ID, resultMutation("/legacy-counter-submit"), submitInput(resultRepoA, resultHeadA, ""))
+	legacy := reviewInput(result, "legacy-counter")
+	legacy.Findings = MaxReviewCounter + 1
+	legacy.PreExisting = MaxReviewCounter + 1
+	legacy.OpenQuestions = MaxReviewCounter + 1
+	legacy.Sources[0].Findings = MaxReviewCounter + 1
+	legacy.Sources[0].PreExisting = MaxReviewCounter + 1
+	legacy.Sources[0].OpenQuestions = MaxReviewCounter + 1
+	mutation := resultMutation("/legacy-counter-review")
+	legacyReview, receipt := seedLegacyReviewReceipt(t, s, task.ID, result, mutation, legacy)
+	page, err := s.CurrentTaskReviews(t.Context(), task.ID, "", 20)
+	if err != nil || len(page.Reviews) != 1 {
+		t.Fatalf("legacy counter page was lost: %+v %v", page, err)
+	}
+	projected := page.Reviews[0]
+	if projected.EvidenceConsistent || projected.Findings != MaxReviewCounter || projected.PreExisting != MaxReviewCounter ||
+		projected.OpenQuestions != MaxReviewCounter || projected.Sources[0].Findings != MaxReviewCounter ||
+		projected.Sources[0].PreExisting != MaxReviewCounter || projected.Sources[0].OpenQuestions != MaxReviewCounter {
+		t.Fatalf("legacy counters were not saturated and marked inconsistent: %+v", projected)
+	}
+	replayed, err := s.AttachReview(t.Context(), task.ID, result.ID, mutation, legacy)
+	if err != nil || !bytes.Equal(replayed.Body, receipt.Body) {
+		t.Fatalf("legacy out-of-range exact receipt did not replay: %+v %v", replayed, err)
+	}
+	var stored string
+	if err := s.db.QueryRowContext(t.Context(), "SELECT record FROM task_reviews WHERE id=?", legacyReview.ID).Scan(&stored); err != nil || stored != string(receipt.Body) {
+		t.Fatalf("counter projection rewrote legacy storage: %v", err)
+	}
+	_, err = s.AttachReview(t.Context(), task.ID, result.ID, resultMutation("/fresh-counter"), legacy)
+	requireResultCode(t, err, "invalid_request")
+}
+
+func TestReviewEvidenceConsistencyChecksRequiredPairsAndFlags(t *testing.T) {
+	input := reviewInput(TaskResult{Repo: resultRepoA, Base: resultBase, Head: resultHeadA}, "projection")
+	valid := TaskReview{Complete: input.Complete, RequiredSources: input.RequiredSources, Sources: input.Sources}
+	for _, test := range []struct {
+		name   string
+		mutate func(*TaskReview)
+	}{
+		{name: "missing required pair", mutate: func(review *TaskReview) { review.Sources = []ReviewSource{} }},
+		{name: "executor mismatch", mutate: func(review *TaskReview) { review.Sources[0].Executor = "pi" }},
+		{name: "required pair degraded", mutate: func(review *TaskReview) {
+			review.Sources[0].Responded = false
+			review.Sources[0].Degraded = true
+		}},
+		{name: "required flag mismatch", mutate: func(review *TaskReview) { review.Sources[0].Required = false }},
+		{name: "responded and degraded", mutate: func(review *TaskReview) { review.Sources[0].Degraded = true }},
+		{name: "neither responded nor degraded", mutate: func(review *TaskReview) { review.Sources[0].Responded = false }},
+		{name: "optional marked required", mutate: func(review *TaskReview) {
+			review.Sources = append(review.Sources, ReviewSource{Name: "optional", Executor: "pi", Required: true, Responded: true})
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			review := valid
+			review.RequiredSources = append([]ReviewRequirement{}, valid.RequiredSources...)
+			review.Sources = append([]ReviewSource{}, valid.Sources...)
+			test.mutate(&review)
+			if reviewEvidenceConsistent(review) {
+				t.Fatal("contradictory legacy evidence projected as consistent")
+			}
+		})
+	}
+	if !reviewEvidenceConsistent(valid) {
+		t.Fatal("valid responding required pair projected as inconsistent")
+	}
+}
+
 func TestLegacyReviewReceiptReplaysBeforeNewCompleteness(t *testing.T) {
 	s := openTest(t)
 	_, task := seed(t, s)
 	result := mustSubmitResult(t, s, task.ID, resultMutation("/legacy-submit"), submitInput(resultRepoA, resultHeadA, ""))
-	legacy := reviewInput(result, "legacy-complete-empty")
-	legacy.RequiredSources = []ReviewRequirement{}
+	legacy := reviewInput(result, "legacy-complete-missing")
 	legacy.Sources = []ReviewSource{}
-	legacyReview := TaskReview{ID: uuid.NewString(), TaskID: task.ID, ResultID: result.ID,
-		Repo: result.Repo, Base: result.Base, Head: result.Head, RevmuxTask: legacy.RevmuxTask, Run: legacy.Run,
-		RangeSource: "operator", ReportRef: legacy.ReportRef, Complete: true,
-		RequiredSources: []ReviewRequirement{}, Sources: []ReviewSource{}, IncompleteReasons: []string{}, CreatedAt: "2026-11-20T12:00:00Z"}
-	encoded, err := json.Marshal(legacyReview)
-	if err != nil {
-		t.Fatal(err)
-	}
 	mutation := resultMutation("/legacy-review")
-	mutation.Hash = observerHash(legacy)
-	response, err := resultResponse(201, legacyReview)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tx, err := s.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.ExecContext(t.Context(), `INSERT INTO task_reviews(id,task_id,result_id,repo,revmux_task,run,payload_hash,record)
-		VALUES(?,?,?,?,?,?,?,?)`, legacyReview.ID, task.ID, result.ID, result.Repo, legacy.RevmuxTask, legacy.Run, observerHash(legacy), string(encoded)); err != nil {
-		_ = tx.Rollback()
-		t.Fatal(err)
-	}
-	if err := resultReceipt(t.Context(), tx, mutation, response); err != nil {
-		_ = tx.Rollback()
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
+	legacyReview, response := seedLegacyReviewReceipt(t, s, task.ID, result, mutation, legacy)
+	if bytes.Contains(response.Body, []byte("evidence_consistent")) {
+		t.Fatal("legacy fixture unexpectedly uses the current receipt schema")
 	}
 	if err := validateReviewCompleteness(legacy); err == nil {
 		t.Fatal("legacy fixture unexpectedly satisfies current completeness rules")
@@ -444,7 +558,7 @@ func TestLegacyReviewReceiptReplaysBeforeNewCompleteness(t *testing.T) {
 		t.Fatalf("legacy complete review was not flagged inconsistent: %+v %v", page, err)
 	}
 	var stored string
-	if err := s.db.QueryRowContext(t.Context(), "SELECT record FROM task_reviews WHERE id=?", legacyReview.ID).Scan(&stored); err != nil || stored != string(encoded) {
+	if err := s.db.QueryRowContext(t.Context(), "SELECT record FROM task_reviews WHERE id=?", legacyReview.ID).Scan(&stored); err != nil || stored != string(response.Body) {
 		t.Fatalf("read projection mutated legacy record: %v", err)
 	}
 	changed := legacy
@@ -455,33 +569,68 @@ func TestLegacyReviewReceiptReplaysBeforeNewCompleteness(t *testing.T) {
 	requireResultCode(t, err, "invalid_request")
 }
 
-func TestLegacyOptionalDegradedReceiptReplayRequiresExactHashAndKey(t *testing.T) {
+func TestLegacyMixedRosterReceiptReplayRequiresExactHashAndKey(t *testing.T) {
 	s := openTest(t)
 	_, task := seed(t, s)
 	result := mustSubmitResult(t, s, task.ID, resultMutation("/legacy-normalized-submit"), submitInput(resultRepoA, resultHeadA, ""))
 	legacy := reviewInput(result, "legacy-normalized")
+	legacy.Complete = false
+	legacy.RequiredSources = append(legacy.RequiredSources,
+		ReviewRequirement{Name: "required-degraded", Executor: "codex"},
+		ReviewRequirement{Name: "required-missing", Executor: "pi"})
+	legacy.Sources = append(legacy.Sources,
+		ReviewSource{Name: "optional-reported", Executor: "pi", Degraded: true},
+		ReviewSource{Name: "required-degraded", Executor: "codex", Required: true, Degraded: true})
+	legacy.IncompleteReasons = []string{
+		"required source degraded: required-degraded (codex)",
+		"required source missing: required-missing (pi)",
+	}
 	current := legacy
 	current.Sources = []ReviewSource{
-		{Name: "optional", Executor: "pi", Responded: false, Degraded: true},
-		legacy.Sources[0],
+		{Name: "optional-manifest", Executor: "codex", Degraded: true},
+		legacy.Sources[0], legacy.Sources[1], legacy.Sources[2],
+		{Name: "required-missing", Executor: "pi", Required: true, Degraded: true},
 	}
-	if hash, ok := legacyNormalizedReviewHash(current); !ok || hash != observerHash(legacy) {
-		t.Fatal("old normalized payload was not reconstructed exactly")
+	current.IncompleteReasons = []string{
+		"required source degraded: required-degraded (codex)",
+		"required source degraded: required-missing (pi)",
 	}
 	mutation := resultMutation("/legacy-normalized-review")
-	original, err := s.AttachReview(t.Context(), task.ID, result.ID, mutation, legacy)
-	if err != nil {
-		t.Fatal(err)
+	_, original := seedLegacyReviewReceipt(t, s, task.ID, result, mutation, legacy)
+	if hash, ok := legacyNormalizedReviewHash(current, original.Body); !ok || hash != observerHash(legacy) {
+		t.Fatal("old actual roster and reasons were not reconstructed exactly")
 	}
 	events := mustEvents(t, s)
 	replayed, err := s.AttachReview(t.Context(), task.ID, result.ID, mutation, current)
 	if err != nil || replayed.Status != 201 || !bytes.Equal(replayed.Body, original.Body) || !reflect.DeepEqual(events, mustEvents(t, s)) {
-		t.Fatalf("old receipt did not recover through new normalization: %+v %v", replayed, err)
+		t.Fatalf("old mixed-roster receipt did not recover through new normalization: %+v %v", replayed, err)
 	}
 	_, err = s.AttachReview(t.Context(), task.ID, result.ID, resultMutation("/fresh-new-normalization"), current)
 	requireResultCode(t, err, "conflict")
 	changed := current
 	changed.ReportRef = "/reports/not-the-original"
+	_, err = s.AttachReview(t.Context(), task.ID, result.ID, mutation, changed)
+	requireResultCode(t, err, "conflict")
+	changed = current
+	changed.Sources = append([]ReviewSource{}, current.Sources...)
+	changed.Sources[1].Findings = 1
+	changed.Findings = 1
+	_, err = s.AttachReview(t.Context(), task.ID, result.ID, mutation, changed)
+	requireResultCode(t, err, "conflict")
+}
+
+func TestCurrentReceiptRejectsChangedOptionalDegradedRoster(t *testing.T) {
+	s := openTest(t)
+	_, task := seed(t, s)
+	result := mustSubmitResult(t, s, task.ID, resultMutation("/current-normalized-submit"), submitInput(resultRepoA, resultHeadA, ""))
+	original := reviewInput(result, "current-normalized")
+	mutation := resultMutation("/current-normalized-review")
+	response, err := s.AttachReview(t.Context(), task.ID, result.ID, mutation, original)
+	if err != nil || !bytes.Contains(response.Body, []byte("evidence_consistent")) {
+		t.Fatalf("current receipt fixture: %+v %v", response, err)
+	}
+	changed := original
+	changed.Sources = append(changed.Sources, ReviewSource{Name: "optional", Executor: "pi", Degraded: true})
 	_, err = s.AttachReview(t.Context(), task.ID, result.ID, mutation, changed)
 	requireResultCode(t, err, "conflict")
 }

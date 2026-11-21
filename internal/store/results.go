@@ -1,11 +1,15 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -18,6 +22,7 @@ const (
 	TaskResultSubmitted  = "task.result.submit"
 	TaskReviewAttached   = "task.review.attach"
 	MaxRequiredSources   = 32
+	MaxReviewCounter     = 9007199254740991
 	resultHistoryMax     = 100
 	currentReviewPageMax = 50
 )
@@ -213,9 +218,31 @@ func validateReviewSummary(in AttachReviewInput) error {
 }
 
 func validateReviewSourceTotals(in AttachReviewInput) error {
-	for _, source := range in.Sources {
-		if source.Findings > in.Findings || source.PreExisting > in.PreExisting || source.OpenQuestions > in.OpenQuestions {
-			return domain.Invalid("review source counts exceed review totals")
+	if in.Findings > MaxReviewCounter || in.PreExisting > MaxReviewCounter || in.OpenQuestions > MaxReviewCounter {
+		return domain.Invalid("review totals exceed the safe integer limit")
+	}
+	totals := []struct {
+		total  int
+		counts func(ReviewSource) int
+	}{
+		{in.Findings, func(source ReviewSource) int { return source.Findings }},
+		{in.PreExisting, func(source ReviewSource) int { return source.PreExisting }},
+		{in.OpenQuestions, func(source ReviewSource) int { return source.OpenQuestions }},
+	}
+	for _, total := range totals {
+		attributed := false
+		for _, source := range in.Sources {
+			count := total.counts(source)
+			if count > MaxReviewCounter || count > total.total {
+				return domain.Invalid("review source counts exceed review totals or the safe integer limit")
+			}
+			attributed = attributed || count > 0
+		}
+		// Multiple sources may legitimately cite the same item, so their sum
+		// need not equal (or stay below) the aggregate. A positive aggregate
+		// must nevertheless have at least one source attribution.
+		if total.total > 0 && !attributed {
+			return domain.Invalid("positive review total has no source attribution")
 		}
 	}
 	return nil
@@ -288,34 +315,84 @@ func validateAttachReview(taskID, resultID, key string, in AttachReviewInput) er
 	return validateReviewCompleteness(in)
 }
 
-// legacyNormalizedReviewHash reconstructs only the old omission of optional,
-// non-responding degraded roster rows. The stored receipt hash remains the
-// authority: a matching reconstruction can replay that exact request, while a
-// fresh request or any other changed payload is still rejected.
-func legacyNormalizedReviewHash(in AttachReviewInput) (string, bool) {
-	legacy := in
-	legacy.Sources = make([]ReviewSource, 0, len(in.Sources))
-	omitted := false
-	for _, source := range in.Sources {
-		if !source.Required && !source.Responded && source.Degraded &&
-			source.Findings == 0 && source.PreExisting == 0 && source.OpenQuestions == 0 {
-			omitted = true
-			continue
-		}
-		legacy.Sources = append(legacy.Sources, source)
+func legacyCompletenessReasons(required []ReviewRequirement, sources []ReviewSource) []string {
+	reasons := []string{}
+	if len(required) == 0 {
+		reasons = append(reasons, "required source list is empty")
 	}
-	if !omitted {
+	byName := make(map[string]ReviewSource, len(sources))
+	for _, source := range sources {
+		byName[source.Name] = source
+	}
+	for _, requirement := range required {
+		source, ok := byName[requirement.Name]
+		if !ok || source.Executor != requirement.Executor {
+			reasons = append(reasons, "required source missing: "+requirement.Name+" ("+requirement.Executor+")")
+		} else if source.Degraded {
+			reasons = append(reasons, "required source degraded: "+requirement.Name+" ("+requirement.Executor+")")
+		}
+	}
+	slices.Sort(reasons)
+	return reasons
+}
+
+// legacyNormalizedReviewHash uses the actual source roster in a pre-normalization
+// receipt to remove only rows added by the current importer. In particular, an
+// actually reported optional degraded row is retained, while a manifest-only
+// required row recovers the old "missing" reason.
+func legacyNormalizedReviewHash(in AttachReviewInput, receiptBody []byte) (string, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(receiptBody, &fields); err != nil || fields == nil {
 		return "", false
 	}
+	if _, current := fields["evidence_consistent"]; current {
+		return "", false
+	}
+	var receipt TaskReview
+	decoder := json.NewDecoder(bytes.NewReader(receiptBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&receipt); err != nil || decoder.Decode(new(any)) != io.EOF || receipt.Sources == nil {
+		return "", false
+	}
+	actual := make(map[string]ReviewSource, len(receipt.Sources))
+	for _, source := range receipt.Sources {
+		actual[source.Name+"\x00"+source.Executor] = source
+	}
+	legacy := in
+	legacy.Sources = make([]ReviewSource, 0, len(receipt.Sources))
+	for _, source := range in.Sources {
+		key := source.Name + "\x00" + source.Executor
+		original, reported := actual[key]
+		if reported {
+			if !reflect.DeepEqual(source, original) {
+				return "", false
+			}
+			legacy.Sources = append(legacy.Sources, source)
+			delete(actual, key)
+			continue
+		}
+		if source.Responded || !source.Degraded || source.Findings != 0 || source.PreExisting != 0 || source.OpenQuestions != 0 {
+			return "", false
+		}
+	}
+	if len(legacy.Sources) == len(in.Sources) || len(actual) != 0 {
+		return "", false
+	}
+	legacy.IncompleteReasons = legacyCompletenessReasons(legacy.RequiredSources, legacy.Sources)
+	legacy.Complete = len(legacy.IncompleteReasons) == 0
 	return observerHash(legacy), true
 }
 
-func resultReplay(ctx context.Context, tx *sql.Tx, m Mutation, legacyHash string) (Result, bool, error) {
+func resultReplay(ctx context.Context, tx *sql.Tx, m Mutation, legacyInput *AttachReviewInput) (Result, bool, error) {
 	var method, path, hash string
 	var result Result
 	err := tx.QueryRowContext(ctx, "SELECT method,path,payload_hash,status,body FROM mutation_receipts WHERE key=?", m.Key).Scan(&method, &path, &hash, &result.Status, &result.Body)
 	if err == nil {
-		if method != m.Method || path != m.Path || hash != m.Hash && (legacyHash == "" || hash != legacyHash) {
+		legacyHash := ""
+		if hash != m.Hash && legacyInput != nil {
+			legacyHash, _ = legacyNormalizedReviewHash(*legacyInput, result.Body)
+		}
+		if method != m.Method || path != m.Path || hash != m.Hash && hash != legacyHash {
 			return Result{}, true, domain.Conflict("idempotency key reused for a different request")
 		}
 		return result, true, nil
@@ -370,7 +447,7 @@ func (s *Store) SubmitResult(ctx context.Context, taskID string, m Mutation, in 
 		return Result{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if replay, matched, err := resultReplay(ctx, tx, m, ""); err != nil || matched {
+	if replay, matched, err := resultReplay(ctx, tx, m, nil); err != nil || matched {
 		if err != nil {
 			return Result{}, err
 		}
@@ -453,13 +530,12 @@ func (s *Store) AttachReview(ctx context.Context, taskID, resultID string, m Mut
 		return Result{}, err
 	}
 	m.Hash = observerHash(in)
-	legacyHash, _ := legacyNormalizedReviewHash(in)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Result{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if replay, matched, err := resultReplay(ctx, tx, m, legacyHash); err != nil || matched {
+	if replay, matched, err := resultReplay(ctx, tx, m, &in); err != nil || matched {
 		if err != nil {
 			return Result{}, err
 		}
@@ -562,7 +638,42 @@ func insertTaskReview(ctx context.Context, tx *sql.Tx, taskID, projectID string,
 }
 
 func reviewEvidenceConsistent(review TaskReview) bool {
-	return !review.Complete || len(review.RequiredSources) != 0
+	required := make(map[string]bool, len(review.RequiredSources))
+	for _, requirement := range review.RequiredSources {
+		key := requirement.Name + "\x00" + requirement.Executor
+		if required[key] {
+			return false
+		}
+		required[key] = true
+	}
+	actual := make(map[string]ReviewSource, len(review.Sources))
+	for _, source := range review.Sources {
+		key := source.Name + "\x00" + source.Executor
+		if _, exists := actual[key]; exists || source.Responded == source.Degraded || source.Required != required[key] {
+			return false
+		}
+		actual[key] = source
+	}
+	complete := len(required) != 0
+	for _, requirement := range review.RequiredSources {
+		source, ok := actual[requirement.Name+"\x00"+requirement.Executor]
+		if !ok || !source.Responded || source.Degraded {
+			complete = false
+		}
+	}
+	return review.Complete == complete
+}
+
+func projectReviewCounter(value *int) bool {
+	if *value < 0 {
+		*value = 0
+		return false
+	}
+	if *value > MaxReviewCounter {
+		*value = MaxReviewCounter
+		return false
+	}
+	return true
 }
 
 func loadTaskReview(ctx context.Context, tx *sql.Tx, id string) (TaskReview, error) {
@@ -575,7 +686,18 @@ func loadTaskReview(ctx context.Context, tx *sql.Tx, id string) (TaskReview, err
 	if err := json.Unmarshal([]byte(data), &review); err != nil {
 		return review, err
 	}
-	review.EvidenceConsistent = reviewEvidenceConsistent(review)
+	countersConsistent := true
+	counters := []*int{&review.Findings, &review.PreExisting, &review.OpenQuestions}
+	for index := range review.Sources {
+		source := &review.Sources[index]
+		counters = append(counters, &source.Findings, &source.PreExisting, &source.OpenQuestions)
+	}
+	for _, counter := range counters {
+		if !projectReviewCounter(counter) {
+			countersConsistent = false
+		}
+	}
+	review.EvidenceConsistent = countersConsistent && reviewEvidenceConsistent(review)
 	return review, nil
 }
 

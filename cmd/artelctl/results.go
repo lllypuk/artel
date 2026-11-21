@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -30,7 +31,7 @@ type resultOwnerClient struct {
 
 // request accepts the result API's 201 creation response as well as its 200
 // replay/history response. Other owner commands retain their existing client.
-func (c resultOwnerClient) request(method, path, key string, body, result any) error {
+func (c resultOwnerClient) request(method, path, key string, body, result any, raw ...*[]byte) error {
 	var data []byte
 	var err error
 	if body != nil {
@@ -59,18 +60,27 @@ func (c resultOwnerClient) request(method, path, key string, body, result any) e
 		return errors.New("local API unavailable")
 	}
 	defer func() { _ = response.Body.Close() }()
-	data, err = io.ReadAll(io.LimitReader(response.Body, 4*1024*1024+1))
-	if err != nil || len(data) > 4*1024*1024 {
+	validStatus := response.StatusCode == http.StatusOK || method == http.MethodPost && response.StatusCode == http.StatusCreated
+	invalidResponse := func() error {
+		if key != "" && validStatus {
+			return fmt.Errorf("invalid API response; outcome unknown; retry with --request-id %s", key)
+		}
 		return errors.New("invalid API response")
 	}
-	validStatus := response.StatusCode == http.StatusOK || method == http.MethodPost && response.StatusCode == http.StatusCreated
+	data, err = io.ReadAll(io.LimitReader(response.Body, 4*1024*1024+1))
+	if err != nil || len(data) > 4*1024*1024 {
+		return invalidResponse()
+	}
 	if !validStatus {
 		return errors.New("API operation rejected")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(result); err != nil || decoder.Decode(new(any)) != io.EOF {
-		return errors.New("invalid API response")
+		return invalidResponse()
+	}
+	if len(raw) == 1 {
+		*raw[0] = bytes.Clone(data)
 	}
 	return nil
 }
@@ -164,13 +174,24 @@ func gitOutput(ctx context.Context, repo string, args ...string) (string, error)
 	return strings.TrimSuffix(string(output), "\n"), nil
 }
 
+func hasParentPathComponent(path string) bool {
+	return slices.Contains(strings.Split(filepath.ToSlash(path), "/"), "..")
+}
+
 // validateGitCandidate resolves common-dir identity for main and linked
 // worktrees and proves both literal lowercase SHAs name commits in that repo.
 func validateGitCandidate(repo, base, head string) (string, error) {
 	if !validFullSHA(base) || !validFullSHA(head) {
 		return "", errors.New("base and head must be full lowercase commit SHAs")
 	}
-	absolute, err := filepath.Abs(repo)
+	if hasParentPathComponent(repo) {
+		return "", errors.New("repository path must not contain parent components")
+	}
+	resolved, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		return "", errors.New("invalid repository path")
+	}
+	absolute, err := filepath.Abs(resolved)
 	if err != nil {
 		return "", errors.New("invalid repository path")
 	}
@@ -251,7 +272,7 @@ func submitResult(client resultOwnerClient, options submitOptions, canonicalRepo
 	}
 	if !validCanonicalID(result.ID) || result.TaskID != options.taskID || result.Repo != canonicalRepo ||
 		result.Base != options.base || result.Head != options.head || result.Summary != options.summary {
-		return result, errors.New("submission response identity mismatch")
+		return result, fmt.Errorf("submission response identity mismatch; outcome unknown; retry with --request-id %s", options.key)
 	}
 	return result, nil
 }
@@ -304,14 +325,18 @@ func parseRequiredSource(value string) (store.ReviewRequirement, error) {
 }
 
 func canonicalReportDir(path string) (string, error) {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return "", errors.New("invalid report directory")
+	if hasParentPathComponent(path) {
+		return "", errors.New("report directory must not contain parent components")
 	}
-	resolved, err := filepath.EvalSymlinks(absolute)
+	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return "", errors.New("report directory unavailable")
 	}
+	absolute, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", errors.New("invalid report directory")
+	}
+	resolved = absolute
 	// #nosec G703 -- The owner explicitly selects this canonical local report directory; no URL is opened.
 	info, err := os.Stat(resolved)
 	if err != nil || !info.IsDir() || !filepath.IsAbs(resolved) || filepath.Clean(resolved) != resolved {
@@ -395,26 +420,27 @@ func prepareReview(options attachOptions) (revmuximport.Binding, store.AttachRev
 	return binding, input, err
 }
 
-func attachReview(client resultOwnerClient, options attachOptions, binding revmuximport.Binding, input store.AttachReviewInput) (store.TaskReview, error) {
+func attachReview(client resultOwnerClient, options attachOptions, binding revmuximport.Binding, input store.AttachReviewInput) (store.TaskReview, []byte, error) {
 	var review store.TaskReview
+	var raw []byte
 	result, err := selectedResult(client, options.taskID, options.resultID)
 	if err != nil {
-		return review, err
+		return review, nil, err
 	}
 	if result.TaskID != options.taskID || input.Repo != result.Repo || input.Base != result.Base || input.Head != result.Head {
-		return review, errors.New("binding does not match selected submission")
+		return review, nil, errors.New("binding does not match selected submission")
 	}
 	path := "/v1/tasks/" + options.taskID + "/results/" + options.resultID + "/reviews"
-	if err := client.request(http.MethodPost, path, options.key, input, &review); err != nil {
-		return review, err
+	if err := client.request(http.MethodPost, path, options.key, input, &review, &raw); err != nil {
+		return review, nil, err
 	}
 	if !validCanonicalID(review.ID) || review.TaskID != options.taskID || review.ResultID != options.resultID ||
 		review.Repo != result.Repo || review.Base != result.Base || review.Head != result.Head ||
 		review.RevmuxTask != binding.RevmuxTask || review.Run != binding.Run || review.RangeSource != "operator" ||
 		review.ReportRef != input.ReportRef {
-		return review, errors.New("review response identity mismatch")
+		return review, nil, fmt.Errorf("review response identity mismatch; outcome unknown; retry with --request-id %s", options.key)
 	}
-	return review, nil
+	return review, raw, nil
 }
 
 func reviews(args []string, out, errOut io.Writer) int {
@@ -431,10 +457,9 @@ func reviews(args []string, out, errOut io.Writer) int {
 		return resultFail(errOut, "reviews", 1, err.Error())
 	}
 	defer closeResultClient(client)
-	review, err := attachReview(client, options, binding, input)
+	_, raw, err := attachReview(client, options, binding, input)
 	if err != nil {
 		return resultFail(errOut, "reviews", 1, err.Error())
 	}
-	encoded, _ := json.Marshal(review)
-	return printOutput(out, string(encoded))
+	return printOutput(out, string(raw))
 }

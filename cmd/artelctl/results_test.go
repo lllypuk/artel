@@ -346,6 +346,40 @@ func TestGitCandidateEnvironmentIsolation(t *testing.T) {
 	}
 }
 
+func TestResultPathsRejectParentComponentsAcrossSymlinks(t *testing.T) {
+	h := newCLIResultHarness(t)
+	repo, _, base, head := h.repository(t)
+	actual := filepath.Join(h.root, "actual")
+	if err := os.Mkdir(actual, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resolvedRepo := filepath.Join(actual, "repo")
+	if err := os.Rename(repo, resolvedRepo); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(actual, "inner")
+	if err := os.Mkdir(inner, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	shortcut := filepath.Join(h.root, "shortcut")
+	if err := os.Symlink(inner, shortcut); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := validateGitCandidate(filepath.Join(shortcut, "..", "repo"), base, head)
+	if err == nil {
+		t.Fatalf("symlink/parent repository was accepted as %q", canonical)
+	}
+	report := writeCLIReport(t, h.root, "fictional-task", "01-review")
+	resolvedReport := filepath.Join(actual, "report")
+	if err := os.Rename(report, resolvedReport); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err = canonicalReportDir(filepath.Join(shortcut, "..", "report"))
+	if err == nil {
+		t.Fatalf("symlink/parent report was accepted as %q", canonical)
+	}
+}
+
 func TestGitCandidateRejectsSHA256StorageAndAbbreviation(t *testing.T) {
 	h := newCLIResultHarness(t)
 	repo := filepath.Join(h.root, "sha256")
@@ -552,139 +586,99 @@ func TestSubmitLostResponseReportsEffectiveGeneratedRequestID(t *testing.T) {
 	}
 }
 
-func newLostReviewResponseProxy(t *testing.T, h *cliResultHarness) (*httptest.Server, *[]byte) {
-	t.Helper()
-	transport := &http.Transport{Proxy: nil}
-	upstream := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-	t.Cleanup(transport.CloseIdleConnections)
-	dropResponse := true
-	committed := []byte{}
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		request, err := http.NewRequestWithContext(r.Context(), r.Method, h.endpoint+r.URL.RequestURI(), r.Body)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		request.Header = r.Header.Clone()
-		// #nosec G704 -- Forwards only to this test's controlled ephemeral loopback daemon and result routes.
-		response, err := upstream.Do(request)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer func() { _ = response.Body.Close() }()
-		body, err := io.ReadAll(response.Body)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		if dropResponse && r.Method == http.MethodPost {
-			dropResponse = false
-			committed = bytes.Clone(body)
-			connection, _, err := http.NewResponseController(w).Hijack()
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			_ = connection.Close()
-			return
-		}
-		for name, values := range response.Header {
-			w.Header()[name] = values
-		}
-		w.WriteHeader(response.StatusCode)
-		_, _ = w.Write(body)
-	}))
-	t.Cleanup(proxy.Close)
-	return proxy, &committed
-}
-
-func TestReviewsAttachRecoversOldNormalizationAfterLostResponse(t *testing.T) {
+func TestSubmitTruncatedCreatedResponseReportsEffectiveGeneratedRequestID(t *testing.T) {
 	h := newCLIResultHarness(t)
 	repo, _, base, head := h.repository(t)
-	bindingPath := filepath.Join(h.root, "bindings", "first.json")
-	output, _ := h.call(t, 0, h.submitArgs(repo, base, head, bindingPath, "01-review", "", uuid.NewString())...)
-	var result store.TaskResult
-	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		t.Fatal(err)
-	}
-	report := writeCLIReport(t, h.root, "fictional-task", "01-review")
-	// The old CLI omitted this optional roster-only degraded row. The current
-	// command retains it, so only the daemon's stored legacy hash can authorize
-	// exact-request recovery.
-	manifestPath := filepath.Join(report, "manifest.json")
-	findingsPath := filepath.Join(report, "findings.json")
-	var manifest, findings map[string]any
-	manifestData, err := os.ReadFile(manifestPath) // #nosec G304 -- Test-owned synthetic artifact.
-	if err != nil || json.Unmarshal(manifestData, &manifest) != nil {
-		t.Fatal(err)
-	}
-	manifest["degraded"] = []string{"optional"}
-	findingsData, err := os.ReadFile(findingsPath) // #nosec G304 -- Test-owned synthetic artifact.
-	if err != nil || json.Unmarshal(findingsData, &findings) != nil {
-		t.Fatal(err)
-	}
-	sources := findings["sources"].(map[string]any)
-	sources["agents"] = []any{sources["agents"].([]any)[0]}
-	sources["reported"] = 1
-	findings["open_questions"] = []any{}
-	for path, value := range map[string]any{manifestPath: manifest, findingsPath: findings} {
-		data, err := json.Marshal(value)
-		if err != nil || os.WriteFile(path, data, 0o600) != nil {
-			t.Fatal(err)
+	sentID := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sentID = r.Header.Get("Idempotency-Key")
+		connection, buffered, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
 		}
+		_, _ = buffered.WriteString("HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{\"id\":")
+		_ = buffered.Flush()
+		_ = connection.Close()
+	}))
+	defer server.Close()
+	args := h.submitArgs(repo, base, head, filepath.Join(h.root, "binding", "truncated.json"), "01-review", "", "")
+	args = append(args, "--endpoint", server.URL, "--token-file", h.tokenPath)
+	var out, diagnostic bytes.Buffer
+	if code := run(args, &out, &diagnostic); code != 1 {
+		t.Fatalf("truncated created response exit=%d stderr=%s", code, diagnostic.String())
 	}
+	if !validCanonicalID(sentID) || !strings.Contains(diagnostic.String(), "outcome unknown; retry with --request-id "+sentID) {
+		t.Fatalf("truncated created response did not expose effective sent UUID %q: %q", sentID, diagnostic.String())
+	}
+}
+
+func TestReviewsAttachPreservesLegacyReceiptFieldAbsence(t *testing.T) {
+	h := newCLIResultHarness(t)
+	repo, _, base, head := h.repository(t)
+	canonicalRepo, err := validateGitCandidate(repo, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := revmuximport.Binding{Version: 1, Repo: canonicalRepo, RevmuxTask: "fictional-task", Run: "01-review",
+		Base: base, Head: head, RangeSource: "operator"}
+	bindingPath := filepath.Join(h.root, "bindings", "legacy.json")
+	if err := revmuximport.SaveBinding(bindingPath, binding); err != nil {
+		t.Fatal(err)
+	}
+	report := writeCLIReport(t, h.root, binding.RevmuxTask, binding.Run)
+	result := store.TaskResult{ID: uuid.NewString(), TaskID: h.task.ID, Repo: canonicalRepo, Base: base, Head: head,
+		Summary: "Fictional owner summary", CreatedAt: "2026-11-20T11:00:00Z"}
 	requestID := uuid.NewString()
 	args := h.attachArgs(result.ID, bindingPath, report, requestID)
 	options, err := parseAttachOptions(args[1:])
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, normalized, err := prepareReview(options)
-	if err != nil || len(normalized.Sources) != 2 || normalized.Sources[0].Name != "optional" {
-		t.Fatalf("new normalization=%+v err=%v", normalized, err)
-	}
-	legacy := normalized
-	legacy.Sources = []store.ReviewSource{normalized.Sources[1]}
-
-	proxy, committed := newLostReviewResponseProxy(t, h)
-	payload, err := json.Marshal(legacy)
+	_, input, err := prepareReview(options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		proxy.URL+"/v1/tasks/"+h.task.ID+"/results/"+result.ID+"/reviews", bytes.NewReader(payload))
+	review := store.TaskReview{ID: uuid.NewString(), TaskID: h.task.ID, ResultID: result.ID,
+		Repo: result.Repo, Base: result.Base, Head: result.Head, RevmuxTask: binding.RevmuxTask, Run: binding.Run,
+		RangeSource: "operator", ReportRef: input.ReportRef, Complete: input.Complete, RequiredSources: input.RequiredSources,
+		Sources: input.Sources, IncompleteReasons: input.IncompleteReasons, Findings: input.Findings,
+		PreExisting: input.PreExisting, OpenQuestions: input.OpenQuestions, CreatedAt: "2026-11-20T12:00:00Z"}
+	encoded, err := json.Marshal(review)
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := local.ReadToken(h.tokenPath)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	delete(fields, "evidence_consistent")
+	legacyBody, err := json.Marshal(fields)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Idempotency-Key", requestID)
-	// #nosec G704 -- Calls only the controlled ephemeral loopback proxy created above.
-	if response, err := proxy.Client().Do(request); err == nil {
-		_ = response.Body.Close()
-		t.Fatal("old request response was not lost")
-	}
-	args = append(args, "--endpoint", proxy.URL, "--token-file", h.tokenPath)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(store.TaskResultHistoryPage{CurrentResultID: result.ID,
+				Entries: []store.TaskResultHistoryEntry{{Seq: 1, Kind: "result", Result: &result}}, NextAfter: 1})
+			return
+		}
+		if r.Method != http.MethodPost || r.Header.Get("Idempotency-Key") != requestID {
+			t.Errorf("unexpected mutation request: %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(legacyBody)
+	}))
+	defer server.Close()
+	args = append(args, "--endpoint", server.URL, "--token-file", h.tokenPath)
 	var out, diagnostic bytes.Buffer
 	if code := run(args, &out, &diagnostic); code != 0 {
-		t.Fatalf("new CLI did not recover old receipt: exit=%d stderr=%s", code, diagnostic.String())
+		t.Fatalf("legacy receipt replay exit=%d stderr=%s", code, diagnostic.String())
 	}
-	if strings.TrimSpace(out.String()) != string(*committed) {
-		t.Fatalf("new CLI did not return original receipt:\n%s\nwant:\n%s", out.String(), *committed)
+	if strings.TrimSpace(out.String()) != string(legacyBody) || strings.Contains(out.String(), "evidence_consistent") {
+		t.Fatalf("CLI changed the validated legacy receipt bytes:\n%s\nwant:\n%s", out.String(), legacyBody)
 	}
-	var history store.TaskResultHistoryPage
-	h.ownerRequest(t, http.MethodGet, "/v1/tasks/"+h.task.ID+"/results?after=0&limit=100", "", nil, http.StatusOK, &history)
-	if len(history.Entries) != 2 {
-		t.Fatalf("receipt recovery wrote another review: %+v", history)
-	}
-	h.call(t, 1, h.attachArgs(result.ID, bindingPath, report, uuid.NewString())...)
 }
 
 func TestReviewsAttachEmptyRequirementsIsSavedIncomplete(t *testing.T) {

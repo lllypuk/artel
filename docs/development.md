@@ -235,9 +235,10 @@ ATTACH_JSON=$("$ARTELCTL" reviews attach --task-id "$TASK_ID" --result-id "$RESU
 Repeat the **same command with the same request ID** after an uncertain response;
 the diagnostic prints a generated ID when the response is lost. Exact receipt
 replay requires the same normalized payload hash. As a narrow upgrade exception,
-the daemon also reconstructs the old payload that omitted manifest-only optional
-degraded sources, and returns the original receipt only when that reconstruction
-matches its stored hash; fresh requests retain the new normalization. An
+the daemon reconstructs the old actual-source roster and old required-source
+reasons for receipts that omit `evidence_consistent`; it returns the original
+receipt only when that reconstruction matches its stored hash. Current-format
+receipts and fresh requests retain exact payload matching and the new normalization. An
 identical already-attached repo/task/run with a fresh request ID returns the
 original review without another event only while the project is not archived.
 Exact receipt replay with the original request ID remains available after

@@ -66,7 +66,7 @@ func apiReviewInput(result store.TaskResult, run string) store.AttachReviewInput
 		RevmuxTask: "api-review", Run: run, RangeSource: "operator", ReportRef: "/tmp/report/" + run,
 		Complete:          false,
 		RequiredSources:   []store.ReviewRequirement{{Name: "reviewer", Executor: "codex"}},
-		Sources:           []store.ReviewSource{{Name: "reviewer", Executor: "codex", Required: true, Responded: false, Degraded: true}},
+		Sources:           []store.ReviewSource{{Name: "reviewer", Executor: "codex", Required: true, Responded: false, Degraded: true, PreExisting: 1, OpenQuestions: 2}},
 		IncompleteReasons: []string{"required source degraded"}, Findings: 0, PreExisting: 1, OpenQuestions: 2,
 	}
 }
@@ -244,6 +244,32 @@ func TestOwnerReviewCompletenessAndUTF8ByteLimits(t *testing.T) {
 	apiSubmit(t, other, uuid.NewString(), rejected, 400)
 }
 
+func TestReviewCounterSafeIntegerLimitAndContract(t *testing.T) {
+	f := newAPIResultFixture(t)
+	resultBody := apiSubmit(t, f, uuid.NewString(), apiSubmitInput(""), 201)
+	var result store.TaskResult
+	if err := json.Unmarshal(resultBody, &result); err != nil {
+		t.Fatal(err)
+	}
+	accepted := apiReviewInput(result, "safe-counter")
+	accepted.Findings = store.MaxReviewCounter
+	accepted.Sources[0].Findings = store.MaxReviewCounter
+	apiAttach(t, f, result.ID, uuid.NewString(), accepted, 201)
+	rejected := apiReviewInput(result, "unsafe-counter")
+	rejected.Findings = store.MaxReviewCounter + 1
+	rejected.Sources[0].Findings = store.MaxReviewCounter + 1
+	apiAttach(t, f, result.ID, uuid.NewString(), rejected, 400)
+	for _, schemaName := range []string{"ReviewSource", "AttachTaskReview", "TaskReview"} {
+		schema := contract(t).Components.Schemas[schemaName].Value
+		for _, name := range []string{"findings", "pre_existing", "open_questions"} {
+			maximum := schema.Properties[name].Value.Max
+			if maximum == nil || *maximum != store.MaxReviewCounter {
+				t.Fatalf("%s %s maximum=%v", schemaName, name, maximum)
+			}
+		}
+	}
+}
+
 func TestResultWireRejectsNullOmittedAndAliasFields(t *testing.T) {
 	f := newAPIResultFixture(t)
 	for _, body := range []string{
@@ -329,6 +355,7 @@ func TestReviewRequiredSourceLimitMatchesReasons(t *testing.T) {
 		input.IncompleteReasons[index] = "required source missing: " + name
 	}
 	input.Complete = false
+	input.Findings, input.PreExisting, input.OpenQuestions = 0, 0, 0
 	apiAttach(t, f, result.ID, uuid.NewString(), input, 201)
 	input.RequiredSources = append(input.RequiredSources, store.ReviewRequirement{Name: "one-too-many", Executor: "codex"})
 	input.IncompleteReasons = append(input.IncompleteReasons, "required source missing: one-too-many")
