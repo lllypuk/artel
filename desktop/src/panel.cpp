@@ -12,6 +12,27 @@ QVariantMap find(ObjectModel *model, const QString &id) {
       return model->get(i);
   return {};
 }
+QVariantMap editableFields(const QString &editorKind,
+                           const QVariantMap &value) {
+  if (editorKind == "project")
+    return {{"name", value.value("name", "")},
+            {"root_path", value.value("root_path", "")},
+            {"description", value.value("description", "")}};
+  const auto workKind = value.value("kind", "task").toString();
+  QVariantMap fields = {
+      {"title", value.value("title", "")},
+      {"description", value.value("description", "")},
+      {"acceptance_criteria", value.value("acceptance_criteria", "")},
+      {"kind", workKind}};
+  if (workKind != "epic")
+    fields.insert("parent_id", value.value("parent_id", ""));
+  if (workKind == "bug") {
+    fields.insert("expected_behavior", value.value("expected_behavior", ""));
+    fields.insert("actual_behavior", value.value("actual_behavior", ""));
+    fields.insert("fix_evidence", value.value("fix_evidence", ""));
+  }
+  return fields;
+}
 QVariantMap mergeQuestion(const QVariantMap &current, QVariantMap incoming) {
   if (current.value("status").toString() != "open" &&
       incoming.value("status").toString() == "open")
@@ -677,7 +698,8 @@ QString Panel::kindLabel(const QString &kind) const {
     return tr("Bug");
   return tr("Task");
 }
-QVariantMap Panel::workRow(QVariantMap row) const {
+QVariantMap Panel::workRow(QVariantMap row,
+                           const QVariantMap *knownParent) const {
   if (row.isEmpty())
     return row;
   const auto kind = row.value("kind", "task").toString();
@@ -685,7 +707,8 @@ QVariantMap Panel::workRow(QVariantMap row) const {
   row.insert("kindLabel", kindLabel(kind));
   row.insert("stateLabel", stateLabel(row.value("state").toString()));
   const auto parent =
-      find(m_client->tasks(), row.value("parent_id").toString());
+      knownParent ? *knownParent
+                  : find(m_client->tasks(), row.value("parent_id").toString());
   row.insert("parentTitle", parent.value("title"));
   row.insert("parentState", parent.value("state"));
   const auto summary = row.value("summary").toMap();
@@ -754,7 +777,7 @@ QVariantList Panel::epicChildren() const {
   for (int i = 0; i < m_client->tasks()->rowCount(); ++i) {
     auto row = m_client->tasks()->get(i);
     if (row.value("parent_id").toString() == m_task)
-      rows.append(workRow(row));
+      rows.append(workRow(row, &selected));
   }
   return rows;
 }
@@ -944,25 +967,7 @@ bool Panel::begin(const QString &kind, const QVariantMap &value) {
   m_editorProject = m_project;
   m_editorInstance = m_client->instance();
   m_adopted = false;
-  QVariantMap fields;
-  if (kind == "project") {
-    fields = {{"name", value.value("name", "")},
-              {"root_path", value.value("root_path", "")},
-              {"description", value.value("description", "")}};
-  } else {
-    const auto kind = value.value("kind", "task").toString();
-    fields = {{"title", value.value("title", "")},
-              {"description", value.value("description", "")},
-              {"acceptance_criteria", value.value("acceptance_criteria", "")},
-              {"kind", kind}};
-    if (kind != "epic")
-      fields.insert("parent_id", value.value("parent_id", ""));
-    if (kind == "bug") {
-      fields.insert("expected_behavior", value.value("expected_behavior", ""));
-      fields.insert("actual_behavior", value.value("actual_behavior", ""));
-      fields.insert("fix_evidence", value.value("fix_evidence", ""));
-    }
-  }
+  const auto fields = editableFields(kind, value);
   m_client->setDraft(fields);
   m_editorBase = fields;
   m_sentEditorBase.clear();
@@ -1089,18 +1094,24 @@ void Panel::reload() {
   loadResults();
 }
 bool Panel::rebase() {
-  // Explicit owner action: retain text but adopt the freshly loaded version.
-  if (!writable() || m_client->loading() || m_editorId.isEmpty() ||
-      m_editorInstance != m_client->instance())
+  // Explicit owner action: retain text but adopt the freshly loaded editable
+  // base. A parent-state conflict need not advance (or create) the work row.
+  if (!writable() || m_client->loading() ||
+      m_editorInstance != m_client->instance() ||
+      (m_editorId.isEmpty() && m_kind != "task"))
     return false;
-  const auto row =
-      find(m_kind == "project" ? m_client->projects() : m_client->tasks(),
-           m_editorId);
-  if (row.isEmpty())
-    return false;
-  if (row.value("version").toLongLong() <= m_version)
-    return false;
-  m_version = row.value("version").toLongLong();
+  if (!m_editorId.isEmpty()) {
+    const auto row =
+        find(m_kind == "project" ? m_client->projects() : m_client->tasks(),
+             m_editorId);
+    if (row.isEmpty())
+      return false;
+    const auto version = row.value("version").toLongLong();
+    if (version < m_version || (m_kind == "project" && version == m_version))
+      return false;
+    m_version = version;
+    m_editorBase = editableFields(m_kind, row);
+  }
   m_adopted = true;
   emit changed();
   return true;
@@ -1179,11 +1190,10 @@ bool Panel::allowed(const QString &target) const {
       return state == "in_progress" || state == "closed";
     if (target != "closed" || state != "in_progress")
       return false;
-    for (const auto &child : epicChildren())
-      if (!QStringList{"done", "cancelled"}.contains(
-              child.toMap().value("state").toString()))
-        return false;
-    return true;
+    const auto summary = selected.value("summary").toMap();
+    return summary.value("backlog").toInt() == 0 &&
+           summary.value("queued").toInt() == 0 &&
+           summary.value("in_progress").toInt() == 0;
   }
   if (!m_resultsLoaded)
     return false;

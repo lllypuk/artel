@@ -186,7 +186,8 @@ private:
   QString answerKey(const QString &question) const;
   void discardAnswerDraft(const QString &key);
   QVariantList queueIds() const;
-  QVariantMap workRow(QVariantMap row) const;
+  QVariantMap workRow(QVariantMap row,
+                      const QVariantMap *knownParent = nullptr) const;
   bool executable(const QVariantMap &row) const;
   bool begin(const QString &kind, const QVariantMap &value);
   ApiClient *m_client;

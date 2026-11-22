@@ -905,41 +905,51 @@ components:
         version: {$ref: '#/components/schemas/Version'}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+    Epic:
+      title: Epic
+      required: [summary]
+      properties:
+        kind: {type: string, enum: [epic]}
+        state: {type: string, enum: [open, in_progress, closed]}
+        summary: {$ref: '#/components/schemas/EpicSummary'}
+      not:
+        anyOf:
+          - {required: [parent_id]}
+          - {required: [expected_behavior]}
+          - {required: [actual_behavior]}
+          - {required: [fix_evidence]}
+    TaskWork:
+      title: Task
+      properties:
+        kind: {type: string, enum: [task]}
+        state: {type: string, enum: [backlog, queued, in_progress, done, cancelled]}
+      not:
+        anyOf:
+          - {required: [summary]}
+          - {required: [expected_behavior]}
+          - {required: [actual_behavior]}
+          - {required: [fix_evidence]}
+    Bug:
+      title: Bug
+      properties:
+        kind: {type: string, enum: [bug]}
+        state: {type: string, enum: [backlog, queued, in_progress, done, cancelled]}
+      not:
+        required: [summary]
     Task:
       type: object
       additionalProperties: false
       required: [id, project_id, kind, title, description, acceptance_criteria, state, version, created_at, updated_at]
       discriminator:
         propertyName: kind
+        mapping:
+          epic: '#/components/schemas/Epic'
+          task: '#/components/schemas/TaskWork'
+          bug: '#/components/schemas/Bug'
       oneOf:
-        - title: Epic
-          required: [summary]
-          properties:
-            kind: {type: string, enum: [epic]}
-            state: {type: string, enum: [open, in_progress, closed]}
-            summary: {$ref: '#/components/schemas/EpicSummary'}
-          not:
-            anyOf:
-              - {required: [parent_id]}
-              - {required: [expected_behavior]}
-              - {required: [actual_behavior]}
-              - {required: [fix_evidence]}
-        - title: Task
-          properties:
-            kind: {type: string, enum: [task]}
-            state: {type: string, enum: [backlog, queued, in_progress, done, cancelled]}
-          not:
-            anyOf:
-              - {required: [summary]}
-              - {required: [expected_behavior]}
-              - {required: [actual_behavior]}
-              - {required: [fix_evidence]}
-        - title: Bug
-          properties:
-            kind: {type: string, enum: [bug]}
-            state: {type: string, enum: [backlog, queued, in_progress, done, cancelled]}
-          not:
-            required: [summary]
+        - {$ref: '#/components/schemas/Epic'}
+        - {$ref: '#/components/schemas/TaskWork'}
+        - {$ref: '#/components/schemas/Bug'}
       properties:
         id: {$ref: '#/components/schemas/UUID'}
         project_id: {$ref: '#/components/schemas/UUID'}
