@@ -82,6 +82,25 @@ func (f *fixture) getProject(id string) domain.Project {
 	f.t.Fatal("missing project")
 	return domain.Project{}
 }
+func (f *fixture) getTask(id string) domain.Task {
+	f.t.Helper()
+	for _, task := range f.snapshot().Tasks {
+		if task.ID == id {
+			return task
+		}
+	}
+	f.t.Fatal("missing task")
+	return domain.Task{}
+}
+func (f *fixture) work(p domain.Project, kind domain.Kind, title string) domain.Task {
+	f.t.Helper()
+	c := app.Command{Action: app.CreateTask, ProjectID: p.ID, Title: &title}
+	if kind != "" {
+		c.Kind = &kind
+	}
+	created := decode[domain.Task](f.t, f.run(c))
+	return f.getTask(created.ID)
+}
 func (f *fixture) reject(c app.Command, code string) {
 	f.t.Helper()
 	before := f.snapshot()
@@ -378,6 +397,230 @@ func TestConcurrentReorderStartArchive(t *testing.T) {
 			}
 			if current > 1 {
 				t.Fatal("multiple current tasks")
+			}
+		})
+	}
+}
+
+func TestWorkTypeCreationDefaultsAndBugFields(t *testing.T) {
+	f := setup(t)
+	p := f.project()
+	legacy := f.getTask(f.task(p).ID)
+	if legacy.Kind != domain.KindTask || legacy.State != domain.Backlog || legacy.ParentID != "" {
+		t.Fatalf("legacy create did not default to an unparented Task: %+v", legacy)
+	}
+	epic := f.work(p, domain.KindEpic, "Epic")
+	if epic.State != domain.Open || epic.Kind != domain.KindEpic {
+		t.Fatalf("Epic create: %+v", epic)
+	}
+	parent, expected, actual, evidence := epic.ID, "expected", "actual", "owner evidence"
+	created := decode[domain.Task](t, f.run(app.Command{Action: app.CreateTask, ProjectID: p.ID, Kind: ptr(domain.KindBug),
+		Title: ptr("Bug"), ParentID: &parent, ExpectedBehavior: &expected, ActualBehavior: &actual, FixEvidence: &evidence}))
+	bug := f.getTask(created.ID)
+	if bug.Kind != domain.KindBug || bug.State != domain.Backlog || bug.ParentID != epic.ID ||
+		bug.ExpectedBehavior != expected || bug.ActualBehavior != actual || bug.FixEvidence != evidence {
+		t.Fatalf("Bug create: %+v", bug)
+	}
+	empty := ""
+	unparented := decode[domain.Task](t, f.run(app.Command{Action: app.CreateTask, ProjectID: p.ID, Kind: ptr(domain.KindTask), Title: ptr("Explicit Task"), ParentID: &empty}))
+	if got := f.getTask(unparented.ID); got.Kind != domain.KindTask || got.ParentID != "" {
+		t.Fatalf("explicit Task create: %+v", got)
+	}
+}
+
+func TestWorkTypeRejectsInvalidRelationsAndFields(t *testing.T) {
+	f := setup(t)
+	p, other := f.project(), f.project()
+	legacy := f.getTask(f.task(p).ID)
+	epic := f.work(p, domain.KindEpic, "Epic")
+	foreignEpic := f.work(other, domain.KindEpic, "Foreign Epic")
+	bug := f.work(p, domain.KindBug, "Bug")
+	empty := ""
+	f.reject(app.Command{Action: app.CreateTask, ProjectID: p.ID, Kind: ptr(domain.Kind("story")), Title: ptr("bad kind")}, "invalid_request")
+	for _, kind := range []domain.Kind{domain.KindTask, domain.KindEpic} {
+		f.reject(app.Command{Action: app.CreateTask, ProjectID: p.ID, Kind: &kind, Title: ptr("wrong Bug fields"), ExpectedBehavior: &empty}, "invalid_request")
+	}
+	f.reject(app.Command{Action: app.CreateTask, ProjectID: p.ID, Kind: ptr(domain.KindEpic), Title: ptr("nested Epic"), ParentID: &empty}, "invalid_request")
+	f.reject(app.Command{Action: app.EditTask, TaskID: epic.ID, ParentID: &empty, ExpectedVersion: 1}, "invalid_request")
+	f.reject(app.Command{Action: app.CreateTask, ProjectID: p.ID, Title: ptr("Task parent"), ParentID: &legacy.ID}, "conflict")
+	f.reject(app.Command{Action: app.CreateTask, ProjectID: p.ID, Title: ptr("foreign parent"), ParentID: &foreignEpic.ID}, "conflict")
+	missing := uuid.NewString()
+	f.reject(app.Command{Action: app.CreateTask, ProjectID: p.ID, Title: ptr("missing parent"), ParentID: &missing}, "not_found")
+	tooLong := strings.Repeat("x", 64*1024+1)
+	f.reject(app.Command{Action: app.CreateTask, ProjectID: p.ID, Kind: ptr(domain.KindBug), Title: ptr("long evidence"), FixEvidence: &tooLong}, "invalid_request")
+	invalidUTF8 := string([]byte{0xff})
+	f.reject(app.Command{Action: app.CreateTask, ProjectID: p.ID, Kind: ptr(domain.KindBug), Title: ptr("invalid evidence"), ActualBehavior: &invalidUTF8}, "invalid_request")
+	f.reject(app.Command{Action: app.EditTask, TaskID: bug.ID, Kind: ptr(domain.KindTask), ExpectedVersion: 1}, "invalid_request")
+	f.reject(app.Command{Action: app.EditTask, TaskID: legacy.ID, ExpectedBehavior: &empty, ExpectedVersion: 1}, "invalid_request")
+}
+
+func TestWorkTypeEditingIdempotencyAndAudit(t *testing.T) {
+	f := setup(t)
+	p := f.project()
+	epic := f.work(p, domain.KindEpic, "Epic")
+	parent, expected, actual, evidence := epic.ID, "expected", "actual", "owner evidence"
+	created := decode[domain.Task](t, f.run(app.Command{Action: app.CreateTask, ProjectID: p.ID, Kind: ptr(domain.KindBug),
+		Title: ptr("Bug"), ParentID: &parent, ExpectedBehavior: &expected, ActualBehavior: &actual, FixEvidence: &evidence}))
+	bug := f.getTask(created.ID)
+	empty := ""
+	newTitle := "Bug edited without parent"
+	f.run(app.Command{Action: app.EditTask, TaskID: bug.ID, Title: &newTitle, ExpectedBehavior: ptr("new expected"), ExpectedVersion: 1})
+	bug = f.getTask(bug.ID)
+	if bug.ParentID != epic.ID || bug.ExpectedBehavior != "new expected" || bug.Title != newTitle || bug.Version != 2 {
+		t.Fatalf("omitted parent was not preserved: %+v", bug)
+	}
+	edit := app.Command{Action: app.EditTask, TaskID: bug.ID, FixEvidence: ptr("final owner evidence"), ExpectedVersion: 2}
+	key := uuid.NewString()
+	first, err := f.a.Execute(t.Context(), key, "PATCH", "/v1/tasks/"+bug.ID, edit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeReplay := f.snapshot()
+	replay, err := f.a.Execute(t.Context(), key, "PATCH", "/v1/tasks/"+bug.ID, edit)
+	if err != nil || !reflect.DeepEqual(first, replay) || !reflect.DeepEqual(beforeReplay, f.snapshot()) {
+		t.Fatalf("work-type idempotency replay failed: %v", err)
+	}
+	f.reject(edit, "conflict")
+	f.run(app.Command{Action: app.EditTask, TaskID: bug.ID, ParentID: &empty, ExpectedBehavior: &empty,
+		ActualBehavior: &empty, FixEvidence: &empty, ExpectedVersion: 3})
+	bug = f.getTask(bug.ID)
+	if bug.ParentID != "" || bug.ExpectedBehavior != "" || bug.ActualBehavior != "" || bug.FixEvidence != "" {
+		t.Fatalf("explicit clearing failed: %+v", bug)
+	}
+	events, err := f.s.Events(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertWorkTypeClearingAudit(t, events[len(events)-1], epic.ID)
+}
+
+func assertWorkTypeClearingAudit(t *testing.T, last store.Event, epicID string) {
+	t.Helper()
+	if len(last.Changes) != 1 || last.Changes[0].After["parent_id"] != "" || last.Changes[0].After["expected_behavior"] != "" ||
+		last.Changes[0].After["actual_behavior"] != "" || last.Changes[0].After["fix_evidence"] != "" ||
+		last.Changes[0].Before["parent_id"] != epicID || last.Changes[0].Before["fix_evidence"] != "final owner evidence" {
+		t.Fatalf("clearing audit omitted empty values: %+v", last.Changes)
+	}
+	for _, change := range last.Changes {
+		if _, ok := change.After["summary"]; ok {
+			t.Fatal("projection summary leaked into history")
+		}
+	}
+}
+
+func TestParentMovePreservesQueuePosition(t *testing.T) {
+	f := setup(t)
+	p := f.project()
+	first, second := f.work(p, domain.KindEpic, "First"), f.work(p, domain.KindEpic, "Second")
+	created := decode[domain.Task](t, f.run(app.Command{Action: app.CreateTask, ProjectID: p.ID, Kind: ptr(domain.KindBug),
+		Title: ptr("queued Bug"), ParentID: &first.ID}))
+	bug := f.getTask(created.ID)
+	f.run(app.Command{Action: app.ReplaceQueue, ProjectID: p.ID, TaskIDs: []string{bug.ID}, ExpectedQueueVersion: 1})
+	before := f.snapshot()
+	f.run(app.Command{Action: app.EditTask, TaskID: bug.ID, ParentID: &second.ID, ExpectedVersion: 2})
+	after := f.snapshot()
+	bug = f.getTask(bug.ID)
+	if bug.ParentID != second.ID || bug.State != domain.Queued || bug.Version != 3 {
+		t.Fatalf("parent move changed executable state: %+v", bug)
+	}
+	if !reflect.DeepEqual(before.Queues, after.Queues) || f.getProject(p.ID).QueueVersion != 2 {
+		t.Fatal("parent move changed queue membership or version")
+	}
+}
+
+func TestEpicTransitionsExecutableStartAndArchive(t *testing.T) {
+	f := setup(t)
+	p := f.project()
+	epic := f.work(p, domain.KindEpic, "Independent Epic")
+	f.run(app.Command{Action: app.Transition, TaskID: epic.ID, State: domain.InProgress, ExpectedVersion: 1})
+	if got := f.getProject(p.ID).QueueVersion; got != 1 {
+		t.Fatalf("Epic transition changed queue version to %d", got)
+	}
+	f.reject(app.Command{Action: app.Transition, TaskID: epic.ID, State: domain.Done, ExpectedVersion: 2}, "conflict")
+	f.run(app.Command{Action: app.Transition, TaskID: epic.ID, State: domain.Closed, ExpectedVersion: 2})
+	f.run(app.Command{Action: app.Transition, TaskID: epic.ID, State: domain.Open, ExpectedVersion: 3})
+	f.reject(app.Command{Action: app.Transition, TaskID: epic.ID, State: domain.Closed, ExpectedVersion: 4}, "conflict")
+	f.run(app.Command{Action: app.Transition, TaskID: epic.ID, State: domain.InProgress, ExpectedVersion: 4})
+	f.run(app.Command{Action: app.Transition, TaskID: epic.ID, State: domain.Open, ExpectedVersion: 5})
+	f.run(app.Command{Action: app.Transition, TaskID: epic.ID, State: domain.InProgress, ExpectedVersion: 6})
+
+	task, bug := f.work(p, domain.KindTask, "Task"), f.work(p, domain.KindBug, "Bug without evidence")
+	f.reject(app.Command{Action: app.ReplaceQueue, ProjectID: p.ID, TaskIDs: []string{epic.ID}, ExpectedQueueVersion: 1}, "conflict")
+	f.run(app.Command{Action: app.ReplaceQueue, ProjectID: p.ID, TaskIDs: []string{task.ID, bug.ID}, ExpectedQueueVersion: 1})
+	f.run(app.Command{Action: app.ReplaceQueue, ProjectID: p.ID, TaskIDs: []string{bug.ID, task.ID}, ExpectedQueueVersion: 2})
+	started := f.run(app.Command{Action: app.Transition, TaskID: bug.ID, State: domain.InProgress, ExpectedVersion: 2, ExpectedQueueVersion: 3})
+	_ = decode[domain.Task](t, started)
+	if f.getTask(epic.ID).State != domain.InProgress || f.getTask(bug.ID).State != domain.InProgress {
+		t.Fatal("Epic and Bug could not be in_progress simultaneously")
+	}
+	f.reject(app.Command{Action: app.Transition, TaskID: task.ID, State: domain.InProgress, ExpectedVersion: 2, ExpectedQueueVersion: 4}, "conflict")
+	f.reject(app.Command{Action: app.EditProject, ProjectID: p.ID, Archived: ptr(true), ExpectedVersion: 1}, "conflict")
+	f.run(app.Command{Action: app.Transition, TaskID: bug.ID, State: domain.Done, ExpectedVersion: 3})
+	f.run(app.Command{Action: app.Transition, TaskID: task.ID, State: domain.Cancelled, ExpectedVersion: 2, ExpectedQueueVersion: 4})
+	f.run(app.Command{Action: app.EditProject, ProjectID: p.ID, Archived: ptr(true), ExpectedVersion: 1})
+	if !f.getProject(p.ID).Archived || f.getTask(epic.ID).State != domain.InProgress {
+		t.Fatal("archive with only an in_progress Epic was not preserved")
+	}
+}
+
+func TestEpicCloseReopenOrderingAndDetachment(t *testing.T) {
+	for _, mode := range []string{"close-first", "reopen-first", "concurrent"} {
+		t.Run(mode, func(t *testing.T) {
+			f := setup(t)
+			p := f.project()
+			epic := f.work(p, domain.KindEpic, "Parent")
+			f.run(app.Command{Action: app.Transition, TaskID: epic.ID, State: domain.InProgress, ExpectedVersion: 1})
+			parent := epic.ID
+			created := decode[domain.Task](t, f.run(app.Command{Action: app.CreateTask, ProjectID: p.ID, Title: ptr("terminal child"), ParentID: &parent}))
+			child := f.getTask(created.ID)
+			f.run(app.Command{Action: app.ReplaceQueue, ProjectID: p.ID, TaskIDs: []string{child.ID}, ExpectedQueueVersion: 1})
+			f.run(app.Command{Action: app.Transition, TaskID: child.ID, State: domain.InProgress, ExpectedVersion: 2, ExpectedQueueVersion: 2})
+			f.run(app.Command{Action: app.Transition, TaskID: child.ID, State: domain.Done, ExpectedVersion: 3})
+			closeEpic := app.Command{Action: app.Transition, TaskID: epic.ID, State: domain.Closed, ExpectedVersion: 2}
+			reopenChild := app.Command{Action: app.Transition, TaskID: child.ID, State: domain.Backlog, ExpectedVersion: 4}
+			switch mode {
+			case "close-first":
+				f.run(closeEpic)
+				f.reject(reopenChild, "conflict")
+				f.reject(app.Command{Action: app.CreateTask, ProjectID: p.ID, Title: ptr("new closed-Epic child"), ParentID: &parent}, "conflict")
+				unparented := f.work(p, domain.KindTask, "attach to closed Epic")
+				f.reject(app.Command{Action: app.EditTask, TaskID: unparented.ID, ParentID: &parent, ExpectedVersion: 1}, "conflict")
+			case "reopen-first":
+				f.run(reopenChild)
+				f.reject(closeEpic, "conflict")
+			case "concurrent":
+				services := []*app.Service{f.a, secondService(t, f)}
+				successes(t, raceCommands(t, services, []app.Command{closeEpic, reopenChild}), 1)
+			}
+			epic, child = f.getTask(epic.ID), f.getTask(child.ID)
+			if mode == "concurrent" {
+				if (epic.State != domain.Closed || child.State != domain.Done) && (epic.State != domain.InProgress || child.State != domain.Backlog) {
+					t.Fatalf("race left invalid Epic/child states: %+v %+v", epic, child)
+				}
+				return
+			}
+			if mode == "reopen-first" {
+				if epic.State != domain.InProgress || child.State != domain.Backlog {
+					t.Fatalf("reopen-first accepted close: %+v %+v", epic, child)
+				}
+				return
+			}
+			beforeNoOp := f.snapshot()
+			f.run(app.Command{Action: app.EditTask, TaskID: child.ID, ParentID: &parent, ExpectedVersion: 4})
+			if !reflect.DeepEqual(beforeNoOp, f.snapshot()) {
+				t.Fatal("explicit existing closed parent was not a no-op")
+			}
+			queueVersion := f.getProject(p.ID).QueueVersion
+			f.run(app.Command{Action: app.EditTask, TaskID: child.ID, ParentID: ptr(""), ExpectedVersion: 4})
+			if got := f.getTask(child.ID); got.ParentID != "" || got.Version != 5 {
+				t.Fatalf("terminal child detachment: %+v", got)
+			}
+			if f.getProject(p.ID).QueueVersion != queueVersion || !reflect.DeepEqual(f.snapshot().Queues[p.ID], beforeNoOp.Queues[p.ID]) {
+				t.Fatal("detachment changed queue membership or version")
+			}
+			f.run(app.Command{Action: app.Transition, TaskID: child.ID, State: domain.Backlog, ExpectedVersion: 5})
+			if got := f.getTask(child.ID); got.State != domain.Backlog {
+				t.Fatalf("detached child did not reopen: %+v", got)
 			}
 		})
 	}

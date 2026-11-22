@@ -430,6 +430,9 @@ func (s *Store) deliveryAppendGate(ctx context.Context, tx *sql.Tx, taskID, bind
 	if err := tx.QueryRowContext(ctx, "SELECT archived FROM projects WHERE id=?", projectID).Scan(&archived); err != nil {
 		return b, err
 	}
+	if err := requireExecutableDeliveryTask(ctx, tx, taskID); err != nil {
+		return b, err
+	}
 	if archived != 0 || state == string(domain.Done) || state == string(domain.Cancelled) {
 		return b, observerError("closed")
 	}
@@ -780,13 +783,13 @@ func (s *Store) DeliveryNext(ctx context.Context, bindingID, instanceID, writerI
 	if b.WriterID != writerID {
 		return result, "", observerError("owner_conflict")
 	}
-	row := tx.QueryRowContext(ctx, `SELECT m.seq,m.blocked,m.receipt_key,m.record FROM delivery_messages m
+	row := tx.QueryRowContext(ctx, `SELECT m.seq,m.blocked,m.receipt_key,m.record,m.task_id FROM delivery_messages m
 		WHERE m.binding_id=? AND m.blocked=0 AND NOT EXISTS (SELECT 1 FROM delivery_attempts a WHERE a.message_seq=m.seq)
 		ORDER BY m.seq LIMIT 1`, bindingID)
 	var seq int64
 	var blocked int
-	var data string
-	if err := row.Scan(&seq, &blocked, &receiptKey, &data); err != nil {
+	var data, messageTaskID string
+	if err := row.Scan(&seq, &blocked, &receiptKey, &data, &messageTaskID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return result, "", tx.Commit()
 		}
@@ -795,11 +798,31 @@ func (s *Store) DeliveryNext(ctx context.Context, bindingID, instanceID, writerI
 	if err := json.Unmarshal([]byte(data), &result); err != nil {
 		return result, "", err
 	}
+	if err := requireExecutableDeliveryTask(ctx, tx, messageTaskID); err != nil {
+		return result, "", err
+	}
 	if err := deliveryKindAllowed(b, result.Kind); err != nil {
 		return result, "", err
 	}
 	result.Blocked = blocked != 0
 	return result, receiptKey, tx.Commit()
+}
+
+func deliverySpendMessage(ctx context.Context, tx *sql.Tx, bindingID, messageID string) (int64, int, string, error) {
+	var seq int64
+	var blocked int
+	var data, taskID string
+	if err := tx.QueryRowContext(ctx, `SELECT m.seq,m.blocked,m.record,m.task_id FROM delivery_messages m
+		WHERE m.id=? AND m.binding_id=?`, messageID, bindingID).Scan(&seq, &blocked, &data, &taskID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, 0, "", observerError("not_found")
+		}
+		return 0, 0, "", err
+	}
+	if err := requireExecutableDeliveryTask(ctx, tx, taskID); err != nil {
+		return 0, 0, "", err
+	}
+	return seq, blocked, data, nil
 }
 
 // DeliverySpend admits exactly one right per message. A repeated or concurrent
@@ -829,13 +852,8 @@ func (s *Store) DeliverySpend(ctx context.Context, bindingID, instanceID, writer
 	if b.WriterID != writerID {
 		return result, observerError("owner_conflict")
 	}
-	var seq int64
-	var blocked int
-	var messageData string
-	if err := tx.QueryRowContext(ctx, "SELECT seq,blocked,record FROM delivery_messages WHERE id=? AND binding_id=?", messageID, bindingID).Scan(&seq, &blocked, &messageData); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return result, observerError("not_found")
-		}
+	seq, blocked, messageData, err := deliverySpendMessage(ctx, tx, bindingID, messageID)
+	if err != nil {
 		return result, err
 	}
 	if blocked != 0 {
@@ -873,6 +891,19 @@ func (s *Store) DeliverySpend(ctx context.Context, bindingID, instanceID, writer
 		return result, err
 	}
 	return result, tx.Commit()
+}
+
+func deliveryVerifyMessage(ctx context.Context, tx *sql.Tx, seq int64) (int, string, error) {
+	var blocked int
+	var data, taskID string
+	if err := tx.QueryRowContext(ctx, `SELECT m.blocked,m.record,m.task_id FROM delivery_messages m
+		WHERE m.seq=?`, seq).Scan(&blocked, &data, &taskID); err != nil {
+		return 0, "", err
+	}
+	if err := requireExecutableDeliveryTask(ctx, tx, taskID); err != nil {
+		return 0, "", err
+	}
+	return blocked, data, nil
 }
 
 // DeliveryVerify confirms the right of the owning writer; it never grants one.
@@ -918,9 +949,8 @@ func (s *Store) DeliveryVerify(ctx context.Context, bindingID, instanceID, write
 	if err := json.Unmarshal([]byte(data), &result); err != nil {
 		return result, err
 	}
-	var blocked int
-	var messageData string
-	if err := tx.QueryRowContext(ctx, "SELECT blocked,record FROM delivery_messages WHERE seq=?", seq).Scan(&blocked, &messageData); err != nil {
+	blocked, messageData, err := deliveryVerifyMessage(ctx, tx, seq)
+	if err != nil {
 		return result, err
 	}
 	var message DeliveryMessage
@@ -1057,9 +1087,10 @@ func deliveryReceiptGate(ctx context.Context, tx *sql.Tx, b DeliveryBinding, rec
 	}
 	var seq int64
 	var blocked int
-	var storedKey, messageData string
-	if err := tx.QueryRowContext(ctx, "SELECT seq,blocked,receipt_key,record FROM delivery_messages WHERE id=? AND binding_id=?", receipt.MessageID, b.ID).
-		Scan(&seq, &blocked, &storedKey, &messageData); err != nil {
+	var storedKey, messageData, messageTaskID string
+	if err := tx.QueryRowContext(ctx, `SELECT m.seq,m.blocked,m.receipt_key,m.record,m.task_id FROM delivery_messages m
+		WHERE m.id=? AND m.binding_id=?`, receipt.MessageID, b.ID).
+		Scan(&seq, &blocked, &storedKey, &messageData, &messageTaskID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, "", DeliveryMessage{}, observerError("not_found")
 		}
@@ -1067,6 +1098,9 @@ func deliveryReceiptGate(ctx context.Context, tx *sql.Tx, b DeliveryBinding, rec
 	}
 	if storedKey != receiptKey {
 		return 0, "", DeliveryMessage{}, observerError("invalid_request")
+	}
+	if err := requireExecutableDeliveryTask(ctx, tx, messageTaskID); err != nil {
+		return 0, "", DeliveryMessage{}, err
 	}
 	var message DeliveryMessage
 	if err := json.Unmarshal([]byte(messageData), &message); err != nil {
@@ -1094,6 +1128,17 @@ func deliveryReceiptGate(ctx context.Context, tx *sql.Tx, b DeliveryBinding, rec
 		return 0, "", DeliveryMessage{}, observerError("invalid_request")
 	}
 	return seq, attemptState, message, nil
+}
+
+func requireExecutableDeliveryTask(ctx context.Context, tx *sql.Tx, taskID string) error {
+	kind, err := storedTaskKind(ctx, tx, taskID)
+	if err != nil {
+		return err
+	}
+	if kind != domain.KindTask && kind != domain.KindBug {
+		return observerError("invalid_request")
+	}
+	return nil
 }
 
 func deliveryAttemptState(ctx context.Context, tx *sql.Tx, attemptID, state string) error {

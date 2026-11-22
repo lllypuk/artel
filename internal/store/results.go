@@ -396,8 +396,8 @@ func (s *Store) SubmitResult(ctx context.Context, taskID string, m Mutation, in 
 		}
 		return Result{}, err
 	}
-	if archived {
-		return Result{}, domain.Conflict("project is archived")
+	if err := resultTaskGate(ctx, tx, taskID, archived, "task result"); err != nil {
+		return Result{}, err
 	}
 	var current string
 	err = tx.QueryRowContext(ctx, "SELECT result_id FROM current_task_results WHERE task_id=?", taskID).Scan(&current)
@@ -531,8 +531,8 @@ func (s *Store) AttachReview(ctx context.Context, taskID, resultID string, m Mut
 		JOIN projects p ON p.id=t.project_id WHERE t.id=?`, taskID).Scan(&projectID, &archived); err != nil {
 		return Result{}, err
 	}
-	if archived {
-		return Result{}, domain.Conflict("project is archived")
+	if err := resultTaskGate(ctx, tx, taskID, archived, "task review"); err != nil {
+		return Result{}, err
 	}
 	response, matched, err := attachExistingReview(ctx, tx, taskID, result, m, in)
 	if err != nil {
@@ -549,6 +549,20 @@ func (s *Store) AttachReview(ctx context.Context, taskID, resultID string, m Mut
 		return Result{}, err
 	}
 	return response, tx.Commit()
+}
+
+func resultTaskGate(ctx context.Context, tx *sql.Tx, taskID string, archived bool, operation string) error {
+	kind, err := storedTaskKind(ctx, tx, taskID)
+	if err != nil {
+		return err
+	}
+	if kind != domain.KindTask && kind != domain.KindBug {
+		return domain.Conflict(operation + " requires an executable work type")
+	}
+	if archived {
+		return domain.Conflict("project is archived")
+	}
+	return nil
 }
 
 func attachExistingReview(ctx context.Context, tx *sql.Tx, taskID string, result TaskResult, m Mutation, in AttachReviewInput) (Result, bool, error) {

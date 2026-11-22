@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 
@@ -44,6 +45,34 @@ func TestOpenAPIValid(t *testing.T) {
 	}
 	if count != 31 {
 		t.Fatalf("operations: %d", count)
+	}
+}
+
+func TestWorkTypeOpenAPISchema(t *testing.T) {
+	doc := contract(t)
+	snapshot := doc.Components.Schemas["Snapshot"].Value
+	if !slices.Contains(snapshot.Required, "work_types_version") || snapshot.Properties["work_types_version"] == nil {
+		t.Fatal("snapshot does not advertise work_types_version")
+	}
+	task := doc.Components.Schemas["Task"].Value
+	if !slices.Contains(task.Required, "kind") || task.Properties["summary"] == nil || task.Properties["parent_id"] == nil || task.Properties["fix_evidence"] == nil {
+		t.Fatal("wire Task lacks work-type projection fields")
+	}
+	legacy := doc.Components.Schemas["LegacyTask"].Value
+	if _, exists := legacy.Properties["kind"]; exists {
+		t.Fatal("legacy mutation response gained a required work-type field")
+	}
+	create := doc.Components.Schemas["CreateTask"].Value
+	if slices.Contains(create.Required, "kind") || create.Properties["kind"] == nil || create.Properties["parent_id"] == nil {
+		t.Fatal("CreateTask broke omitted-kind compatibility or parent support")
+	}
+	edit := doc.Components.Schemas["EditTask"].Value
+	if _, exists := edit.Properties["kind"]; exists || edit.Properties["parent_id"] == nil {
+		t.Fatal("EditTask must reject kind and accept parent_id")
+	}
+	createResponse := doc.Paths.Find("/v1/projects/{id}/tasks").Post.Responses.Value("201").Value.Content.Get("application/json").Schema
+	if createResponse.Ref != "#/components/schemas/LegacyTask" {
+		t.Fatalf("create response schema = %q, want LegacyTask", createResponse.Ref)
 	}
 }
 

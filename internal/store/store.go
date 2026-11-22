@@ -455,6 +455,19 @@ func hasWorkTypesSchema(ctx context.Context, tx *sql.Tx) (bool, error) {
 	return count != 0, nil
 }
 
+func storedTaskKind(ctx context.Context, tx *sql.Tx, taskID string) (domain.Kind, error) {
+	workTypes, err := hasWorkTypesSchema(ctx, tx)
+	if err != nil {
+		return "", err
+	}
+	if !workTypes {
+		return domain.KindTask, nil
+	}
+	var kind domain.Kind
+	err = tx.QueryRowContext(ctx, "SELECT kind FROM tasks WHERE id=?", taskID).Scan(&kind)
+	return kind, err
+}
+
 func readTaskRecords(ctx context.Context, tx *sql.Tx, out *[]domain.Task) error {
 	workTypes, err := hasWorkTypesSchema(ctx, tx)
 	if err != nil {

@@ -38,6 +38,11 @@ type Command struct {
 	Description          *string      `json:"description,omitempty"`
 	Title                *string      `json:"title,omitempty"`
 	AcceptanceCriteria   *string      `json:"acceptance_criteria,omitempty"`
+	Kind                 *domain.Kind `json:"kind,omitempty"`
+	ParentID             *string      `json:"parent_id,omitempty"`
+	ExpectedBehavior     *string      `json:"expected_behavior,omitempty"`
+	ActualBehavior       *string      `json:"actual_behavior,omitempty"`
+	FixEvidence          *string      `json:"fix_evidence,omitempty"`
 	Archived             *bool        `json:"archived,omitempty"`
 	State                domain.State `json:"state,omitempty"`
 	TaskIDs              []string     `json:"task_ids,omitempty"`
@@ -137,10 +142,28 @@ func validateTask(t domain.Task) error {
 	if err := domain.ValidateText(t.Title, 1, 200); err != nil {
 		return err
 	}
+	if t.Kind != domain.KindEpic && t.Kind != domain.KindTask && t.Kind != domain.KindBug {
+		return domain.Invalid("invalid work type")
+	}
+	if t.Kind != domain.KindBug && (t.ExpectedBehavior != "" || t.ActualBehavior != "" || t.FixEvidence != "") {
+		return domain.Invalid("bug fields require bug work type")
+	}
 	if err := longText(t.Description, 64*1024); err != nil {
 		return err
 	}
-	return longText(t.AcceptanceCriteria, 64*1024)
+	if err := longText(t.AcceptanceCriteria, 64*1024); err != nil {
+		return err
+	}
+	for _, value := range []string{t.ExpectedBehavior, t.ActualBehavior, t.FixEvidence} {
+		if err := longText(value, 64*1024); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func executable(t domain.Task) bool {
+	return t.Kind == domain.KindTask || t.Kind == domain.KindBug
 }
 
 func createProject(snap *store.Snapshot, c Command, now string, e *store.Event) (any, error) {
@@ -236,7 +259,7 @@ func editProject(snap *store.Snapshot, c Command, now string, e *store.Event) (a
 func checkArchive(snap *store.Snapshot, p *domain.Project, wasArchived bool) error {
 	if p.Archived {
 		for _, t := range snap.Tasks {
-			if t.ProjectID == p.ID && (t.State == domain.Queued || t.State == domain.InProgress) {
+			if t.ProjectID == p.ID && executable(t) && (t.State == domain.Queued || t.State == domain.InProgress) {
 				return domain.Conflict("project has queued or current tasks")
 			}
 		}
@@ -263,12 +286,38 @@ func createTask(snap *store.Snapshot, c Command, now string, e *store.Event) (an
 	if c.Title == nil {
 		return nil, domain.Invalid("title is required")
 	}
-	t := domain.Task{ID: uuid.NewString(), ProjectID: p.ID, Title: *c.Title, State: domain.Backlog, Version: 1, CreatedAt: now, UpdatedAt: now}
+	t := domain.Task{ID: uuid.NewString(), ProjectID: p.ID, Kind: domain.KindTask, Title: *c.Title, State: domain.Backlog, Version: 1, CreatedAt: now, UpdatedAt: now}
+	if c.Kind != nil {
+		t.Kind = *c.Kind
+	}
+	if t.Kind == domain.KindEpic {
+		t.State = domain.Open
+	}
 	if c.Description != nil {
 		t.Description = *c.Description
 	}
 	if c.AcceptanceCriteria != nil {
 		t.AcceptanceCriteria = *c.AcceptanceCriteria
+	}
+	if c.ParentID != nil {
+		if t.Kind == domain.KindEpic {
+			return nil, domain.Invalid("epic cannot have a parent")
+		}
+		if err := changeParent(snap, p, &t, *c.ParentID); err != nil {
+			return nil, err
+		}
+	}
+	if t.Kind != domain.KindBug && (c.ExpectedBehavior != nil || c.ActualBehavior != nil || c.FixEvidence != nil) {
+		return nil, domain.Invalid("bug fields require bug work type")
+	}
+	if c.ExpectedBehavior != nil {
+		t.ExpectedBehavior = *c.ExpectedBehavior
+	}
+	if c.ActualBehavior != nil {
+		t.ActualBehavior = *c.ActualBehavior
+	}
+	if c.FixEvidence != nil {
+		t.FixEvidence = *c.FixEvidence
 	}
 	if err := validateTask(t); err != nil {
 		return nil, err
@@ -307,16 +356,7 @@ func changeTask(snap *store.Snapshot, c Command, now string, e *store.Event) (an
 	before := *t
 	e.ProjectID = p.ID
 	if c.Action == EditTask {
-		if c.Title != nil {
-			t.Title = *c.Title
-		}
-		if c.Description != nil {
-			t.Description = *c.Description
-		}
-		if c.AcceptanceCriteria != nil {
-			t.AcceptanceCriteria = *c.AcceptanceCriteria
-		}
-		if err := validateTask(*t); err != nil {
+		if err := editTask(snap, p, t, c); err != nil {
 			return nil, err
 		}
 	} else {
@@ -332,7 +372,69 @@ func changeTask(snap *store.Snapshot, c Command, now string, e *store.Event) (an
 	return *t, nil
 }
 
+func editTask(snap *store.Snapshot, p *domain.Project, t *domain.Task, c Command) error {
+	if c.Kind != nil {
+		return domain.Invalid("work type is immutable")
+	}
+	if c.Title != nil {
+		t.Title = *c.Title
+	}
+	if c.Description != nil {
+		t.Description = *c.Description
+	}
+	if c.AcceptanceCriteria != nil {
+		t.AcceptanceCriteria = *c.AcceptanceCriteria
+	}
+	if c.ParentID != nil {
+		if t.Kind == domain.KindEpic {
+			return domain.Invalid("epic cannot have a parent")
+		}
+		if err := changeParent(snap, p, t, *c.ParentID); err != nil {
+			return err
+		}
+	}
+	if t.Kind != domain.KindBug && (c.ExpectedBehavior != nil || c.ActualBehavior != nil || c.FixEvidence != nil) {
+		return domain.Invalid("bug fields require bug work type")
+	}
+	if c.ExpectedBehavior != nil {
+		t.ExpectedBehavior = *c.ExpectedBehavior
+	}
+	if c.ActualBehavior != nil {
+		t.ActualBehavior = *c.ActualBehavior
+	}
+	if c.FixEvidence != nil {
+		t.FixEvidence = *c.FixEvidence
+	}
+	return validateTask(*t)
+}
+
+func changeParent(snap *store.Snapshot, p *domain.Project, t *domain.Task, parentID string) error {
+	if parentID == "" {
+		t.ParentID = ""
+		return nil
+	}
+	// Naming the already assigned parent is a no-op even after that Epic closed.
+	if t.ParentID == parentID {
+		return nil
+	}
+	parent, err := task(snap, parentID)
+	if err != nil {
+		return err
+	}
+	if parent.ProjectID != p.ID || parent.Kind != domain.KindEpic {
+		return domain.Conflict("parent must be an Epic in the same project")
+	}
+	if parent.State != domain.Open && parent.State != domain.InProgress {
+		return domain.Conflict("parent Epic is closed")
+	}
+	t.ParentID = parentID
+	return nil
+}
+
 func transition(snap *store.Snapshot, p *domain.Project, t *domain.Task, c Command, now string, e *store.Event) error {
+	if t.Kind == domain.KindEpic {
+		return transitionEpic(snap, t, c.State)
+	}
 	// An already achieved state is a no-op, but still requires current versions.
 	if t.State == domain.Queued {
 		if err := domain.CheckVersion(c.ExpectedQueueVersion, p.QueueVersion); err != nil {
@@ -345,15 +447,12 @@ func transition(snap *store.Snapshot, p *domain.Project, t *domain.Task, c Comma
 	if !domain.CanTransition(t.State, c.State) {
 		return domain.Conflict("invalid manual transition")
 	}
+	if err := checkReopenParent(snap, t, c.State); err != nil {
+		return err
+	}
 	if c.State == domain.InProgress {
-		queue := snap.Queues[p.ID]
-		if len(queue) == 0 || queue[0] != t.ID {
-			return domain.Conflict("only the queue head can start")
-		}
-		for _, other := range snap.Tasks {
-			if other.ProjectID == p.ID && other.State == domain.InProgress {
-				return domain.Conflict("project already has a current task")
-			}
+		if err := checkExecutableStart(snap, p, t); err != nil {
+			return err
 		}
 	}
 	if t.State == domain.Queued {
@@ -367,6 +466,54 @@ func transition(snap *store.Snapshot, p *domain.Project, t *domain.Task, c Comma
 		bumpQueue(p, now, e, oldQueue, snap.Queues[p.ID])
 	}
 	t.State = c.State
+	return nil
+}
+
+func checkReopenParent(snap *store.Snapshot, t *domain.Task, target domain.State) error {
+	if (t.State != domain.Done && t.State != domain.Cancelled) || target != domain.Backlog || t.ParentID == "" {
+		return nil
+	}
+	parent, err := task(snap, t.ParentID)
+	if err != nil {
+		return err
+	}
+	if parent.State == domain.Closed {
+		return domain.Conflict("reopen requires an open Epic or detachment")
+	}
+	return nil
+}
+
+func checkExecutableStart(snap *store.Snapshot, p *domain.Project, t *domain.Task) error {
+	queue := snap.Queues[p.ID]
+	if len(queue) == 0 || queue[0] != t.ID {
+		return domain.Conflict("only the queue head can start")
+	}
+	for _, other := range snap.Tasks {
+		if other.ProjectID == p.ID && executable(other) && other.State == domain.InProgress {
+			return domain.Conflict("project already has a current task")
+		}
+	}
+	return nil
+}
+
+func transitionEpic(snap *store.Snapshot, t *domain.Task, target domain.State) error {
+	if t.State == target {
+		return nil
+	}
+	valid := (t.State == domain.Open && target == domain.InProgress) ||
+		(t.State == domain.InProgress && (target == domain.Open || target == domain.Closed)) ||
+		(t.State == domain.Closed && target == domain.Open)
+	if !valid {
+		return domain.Conflict("invalid Epic transition")
+	}
+	if target == domain.Closed {
+		for _, child := range snap.Tasks {
+			if child.ParentID == t.ID && child.State != domain.Done && child.State != domain.Cancelled {
+				return domain.Conflict("Epic has active children")
+			}
+		}
+	}
+	t.State = target
 	return nil
 }
 
@@ -391,7 +538,7 @@ func replaceQueue(snap *store.Snapshot, c Command, now string, e *store.Event) (
 		if err != nil {
 			return nil, err
 		}
-		if t.ProjectID != p.ID || (t.State != domain.Backlog && t.State != domain.Queued) {
+		if t.ProjectID != p.ID || !executable(*t) || (t.State != domain.Backlog && t.State != domain.Queued) {
 			return nil, domain.Conflict("queue contains an ineligible task")
 		}
 	}
@@ -449,5 +596,14 @@ func fields(v any) map[string]any {
 	data, _ := json.Marshal(v)
 	var result map[string]any
 	_ = json.Unmarshal(data, &result)
+	if t, ok := v.(domain.Task); ok {
+		// Keep explicit empty values so detachment and evidence clearing are
+		// visible in the before/after audit rather than disappearing as omissions.
+		result["kind"] = t.Kind
+		result["parent_id"] = t.ParentID
+		result["expected_behavior"] = t.ExpectedBehavior
+		result["actual_behavior"] = t.ActualBehavior
+		result["fix_evidence"] = t.FixEvidence
+	}
 	return result
 }

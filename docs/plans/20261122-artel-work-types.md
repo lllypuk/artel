@@ -76,14 +76,14 @@ TDD: сначала миграционные и доменные отказы, �
 **Files:**
 - Modify: `internal/app/app.go`, `internal/app/app_test.go`, `internal/api/domain.go`, `internal/api/domain_test.go`, `internal/api/dto.go`, `internal/api/dto_test.go`, `internal/api/contract_test.go`, `internal/store/delivery.go`, `internal/store/questions.go`, `internal/store/results.go`, `api/openapi.yaml`.
 
-- [ ] Реализовать создание с обратной совместимостью, immutable type, редактирование полей/parent, переходы Epic и Task/Bug, snapshot/history, строгий OpenAPI и **в том же изменении** authoritative type-only gate для новых commission/question/results submit/attach и DeliveryReceipt.
-- [ ] В `internal/api/dto.go` добавить отдельную wire-проекцию Task/Epic summary и `work_types_version=1`; проверить пустой v7 snapshot, отдельный cancelled и отсутствие summary в persisted record/истории.
-- [ ] Развести Epic transition и executable start: Epic и Bug могут одновременно быть `in_progress`; второй исполняемый start отклоняется, Epic не меняет queue_version, archive с одним in_progress Epic допускается.
-- [ ] Проверить omitted kind/parent, явную отвязку/no-op прежнего parent, open/in_progress/closed, close пустого/terminal-only Epic, Bug fields и projection-only сводку.
-- [ ] Проверить реальную v6 create/edit квитанцию после миграции: тот же HTTP request/key возвращает исходные status/body без события, а новый request без kind создаёт Task.
-- [ ] Проверить отказы: смена типа, родитель не Epic/чужого проекта/closed при новой связи, parent у Epic, queue/start/commission/question/results submit/attach/DeliveryReceipt для Epic, reopen ребёнка closed Epic и неверные Bug-поля — без новых записей/events/receipts.
-- [ ] Проверить close/reopen гонку в обоих порядках, CAS/idempotency replay, отвязку завершённого ребёнка closed Epic с сохранением очереди и последующий reopen.
-- [ ] `go test ./internal/app ./internal/api -count=1` и `make lint test build`.
+- [x] Реализовать создание с обратной совместимостью, immutable type, редактирование полей/parent, переходы Epic и Task/Bug, snapshot/history, строгий OpenAPI и **в том же изменении** authoritative type-only gate для новых commission/question/results submit/attach и DeliveryReceipt.
+- [x] В `internal/api/dto.go` добавить отдельную wire-проекцию Task/Epic summary и `work_types_version=1`; проверить пустой v7 snapshot, отдельный cancelled и отсутствие summary в persisted record/истории.
+- [x] Развести Epic transition и executable start: Epic и Bug могут одновременно быть `in_progress`; второй исполняемый start отклоняется, Epic не меняет queue_version, archive с одним in_progress Epic допускается.
+- [x] Проверить omitted kind/parent, явную отвязку/no-op прежнего parent, open/in_progress/closed, close пустого/terminal-only Epic, Bug fields и projection-only сводку.
+- [x] Проверить реальную v6 create/edit квитанцию после миграции: тот же HTTP request/key возвращает исходные status/body без события, а новый request без kind создаёт Task.
+- [x] Проверить отказы: смена типа, родитель не Epic/чужого проекта/closed при новой связи, parent у Epic, queue/start/commission/question/results submit/attach/DeliveryReceipt для Epic, reopen ребёнка closed Epic и неверные Bug-поля — без новых записей/events/receipts.
+- [x] Проверить close/reopen гонку в обоих порядках, CAS/idempotency replay, отвязку завершённого ребёнка closed Epic с сохранением очереди и последующий reopen.
+- [x] `go test ./internal/app ./internal/api -count=1` и `make lint test build`.
 
 ### Task 3: Доказать интеграционные ограничения и recovery
 
