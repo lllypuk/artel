@@ -730,6 +730,128 @@ func TestArchivedProjectAllowsReceiptReplayButRejectsFreshResultWrites(t *testin
 	}
 }
 
+func TestResultEpicFixtureRejectsFreshWritesAndRecoversCurrentAndLegacyReceipts(t *testing.T) {
+	s := openTest(t)
+	_, task := seed(t, s)
+	submitMutation := resultMutation("/epic-submit")
+	submit := submitInput(resultRepoA, resultHeadA, "")
+	submitResponse, err := s.SubmitResult(t.Context(), task.ID, submitMutation, submit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := decodeTaskResult(t, submitResponse)
+	reviewMutation := resultMutation("/epic-current-review")
+	review := reviewInput(result, "current-before-epic")
+	reviewResponse, err := s.AttachReview(t.Context(), task.ID, result.ID, reviewMutation, review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyMutation := resultMutation("/epic-legacy-review")
+	legacy := reviewInput(result, "legacy-before-epic")
+	legacy.Sources = []ReviewSource{}
+	_, legacyResponse := seedLegacyReviewReceipt(t, s, task.ID, result, legacyMutation, legacy)
+	setTaskKindFixture(t, s, task.ID, domain.KindEpic)
+	before := databaseDump(t, s.db)
+
+	_, err = s.SubmitResult(t.Context(), task.ID, resultMutation("/epic-fresh-submit"), submitInput(resultRepoA, resultHeadB, result.ID))
+	requireResultCode(t, err, "conflict")
+	_, err = s.AttachReview(t.Context(), task.ID, result.ID, resultMutation("/epic-fresh-review"), reviewInput(result, "fresh-epic"))
+	requireResultCode(t, err, "conflict")
+	// A business-key replay with a new mutation key is still a fresh write and
+	// must not bypass the type gate after exact receipt lookup misses.
+	_, err = s.AttachReview(t.Context(), task.ID, result.ID, resultMutation("/epic-business-replay"), review)
+	requireResultCode(t, err, "conflict")
+
+	for name, replay := range map[string]func() (Result, error){
+		"submit": func() (Result, error) {
+			return s.SubmitResult(t.Context(), task.ID, submitMutation, submit)
+		},
+		"current attach": func() (Result, error) {
+			return s.AttachReview(t.Context(), task.ID, result.ID, reviewMutation, review)
+		},
+		"current receipt": func() (Result, error) {
+			return s.ReplayReviewReceipt(t.Context(), task.ID, result.ID, reviewMutation, review)
+		},
+		"legacy attach": func() (Result, error) {
+			return s.AttachReview(t.Context(), task.ID, result.ID, legacyMutation, legacy)
+		},
+		"legacy receipt": func() (Result, error) {
+			return s.ReplayLegacyReview(t.Context(), task.ID, result.ID, legacyMutation, legacy)
+		},
+		"legacy general receipt": func() (Result, error) {
+			return s.ReplayReviewReceipt(t.Context(), task.ID, result.ID, legacyMutation, legacy)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := replay()
+			want := reviewResponse
+			if name == "submit" {
+				want = submitResponse
+			} else if strings.HasPrefix(name, "legacy") {
+				want = legacyResponse
+			}
+			if err != nil || got.Status != want.Status || !bytes.Equal(got.Body, want.Body) {
+				t.Fatalf("receipt recovery: got=%+v want=%+v err=%v", got, want, err)
+			}
+		})
+	}
+	if _, err := s.ReplayLegacyReview(t.Context(), task.ID, result.ID, reviewMutation, review); !resultCode(err, "not_found") {
+		t.Fatalf("legacy-only lookup exposed current receipt: %v", err)
+	}
+	current, err := s.CurrentTaskResult(t.Context(), task.ID)
+	if err != nil || current.Result == nil || current.Result.ID != result.ID {
+		t.Fatalf("Epic current result read: %+v %v", current, err)
+	}
+	reviews, err := s.CurrentTaskReviews(t.Context(), task.ID, "", 20)
+	if err != nil || len(reviews.Reviews) != 2 {
+		t.Fatalf("Epic current/legacy review history: %+v %v", reviews, err)
+	}
+	if after := databaseDump(t, s.db); after != before {
+		t.Fatal("rejected Epic result operations or receipt recovery changed results, reviews, events or receipts")
+	}
+}
+
+func TestResultBugWritesAndReceiptRecoveryRemainAllowedAfterClose(t *testing.T) {
+	s := openTest(t)
+	_, task := seed(t, s)
+	setTaskKindFixture(t, s, task.ID, domain.KindBug)
+	firstMutation := resultMutation("/bug-first")
+	firstInput := submitInput(resultRepoA, resultHeadA, "")
+	firstResponse, err := s.SubmitResult(t.Context(), task.ID, firstMutation, firstInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := decodeTaskResult(t, firstResponse)
+	reviewMutation := resultMutation("/bug-review")
+	firstReviewInput := reviewInput(first, "bug-review")
+	reviewResponse, err := s.AttachReview(t.Context(), task.ID, first.ID, reviewMutation, firstReviewInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transitionTask(t, s, task.ID, task.ProjectID, domain.Done)
+	// Result submission deliberately retains its pre-work-types behavior: done
+	// is not a new result/review gate.
+	second := mustSubmitResult(t, s, task.ID, resultMutation("/bug-after-close"), submitInput(resultRepoA, resultHeadB, first.ID))
+	mustAttachReview(t, s, task.ID, second.ID, resultMutation("/bug-review-after-close"), reviewInput(second, "bug-after-close"))
+	for name, replay := range map[string]func() (Result, error){
+		"submit": func() (Result, error) { return s.SubmitResult(t.Context(), task.ID, firstMutation, firstInput) },
+		"review": func() (Result, error) {
+			return s.AttachReview(t.Context(), task.ID, first.ID, reviewMutation, firstReviewInput)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := replay()
+			want := firstResponse
+			if name == "review" {
+				want = reviewResponse
+			}
+			if err != nil || got.Status != want.Status || !bytes.Equal(got.Body, want.Body) {
+				t.Fatalf("Bug receipt after close: got=%+v want=%+v err=%v", got, want, err)
+			}
+		})
+	}
+}
+
 func TestResultValidationAndAtomicReceiptRollback(t *testing.T) {
 	s := openTest(t)
 	_, task := seed(t, s)

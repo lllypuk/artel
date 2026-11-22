@@ -603,6 +603,97 @@ func TestTransitionExpectedResultAndReceiptRecovery(t *testing.T) {
 	}
 }
 
+func apiResultRowCounts(t *testing.T, dbPath string) [3]int {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var counts [3]int
+	for i, table := range []string{"task_results", "task_reviews", "mutation_receipts"} {
+		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&counts[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return counts
+}
+
+func TestEpicResultHTTPStaleWritesAndReadOnlyReceiptRecovery(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "epic-results.sqlite")
+	f := newAPIResultFixtureAt(t, dbPath)
+	submitKey := uuid.NewString()
+	submitBody := apiSubmit(t, f, submitKey, apiSubmitInput(""), 201)
+	var result store.TaskResult
+	if err := json.Unmarshal(submitBody, &result); err != nil {
+		t.Fatal(err)
+	}
+	reviewPath := "/v1/tasks/" + f.task.ID + "/results/" + result.ID + "/reviews"
+	reviewKey := uuid.NewString()
+	currentInput := apiReviewInput(result, "current-before-epic")
+	currentRequest, err := json.Marshal(currentInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentBody := request(t, f.h, http.MethodPost, reviewPath, string(currentRequest), reviewKey, 201)
+	legacyKey := uuid.NewString()
+	legacyInput := apiReviewInput(result, "legacy-before-epic")
+	legacyInput.Sources = []store.ReviewSource{}
+	legacyRequest, err := json.Marshal(legacyInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyBody := seedLegacyAPICounterReceipt(t, dbPath, reviewPath, legacyKey, f.task.ID, result.ID, legacyInput, legacyRequest)
+	convertTaskToEpic(t, f.store, f.task.ID)
+	beforeEvents, err := f.store.Events(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeCounts := apiResultRowCounts(t, dbPath)
+	historyPath := "/v1/tasks/" + f.task.ID + "/results?after=0&limit=100"
+	beforeHistory := request(t, f.h, http.MethodGet, historyPath, "", "", 200)
+	beforeCurrent := request(t, f.h, http.MethodGet, "/v1/tasks/"+f.task.ID+"/results/current/reviews", "", "", 200)
+
+	// These requests model a stale client that already has result and review
+	// fixture IDs. Neither a valid CAS nor a business replay bypasses the gate.
+	secondInput := apiSubmitInput(result.ID)
+	secondInput.Head = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	apiSubmit(t, f, uuid.NewString(), secondInput, 409)
+	apiAttach(t, f, result.ID, uuid.NewString(), apiReviewInput(result, "fresh-epic"), 409)
+	apiAttach(t, f, result.ID, uuid.NewString(), currentInput, 409)
+
+	if replay := apiSubmit(t, f, submitKey, apiSubmitInput(""), 201); !bytes.Equal(replay, submitBody) {
+		t.Fatal("Epic submit receipt changed")
+	}
+	for _, test := range []struct {
+		name, suffix, key, requestBody string
+		want                           []byte
+	}{
+		{"current attach", "", reviewKey, string(currentRequest), currentBody},
+		{"current receipt", "/receipt", reviewKey, string(currentRequest), currentBody},
+		{"legacy attach", "", legacyKey, string(legacyRequest), legacyBody},
+		{"legacy receipt", "/legacy-receipt", legacyKey, string(legacyRequest), legacyBody},
+		{"legacy general receipt", "/receipt", legacyKey, string(legacyRequest), legacyBody},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := request(t, f.h, http.MethodPost, reviewPath+test.suffix, test.requestBody, test.key, 201); !bytes.Equal(got, test.want) {
+				t.Fatalf("receipt recovery changed body: %s", got)
+			}
+		})
+	}
+	request(t, f.h, http.MethodPost, reviewPath+"/legacy-receipt", string(currentRequest), reviewKey, 404)
+	if afterHistory := request(t, f.h, http.MethodGet, historyPath, "", "", 200); !bytes.Equal(afterHistory, beforeHistory) {
+		t.Fatal("Epic result history changed during rejected writes/recovery")
+	}
+	if afterCurrent := request(t, f.h, http.MethodGet, "/v1/tasks/"+f.task.ID+"/results/current/reviews", "", "", 200); !bytes.Equal(afterCurrent, beforeCurrent) {
+		t.Fatal("Epic current reviews changed during rejected writes/recovery")
+	}
+	afterEvents, err := f.store.Events(t.Context())
+	if err != nil || !reflect.DeepEqual(afterEvents, beforeEvents) || apiResultRowCounts(t, dbPath) != beforeCounts {
+		t.Fatalf("Epic HTTP writes changed results, reviews, events or receipts: %v", err)
+	}
+}
+
 func TestTaskResultRoutesRequireOwner(t *testing.T) {
 	f := newAPIResultFixture(t)
 	const host = "127.0.0.1:12345"

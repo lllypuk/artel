@@ -512,6 +512,90 @@ func driveCommission(t *testing.T, s *Store, env deliveryEnv, writerID string) (
 	return m, attempt
 }
 
+// setTaskKindFixture deliberately changes the stored server-side authority after
+// executable fixture rows exist. Production task types remain immutable.
+func setTaskKindFixture(t *testing.T, s *Store, taskID string, kind domain.Kind) {
+	t.Helper()
+	state := domain.Backlog
+	if kind == domain.KindEpic {
+		state = domain.Open
+	}
+	if _, err := s.db.ExecContext(t.Context(), `UPDATE tasks SET kind=?,state=?,record=json_set(record,'$.kind',?,'$.state',?) WHERE id=?`,
+		kind, state, kind, state, taskID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeliveryEpicFixtureRowsRejectEveryMutationWithoutChangingState(t *testing.T) {
+	s := openTest(t)
+	env := mustDeliveryEnv(t, s)
+	writer := uuid.NewString()
+	env.mustAttachReady(t, s, writer, "")
+
+	pending := env.mustAppend(t, s, "pending before Epic fixture")
+	spentMessage := env.mustAppend(t, s, "spent before Epic fixture")
+	spent := env.mustSpend(t, s, writer, spentMessage)
+	verifiedMessage := env.mustAppend(t, s, "verified before Epic fixture")
+	verified := env.mustSpend(t, s, writer, verifiedMessage)
+	env.mustVerify(t, s, writer, verified)
+	observedMessage := env.mustAppend(t, s, "observed before Epic fixture")
+	observed := env.mustSpend(t, s, writer, observedMessage)
+	env.mustVerify(t, s, writer, observed)
+	observedKey := env.receiptKey(t, s, observedMessage.ID)
+	observedReceipt := env.receiptFor(observed)
+	env.mustReceipt(t, s, observedKey, observedReceipt)
+
+	setTaskKindFixture(t, s, env.task.ID, domain.KindEpic)
+	before := databaseDump(t, s.db)
+	if _, err := env.append(t, s, uuid.NewString(), "stale owner commission"); !observerIs(err, "invalid_request") {
+		t.Fatalf("Epic commission: %v", err)
+	}
+	if _, _, err := s.DeliveryNext(t.Context(), env.binding.ID, "", writer); !observerIs(err, "invalid_request") {
+		t.Fatalf("Epic next: %v", err)
+	}
+	for _, message := range []DeliveryMessage{pending, spentMessage} {
+		if _, err := s.DeliverySpend(t.Context(), env.binding.ID, "", writer, message.ID); !observerIs(err, "invalid_request") {
+			t.Fatalf("Epic spend for %s: %v", message.ID, err)
+		}
+	}
+	for _, attempt := range []DeliveryAttemptResult{spent, verified, observed} {
+		if _, err := s.DeliveryVerify(t.Context(), env.binding.ID, "", writer, attempt.AttemptID); !observerIs(err, "invalid_request") {
+			t.Fatalf("Epic verify for %s: %v", attempt.AttemptID, err)
+		}
+	}
+	if _, err := s.DeliveryReceipt(t.Context(), env.binding.ID, "", "", env.receiptKey(t, s, verifiedMessage.ID), env.receiptFor(verified)); !observerIs(err, "invalid_request") {
+		t.Fatalf("Epic fresh receipt: %v", err)
+	}
+	// Exact receipt recovery precedes the fresh-write type gate.
+	replayed, err := s.DeliveryReceipt(t.Context(), env.binding.ID, "", "", observedKey, observedReceipt)
+	if err != nil || replayed.ID != observedMessage.ID || replayed.Status != "observed" {
+		t.Fatalf("Epic observed receipt recovery: %+v %v", replayed, err)
+	}
+	messages, _, err := s.ListDeliveryMessages(t.Context(), env.task.ID, 0, 50, nil)
+	if err != nil || len(messages) != 4 || messages[0].Status != "stored" || messages[1].Status != "unknown" ||
+		messages[2].Status != "unknown" || messages[3].Status != "observed" {
+		t.Fatalf("Epic read-only delivery history: %+v %v", messages, err)
+	}
+	if after := databaseDump(t, s.db); after != before {
+		t.Fatal("rejected Epic delivery operations changed messages, attempts, events or receipts")
+	}
+}
+
+func TestDeliveryBugFlowAndObservedReceiptRecoveryAfterClose(t *testing.T) {
+	s := openTest(t)
+	env := mustDeliveryEnv(t, s)
+	writer := uuid.NewString()
+	env.mustAttachReady(t, s, writer, "")
+	setTaskKindFixture(t, s, env.task.ID, domain.KindBug)
+	message, attempt := driveCommission(t, s, env, writer)
+	key := env.receiptKey(t, s, message.ID)
+	transitionTask(t, s, env.task.ID, env.project.ID, domain.Done)
+	replayed, err := s.DeliveryReceipt(t.Context(), env.binding.ID, "", "", key, env.receiptFor(attempt))
+	if err != nil || replayed.ID != message.ID || replayed.Status != "observed" {
+		t.Fatalf("Bug observed receipt after close: %+v %v", replayed, err)
+	}
+}
+
 func TestDeliveryPendingRefusesAppendWithoutRecord(t *testing.T) {
 	s := openTest(t)
 	env := mustDeliveryEnv(t, s)

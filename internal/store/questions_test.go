@@ -575,6 +575,63 @@ func TestOwnerQuestionRevokeThenNewGrantDoesNotReopenHistory(t *testing.T) {
 	}
 }
 
+func TestOwnerQuestionEpicFixtureRejectsFreshWritesButRecoversReceipts(t *testing.T) {
+	s := openTest(t)
+	e := mustQuestionEnv(t, s)
+	open := e.mustCreate(t, s, uuid.NewString(), "open before Epic fixture")
+	createKey := uuid.NewString()
+	answered := e.mustCreate(t, s, createKey, "answered before Epic fixture")
+	answerKey := uuid.NewString()
+	answer := e.mustAnswer(t, s, answered.ID, answerKey, "stored answer")
+	setTaskKindFixture(t, s, e.task.ID, domain.KindEpic)
+	before := databaseDump(t, s.db)
+	beforePage, err := s.ListOwnerQuestions(t.Context(), e.task.ID, e.instance, 0, 5, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.create(t, s, uuid.NewString(), e.task.ID, e.writer, "stale writer question"); !observerIs(err, "invalid_request") {
+		t.Fatalf("Epic question create: %v", err)
+	}
+	if _, err := e.answer(t, s, open.ID, uuid.NewString(), "stale owner answer"); !observerIs(err, "invalid_request") {
+		t.Fatalf("Epic question answer: %v", err)
+	}
+	if replayed, err := e.create(t, s, createKey, e.task.ID, e.writer, "answered before Epic fixture"); err != nil || replayed != answered {
+		t.Fatalf("Epic question create recovery: %+v %v", replayed, err)
+	}
+	if replayed, err := e.answer(t, s, answered.ID, answerKey, "stored answer"); err != nil || replayed != answer {
+		t.Fatalf("Epic answer recovery: %+v %v", replayed, err)
+	}
+	afterPage, err := s.ListOwnerQuestions(t.Context(), e.task.ID, e.instance, 0, 5, nil)
+	if err != nil || !reflect.DeepEqual(afterPage, beforePage) {
+		t.Fatalf("Epic question history changed: before=%+v after=%+v err=%v", beforePage, afterPage, err)
+	}
+	if after := databaseDump(t, s.db); after != before {
+		t.Fatal("rejected Epic question operations changed questions, messages, events or receipts")
+	}
+}
+
+func TestOwnerQuestionBugAnswerFlowAndRecoveryAfterClose(t *testing.T) {
+	s := openTest(t)
+	e := mustQuestionEnv(t, s)
+	setTaskKindFixture(t, s, e.task.ID, domain.KindBug)
+	question := e.mustCreate(t, s, uuid.NewString(), "Bug question")
+	answerKey := uuid.NewString()
+	answer := e.mustAnswer(t, s, question.ID, answerKey, "Bug answer")
+	attempt := e.mustSpend(t, s, e.writer, DeliveryMessage{ID: answer.MessageID})
+	e.mustVerify(t, s, e.writer, attempt)
+	receiptKey := e.receiptKey(t, s, answer.MessageID)
+	receipt := e.answerReceipt(attempt, question.ID)
+	e.mustReceipt(t, s, receiptKey, receipt)
+	transitionTask(t, s, e.task.ID, e.project.ID, domain.Done)
+	if replayed, err := e.answer(t, s, question.ID, answerKey, "Bug answer"); err != nil || replayed != answer {
+		t.Fatalf("Bug answer recovery after close: %+v %v", replayed, err)
+	}
+	e.mustReceipt(t, s, receiptKey, receipt)
+	if got := questionByID(t, s, e.task.ID, e.instance, question.ID); got.AnswerStatus != "observed" || got.AnswerText != "Bug answer" {
+		t.Fatalf("Bug question history after close: %+v", got)
+	}
+}
+
 // legacyDeliveryMutationHash is the v3 wire-independent hash input. The v4
 // option bit must not change false/absent enable/revoke receipt hashes.
 func legacyDeliveryMutationHash(m DeliveryOwnerMutation) string {

@@ -90,10 +90,10 @@ TDD: сначала миграционные и доменные отказы, �
 **Files:**
 - Modify: `internal/store/delivery_test.go`, `internal/store/questions_test.go`, `internal/store/results_test.go`, `internal/api/results_test.go`, `internal/observerapi/delivery.go`, `internal/observerapi/delivery_test.go`, `internal/observerapi/questions.go`, `internal/observerapi/questions_test.go`.
 
-- [ ] Проверить единый server-side executable-type gate при commission, delivery next/spend/verify/**receipt**, owner question/answer и results **submit/attach**; read-only история и `/legacy-receipt`/`/receipt` recovery сохраняются. Изменять production код здесь только при обнаруженном пробеле Task 2.
-- [ ] Проверить отказ прямых API-операций для Epic с намеренно подготовленными fixture rows: messages/attempts/reviews/events/receipts неизменны, включая обход через stale UI или прямой owner/delivery HTTP.
-- [ ] Проверить неизменность прежнего Task/Bug поведения, recovery после unknown/revoke/close и миграционных квитанций.
-- [ ] `go test ./internal/store ./internal/api ./internal/observerapi -count=1` и `make lint test build`.
+- [x] Проверить единый server-side executable-type gate при commission, delivery next/spend/verify/**receipt**, owner question/answer и results **submit/attach**; read-only история и `/legacy-receipt`/`/receipt` recovery сохраняются. Изменять production код здесь только при обнаруженном пробеле Task 2.
+- [x] Проверить отказ прямых API-операций для Epic с намеренно подготовленными fixture rows: messages/attempts/reviews/events/receipts неизменны, включая обход через stale UI или прямой owner/delivery HTTP.
+- [x] Проверить неизменность прежнего Task/Bug поведения, recovery после unknown/revoke/close и миграционных квитанций.
+- [x] `go test ./internal/store ./internal/api ./internal/observerapi -count=1` и `make lint test build`.
 
 ### Task 4: Показать типы и Epic workflow в ManualWorkspace
 
