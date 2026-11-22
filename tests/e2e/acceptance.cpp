@@ -51,6 +51,14 @@ bool click(QQuickWindow *window, const QString &name) {
           .toPoint());
   return true;
 }
+bool activate(QQuickWindow *window, const QString &name) {
+  auto *control = item(window, name);
+  if (!control || !control->isVisible() || !control->isEnabled())
+    return false;
+  control->forceActiveFocus();
+  QTest::keyClick(window, Qt::Key_Space);
+  return true;
+}
 bool enter(QQuickWindow *window, const QString &name, const QString &text) {
   auto *control = item(window, name);
   if (!control)
@@ -139,7 +147,7 @@ struct Oracle {
   }
   QJsonObject get(const QString &path) { return request("GET", path); }
   QJsonObject request(const QByteArray &method, const QString &path,
-                      const QJsonObject &body = {}) {
+                      const QJsonObject &body = {}, int *statusCode = nullptr) {
     auto *reply = send(method, path, body);
     QElapsedTimer timer;
     timer.start();
@@ -147,6 +155,8 @@ struct Oracle {
       QTest::qWait(10);
     const int status =
         reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (statusCode)
+      *statusCode = status;
     const bool ok = reply->isFinished() &&
                     (status == 200 || (method != "GET" && status == 201));
     const auto result = QJsonDocument::fromJson(reply->readAll()).object();
@@ -1469,6 +1479,244 @@ private slots:
                paginatedCurrent);
     }
   }
+  void workTypesLifecycle() {
+    Daemon daemon;
+    QVERIFY(daemon.dir.isValid());
+    QVERIFY(daemon.start());
+    Oracle oracle(daemon.endpoint, daemon.tokenPath());
+    auto ui = std::make_unique<Window>(daemon);
+    QVERIFY(ui->window);
+    QTRY_VERIFY(ui->panel.writable());
+    QCOMPARE(ui->workspace.route(), QString("team"));
+    QVERIFY(click(ui->window, "projectsNavButton"));
+    QVERIFY(QDir(daemon.dir.path()).mkdir("workspace"));
+    QVERIFY(click(ui->window, "createProjectButton"));
+    QVERIFY(enter(ui->window, "nameField", "Work types acceptance"));
+    QVERIFY(enter(ui->window, "rootField", daemon.dir.filePath("workspace")));
+    QVERIFY(click(ui->window, "saveButton"));
+    QTRY_COMPARE(ui->panel.projects().size(), 1);
+    QTRY_VERIFY(!ui->panel.dirty());
+    const auto project =
+        ui->panel.projects().first().toMap().value("id").toString();
+    QVERIFY(click(ui->window, "project_" + project));
+    QTRY_COMPARE(ui->panel.project().value("id").toString(), project);
+    QVERIFY(ui->panel.workTypesAvailable());
+    auto idForTitle = [&](const QString &title) {
+      for (const auto &value :
+           oracle.get("/v1/snapshot").value("tasks").toArray()) {
+        const auto row = value.toObject();
+        if (row.value("title").toString() == title)
+          return row.value("id").toString();
+      }
+      return QString{};
+    };
+    auto selectParent = [&](const QString &epic) {
+      auto *parents = item(ui->window, "parentCombo");
+      QVERIFY(parents && parents->isVisible() && parents->isEnabled());
+      QCOMPARE(parents->property("count").toInt(), 2);
+      parents->forceActiveFocus();
+      QTest::keyClick(ui->window, Qt::Key_Down);
+      QTRY_COMPARE(ui->panel.editor().value("parent_id").toString(), epic);
+    };
+
+    // Every mutation in the main workflow goes through production Main.qml and
+    // the real daemon; the independent HTTP oracle checks the stored DTO.
+    QVERIFY(click(ui->window, "createEpicButton"));
+    QCOMPARE(ui->panel.editor().value("kind").toString(), QString("epic"));
+    QVERIFY(enter(ui->window, "nameField", "Release acceptance"));
+    QVERIFY(click(ui->window, "saveButton"));
+    QTRY_COMPARE(ui->panel.tasks().size(), 1);
+    QTRY_VERIFY(!ui->panel.dirty());
+    const auto epic = idForTitle("Release acceptance");
+    QVERIFY(!epic.isEmpty());
+    QVERIFY(click(ui->window, "task_" + epic));
+    QTRY_COMPARE(ui->panel.task().value("state").toString(), QString("open"));
+    QVERIFY(click(ui->window, "startEpicButton"));
+    QTRY_COMPARE(ui->panel.task().value("state").toString(),
+                 QString("in_progress"));
+
+    QVERIFY(click(ui->window, "createTaskButton"));
+    QCOMPARE(ui->panel.editor().value("kind").toString(), QString("task"));
+    selectParent(epic);
+    QVERIFY(enter(ui->window, "nameField", "Cancelled child"));
+    QVERIFY(click(ui->window, "saveButton"));
+    QTRY_COMPARE(ui->panel.tasks().size(), 2);
+    QTRY_VERIFY(!ui->panel.dirty());
+    const auto task = idForTitle("Cancelled child");
+    QVERIFY(!task.isEmpty());
+
+    QVERIFY(click(ui->window, "createBugButton"));
+    QCOMPARE(ui->panel.editor().value("kind").toString(), QString("bug"));
+    selectParent(epic);
+    QVERIFY(enter(ui->window, "nameField", "Empty evidence bug"));
+    QVERIFY(enter(ui->window, "expectedBehaviorField", "Saved work persists"));
+    QVERIFY(enter(ui->window, "actualBehaviorField", "State was lost"));
+    QVERIFY(enter(ui->window, "fixEvidenceField", ""));
+    QTest::keyClick(ui->window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_COMPARE(ui->panel.tasks().size(), 3);
+    QTRY_VERIFY(!ui->panel.dirty());
+    const auto bug = idForTitle("Empty evidence bug");
+    QVERIFY(!bug.isEmpty());
+
+    QVERIFY(click(ui->window, "task_" + task));
+    QTRY_VERIFY(item(ui->window, "cancelTaskButton")->isEnabled());
+    QVERIFY(click(ui->window, "cancelTaskButton"));
+    QTRY_COMPARE(ui->panel.task().value("state").toString(),
+                 QString("cancelled"));
+    QVERIFY(click(ui->window, "task_" + bug));
+    QVERIFY(click(ui->window, "queue_" + bug));
+    QTRY_COMPARE(ui->panel.task().value("state").toString(), QString("queued"));
+    QTRY_VERIFY(item(ui->window, "startButton")->isEnabled());
+    QVERIFY(activate(ui->window, "startButton"));
+    QTRY_COMPARE(ui->panel.task().value("state").toString(),
+                 QString("in_progress"));
+    // Epic and executable in_progress states coexist; Epic does not consume
+    // the queue head or the project's sole executable current slot.
+    QCOMPARE(find(oracle.get("/v1/snapshot").value("tasks").toArray(), epic)
+                 .value("state")
+                 .toString(),
+             QString("in_progress"));
+    QTRY_VERIFY(item(ui->window, "doneButton")->isEnabled());
+    QVERIFY(activate(ui->window, "doneButton"));
+    QTRY_COMPARE(ui->panel.task().value("state").toString(), QString("done"));
+    QVERIFY(item(ui->window, "missingFixEvidence")->isVisible());
+    QVERIFY(!item(ui->window, "bugFixEvidence")->isVisible());
+    QCOMPARE(find(oracle.get("/v1/snapshot").value("tasks").toArray(), epic)
+                 .value("state")
+                 .toString(),
+             QString("in_progress"));
+
+    QVERIFY(click(ui->window, "task_" + epic));
+    QTRY_VERIFY(item(ui->window, "epicChild_" + task));
+    QTRY_VERIFY(item(ui->window, "epicChild_" + bug));
+    const auto summary =
+        item(ui->window, "epicSummary")->property("text").toString();
+    QVERIFY(summary.contains("Done 1"));
+    QVERIFY(summary.contains("Cancelled 1"));
+    QTRY_VERIFY(item(ui->window, "closeEpicButton")->isEnabled());
+    QVERIFY(click(ui->window, "closeEpicButton"));
+    QTRY_COMPARE(ui->panel.task().value("state").toString(), QString("closed"));
+    const auto beforeRestart = oracle.get("/v1/snapshot");
+    QVERIFY(!beforeRestart.isEmpty());
+
+    // Recreate both process and QML owner. The same instance, work types,
+    // parent links, queue and projection-only summary must survive unchanged.
+    QVERIFY(ui->window->close());
+    ui.reset();
+    daemon.stop();
+    QCOMPARE(daemon.process.exitCode(), 0);
+    QVERIFY(daemon.start());
+    oracle.endpoint = daemon.endpoint;
+    QCOMPARE(oracle.get("/v1/snapshot"), beforeRestart);
+    ui = std::make_unique<Window>(daemon);
+    QVERIFY(ui->window);
+    QTRY_VERIFY(ui->panel.writable());
+    QCOMPARE(ui->workspace.route(), QString("team"));
+    QVERIFY(click(ui->window, "projectsNavButton"));
+    QVERIFY(ui->panel.selectProject(project));
+    QVERIFY(ui->panel.selectTask(epic));
+    QCOMPARE(ui->panel.task().value("state").toString(), QString("closed"));
+    QCOMPARE(ui->panel.task().value("summary").toMap().value("done").toInt(),
+             1);
+    QCOMPARE(
+        ui->panel.task().value("summary").toMap().value("cancelled").toInt(),
+        1);
+    QVERIFY(item(ui->window, "epicChild_" + task));
+    QVERIFY(item(ui->window, "epicChild_" + bug));
+    QVERIFY(ui->panel.selectTask(bug));
+    QCOMPARE(ui->panel.task().value("state").toString(), QString("done"));
+    QCOMPARE(ui->panel.task().value("parent_id").toString(), epic);
+    QTRY_VERIFY(item(ui->window, "missingFixEvidence")->isVisible());
+
+    // Direct stale clients cannot enqueue an Epic, apply executable states or
+    // submit a result. Rejections add neither records nor owner events.
+    const auto beforeRejections = oracle.get("/v1/snapshot");
+    const auto projectRow =
+        beforeRejections.value("projects").toArray().first().toObject();
+    int status = 0;
+    oracle.request("PUT", "/v1/projects/" + project + "/queue",
+                   {{"expected_queue_version", projectRow["queue_version"]},
+                    {"task_ids", QJsonArray{epic}}},
+                   &status);
+    QCOMPARE(status, 409);
+    oracle.request(
+        "POST", "/v1/tasks/" + epic + "/transition",
+        {{"state", "done"},
+         {"expected_version",
+          find(beforeRejections["tasks"].toArray(), epic)["version"]}},
+        &status);
+    QCOMPARE(status, 409);
+    oracle.request("POST", "/v1/tasks/" + epic + "/results",
+                   {{"repo", "/tmp/fictional-epic-result"},
+                    {"base", QString(40, 'a')},
+                    {"head", QString(40, 'b')},
+                    {"summary", "Must not be accepted"},
+                    {"expected_result_id", ""}},
+                   &status);
+    QCOMPARE(status, 409);
+    QCOMPARE(oracle.get("/v1/snapshot"), beforeRejections);
+
+    // The production button is disabled, and a direct server request proves
+    // that this is not merely a hidden/stale-QML restriction.
+    QTRY_VERIFY(item(ui->window, "closedParentNotice")->isVisible());
+    QVERIFY(item(ui->window, "reopenButton")->isVisible());
+    QVERIFY(!item(ui->window, "reopenButton")->isEnabled());
+    oracle.request(
+        "POST", "/v1/tasks/" + bug + "/transition",
+        {{"state", "backlog"},
+         {"expected_version",
+          find(beforeRejections["tasks"].toArray(), bug)["version"]}},
+        &status);
+    QCOMPARE(status, 409);
+    QCOMPARE(oracle.get("/v1/snapshot"), beforeRejections);
+
+    // Evidence is an editable owner assertion, not a completion gate. Add it
+    // only after proving done with empty evidence and verify positive display.
+    QVERIFY(click(ui->window, "editTaskButton"));
+    QVERIFY(enter(ui->window, "fixEvidenceField",
+                  "Owner checked the fictional fix in the isolated fixture"));
+    QTest::keyClick(ui->window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_VERIFY(!ui->panel.dirty());
+    QTRY_COMPARE(
+        ui->panel.task().value("fix_evidence").toString(),
+        QString("Owner checked the fictional fix in the isolated fixture"));
+    QVERIFY(item(ui->window, "bugFixEvidence")->isVisible());
+    QCOMPARE(
+        item(ui->window, "bugFixEvidence")->property("text").toString(),
+        QString("Owner checked the fictional fix in the isolated fixture"));
+    QVERIFY(!item(ui->window, "missingFixEvidence")->isVisible());
+
+    // Detach the terminal Bug from its closed parent through the production
+    // editor, then reopen it. Neither operation may rewrite the project queue.
+    const auto beforeDetach = oracle.get("/v1/snapshot");
+    const auto queueBefore =
+        beforeDetach.value("queues").toArray().first().toObject();
+    QVERIFY(click(ui->window, "editTaskButton"));
+    QCOMPARE(ui->panel.parentCandidates().size(), 0);
+    QCOMPARE(ui->panel.parentOptions().size(), 1);
+    auto *parents = item(ui->window, "parentCombo");
+    parents->forceActiveFocus();
+    QTest::keyClick(ui->window, Qt::Key_Space);
+    QTest::keyClick(ui->window, Qt::Key_Return);
+    QTRY_COMPARE(ui->panel.editor().value("parent_id").toString(), QString());
+    QTest::keyClick(ui->window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_VERIFY(!ui->panel.dirty());
+    QTRY_VERIFY(ui->panel.task().value("parent_id").toString().isEmpty());
+    auto after = oracle.get("/v1/snapshot");
+    QCOMPARE(after.value("queues").toArray().first().toObject(), queueBefore);
+    QTRY_VERIFY(item(ui->window, "reopenButton")->isEnabled());
+    QVERIFY(activate(ui->window, "reopenButton"));
+    QTRY_COMPARE(ui->panel.task().value("state").toString(),
+                 QString("backlog"));
+    after = oracle.get("/v1/snapshot");
+    QCOMPARE(after.value("queues").toArray().first().toObject(), queueBefore);
+    QVERIFY(ui->panel.selectTask(epic));
+    QCOMPARE(ui->panel.task().value("summary").toMap().value("done").toInt(),
+             0);
+    QCOMPARE(
+        ui->panel.task().value("summary").toMap().value("cancelled").toInt(),
+        1);
+  }
   void restartConcurrencyAndRecovery() {
     Daemon daemon;
     QVERIFY(daemon.dir.isValid());
@@ -1537,6 +1785,7 @@ private slots:
     QVERIFY(click(ui->window, "task_" + ids[0]));
     QVERIFY(click(ui->window, "startButton"));
     QTRY_COMPARE(ui->panel.task()["state"].toString(), QString("in_progress"));
+    QTRY_VERIFY(item(ui->window, "doneButton")->isEnabled());
     QVERIFY(click(ui->window, "doneButton"));
     QTRY_COMPARE(ui->panel.task()["state"].toString(), QString("done"));
     auto before = oracle.get("/v1/snapshot");

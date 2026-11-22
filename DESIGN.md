@@ -290,6 +290,37 @@ cleanup pass. Standalone capture rerun from a private cwd/HOME also passes.
 Only private fixtures were used; owner daemon/data/token/settings, real sessions,
 API/store contracts and network owners are untouched.
 
+## Work types and Epic workflow (Artel 6a)
+
+ManualWorkspace retains the existing project/list/inspector composition and Team
+startup. Separate Create Epic and Create Bug actions join Create task. The editor
+shows immutable type-specific fields and an optional Epic parent only for
+Task/Bug; candidates are open or in-progress Epics from the same project. A closed
+current parent remains readable separately from replacement candidates. Cards
+show the type, parent and existing literal selectable text. Epic details list
+children and a computed Backlog/Queued/In progress/Done/Cancelled summary; summary
+changes never change Epic state.
+
+Epic has explicit Start, Return to open, Close and Reopen actions rather than
+executable queue controls. Task/Bug retain the existing queue and result/review
+decision surfaces. Bug details show expected/actual behavior and owner-written
+fix evidence. Done with empty evidence remains allowed and displays **Evidence
+not provided**; populated evidence is labelled owner-written, not independent
+verification. A closed-parent notice explains why reopen is unavailable. Terminal
+children can be detached through the same editor and then reopened without a
+queue rewrite. No Board, automatic Epic completion or mandatory Bug proof-gate is
+introduced.
+
+The real-daemon production-QML `workTypesLifecycle` acceptance covers the full
+Epic open→in_progress flow, linked Task/Bug creation, cancelled Task, Bug
+queue→done with empty evidence while Epic stays in_progress, summary/close and
+daemon/QML restart persistence. It also checks populated owner evidence, direct
+server rejection of closed-parent reopen and Epic queue/transition/result
+operations, plus detach/reopen with an unchanged queue projection. The slot uses
+private temporary paths/HOME, ephemeral ports and fictional text; it adds no
+credentials, SQL or shell access to QML. `scripts/e2e` runs it as part of
+`make test-e2e`.
+
 ## Compact layout and large-content hardening (Task 6)
 
 Below 1050 logical content units (excluding navigation), or above an 18-unit UI

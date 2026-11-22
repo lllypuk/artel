@@ -64,7 +64,8 @@ variables and captures the actual ephemeral port automatically.
 ```
 
 Expected status: `{"status":"ok"}`. A fresh snapshot contains an `instance_id`,
-`event_seq: 0` and empty `projects`, `tasks`, `queues` arrays. The CLI reads the
+`event_seq: 0`, `work_types_version: 1` and empty `projects`, `tasks`, `queues`
+arrays. The CLI reads the
 credential itself; never use token contents in arguments, logs or URLs. Missing
 credentials make snapshot fail nonzero; public status still works. Unsupported
 arguments exit 2; transport/auth/protocol failures exit 1.
@@ -385,12 +386,14 @@ There is no editing, TTL, broadcast, remote access, blocking wait in Pi or
 automatic task transition.
 
 Compatibility and SQLite rollback are deliberately one-way. Opening a v3
-database atomically migrates it through v4 and v5 to v6 and retains existing
-commissions, attempts, receipts and identity while adding submitted results and
-reviews. The v6 migration adds the current-candidate review index, including for
-existing v5 databases. A failed migration leaves the previous version intact.
-Older binaries refuse the v6 database without changing its data or identity:
-in-place downgrade is unsupported.
+database atomically migrates it through v4–v7 and retains existing commissions,
+attempts, receipts and identity while adding submitted results, reviews and work
+types. The v6 migration adds the current-candidate review index, including for
+existing v5 databases. The v7 migration rebuilds `tasks` transactionally, marks
+existing rows as Task without an Epic parent, and preserves IDs, states, versions,
+queues, events and receipts. A failed migration leaves the previous version
+intact. Older binaries refuse the v7 database without changing its data or
+identity: in-place downgrade is unsupported.
 Absent/false `allow_owner_questions` preserves the v3 enable/revoke wire and
 receipt hashes and ordinary stage-4a delivery. The base extension can continue
 ordinary commissions but cannot ask questions or receive answer text. Opted-in
@@ -447,6 +450,45 @@ and its storage/http/extension/desktop/navigation/recovery records. Completed pl
 are historical evidence, not active runtime instructions; this stable page remains
 the entry point when ralphex archives a plan.
 
+## Work types and Epic grouping
+
+The manual workspace creates immutable `task`, `bug` and `epic` work types. An
+older create request without `kind` still creates a Task. Task and Bug retain
+`backlog / queued / in_progress / done / cancelled` and the existing project
+queue. Epic instead uses `open / in_progress / closed`; its `in_progress` state
+does not occupy the queue or the project's one executable `in_progress` slot.
+Epic is not a commission, question or result target, and direct owner/delivery
+HTTP operations enforce the same type boundary as the desktop controls.
+
+A Task or Bug can name one optional Epic from the same project. Attaching or
+moving requires an `open`/`in_progress` Epic; the type, UUID and queue position
+do not change. An Epic closes only explicitly from `in_progress`, and only when
+empty or all current children are done/cancelled. Closing never derives from the
+summary or automatically closes children. A terminal child under a closed Epic
+cannot reopen until the Epic reopens or the child is detached; detaching and
+reopening preserve the queue. Epic summaries are calculated in each snapshot
+from current children, including a separate cancelled count, rather than stored
+as mutable counters.
+
+Bug `expected_behavior`, `actual_behavior` and `fix_evidence` are optional. Empty
+evidence does not block manual done; the card says **Evidence not provided**.
+Any entered evidence is an owner-written assertion, not independent Git, CI or
+revmux verification and not a new proof gate. The production-QML acceptance slot
+`workTypesLifecycle` exercises Epic open→in_progress, linked Task/Bug creation,
+Task cancellation, Bug queue→done with empty evidence while Epic remains
+in_progress, summary/close, daemon restart, positive evidence, closed-parent
+reopen rejection and terminal-child detach/reopen without queue changes. Direct
+HTTP controls prove Epic queue/transition/result rejection. Run it through
+`make test-e2e`; all data and processes are temporary.
+
+Snapshots with `work_types_version: 1` require a valid type on every row and an
+Epic summary on Epic rows. New desktop builds talking to a legacy v6 daemon keep
+ordinary Task browsing/editing available but disable Epic/Bug/parent actions with
+an upgrade notice. Old desktop builds do not support v7/Epic: `open`/`closed` are
+rejected by their validator, while an `in_progress` Epic can be misread as a Task
+by that old binary. Upgrade daemon and desktop together; this legacy exception
+is not a supported classification.
+
 ## Desktop presentation contract
 
 Startup always opens Team, including an empty observer registry. One non-revoked
@@ -492,9 +534,10 @@ These stable links do not depend on a plan remaining in its active directory.
   disconnected recovery and byte-identical lost-response retry. All fixtures are
   temporary; screenshots use fictional data only.
 
-Queue replacement is atomic and only contains queued/backlog tasks of one active
-project. Only the first queued task can start; at most one task is in progress.
-Archive requires no queued/in-progress tasks; archived objects are read-only.
+Queue replacement is atomic and only contains queued/backlog Task/Bug rows of
+one active project. Only the first queued executable row can start; at most one
+Task/Bug is in progress, independently of an Epic's state. Archive requires no
+queued/in-progress Task/Bug rows; archived objects are read-only.
 Root paths are canonical and unique among active projects; no Git/scanning runs.
 Manual completion means only the owner marked it complete, never verified work.
 

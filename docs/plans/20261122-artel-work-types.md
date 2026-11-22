@@ -111,10 +111,12 @@ TDD: сначала миграционные и доменные отказы, �
 **Files:**
 - Modify: `tests/e2e/acceptance.cpp`, `scripts/e2e`, `docs/development.md`, `docs/roadmap.md`, `PRODUCT.md`, `DESIGN.md`, `docs/plans/20261122-artel-work-types.md`.
 
-- [ ] Добавить production-QML acceptance: создать Epic open→in_progress, добавить Task/Bug, отменить Task, провести Bug через очередь в done с пустым evidence **при остающемся in_progress Epic**, увидеть сводку, закрыть Epic, перезапустить daemon и проверить сохранение.
-- [ ] Проверить положительное отображение owner-written fix_evidence, запрет reopen ребёнка под closed Epic, отвязку завершённого ребёнка и последующий reopen без изменения очереди; добавить negative controls прямых операций Epic.
-- [ ] Обновить стабильный контракт/примеры и roadmap по фактической реализации, не объявляя Board или обязательный Bug proof-gate. Проверить ссылки, команды и `git diff --check`.
-- [ ] Провести содержательное ревью итоговой дельты и исправить findings с повторной проверкой; затем `make check` и на Arch `make package-check` на точном итоговом SHA, зафиксировав результаты.
+- [x] Добавить production-QML acceptance: создать Epic open→in_progress, добавить Task/Bug, отменить Task, провести Bug через очередь в done с пустым evidence **при остающемся in_progress Epic**, увидеть сводку, закрыть Epic, перезапустить daemon и проверить сохранение.
+- [x] Проверить положительное отображение owner-written fix_evidence, запрет reopen ребёнка под closed Epic, отвязку завершённого ребёнка и последующий reopen без изменения очереди; добавить negative controls прямых операций Epic.
+- [x] Обновить стабильный контракт/примеры и roadmap по фактической реализации, не объявляя Board или обязательный Bug proof-gate. Проверить ссылки, команды и `git diff --check`.
+- [x] Провести содержательное ревью итоговой дельты и исправить findings с повторной проверкой; затем `make check` и на Arch `make package-check` на точном итоговом SHA, зафиксировав результаты.
+  - Ревью нашло пропущенное в Task 1 обновление оракула old-daemon compatibility с v6 на v7 и гонку ожидания доступности Done в существующем E2E; оба исправлены, адресные проверки и полный gates повторены. Production-дефектов в итоговой дельте не найдено.
+  - На рабочем diff поверх HEAD `29c4cd544aaf3a4a6784ee7e445f12d82090d8cc` `make check` и Arch `make package-check` завершились exit 0; production-QML `workTypesLifecycle` — 3/3 QtTest, owner questions — 8/8, ArtelTests — 120/120, ClientTests — 59/59. Commit, внешнее revmux-ревью и повторная валидация итогового committed SHA выполняются отдельно владельцем/родительским процессом.
 
 ## Post-Completion
 
