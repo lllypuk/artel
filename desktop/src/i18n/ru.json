@@ -176,6 +176,8 @@
   "Offline — cached data is read-only": "Нет связи — сохранённые данные только для чтения",
   "Never": "Ещё не обновлялось",
   "Current server text: %1": "Текущий текст на сервере: %1",
+  "No stored work item (create draft).": "Сохранённой работы нет (черновик создания).",
+  "\nSelected Epic parent: %1 (%2)": "\nВыбранный родительский Epic: %1 (%2)",
   "Name: %1\nDirectory: %2\nDescription: %3": "Название: %1\nКаталог: %2\nОписание: %3",
   "Title: %1\nDescription: %2\nAcceptance criteria: %3": "Задача: %1\nОписание: %2\nКритерии приёмки: %3",
   "Database changed; copy or discard the draft before continuing": "База данных сменилась; скопируйте или отмените черновик перед продолжением",

@@ -57,6 +57,17 @@ Panel::Panel(ApiClient *client, QObject *parent)
       m_questions.update(i, questionRow(m_questions.get(i)));
   });
   connect(client, &ApiClient::changed, this, [this] {
+    if (m_client->conflict()) {
+      if (!m_conflictTracked) {
+        m_conflictTracked = true;
+        m_conflictInstance = m_client->instance();
+        m_conflictEditorId = m_editorId;
+        m_conflictEditorKind = m_kind;
+        m_conflictSnapshotRevision = m_client->snapshotRevision();
+      }
+    } else {
+      m_conflictTracked = false;
+    }
     const bool reconnected = m_client->online() && !m_wasOnline;
     m_wasOnline = m_client->online();
     if (m_seenSequence != m_client->sequence() ||
@@ -698,6 +709,22 @@ QString Panel::kindLabel(const QString &kind) const {
     return tr("Bug");
   return tr("Task");
 }
+QString Panel::parentTitle(const QVariantMap &parent) const {
+  if (parent.isEmpty())
+    return {};
+  const auto title = parent.value("title").toString();
+  int matchingTitles = 0;
+  for (int i = 0; i < m_client->tasks()->rowCount(); ++i) {
+    const auto row = m_client->tasks()->get(i);
+    if (row.value("kind").toString() == "epic" &&
+        row.value("project_id") == parent.value("project_id") &&
+        row.value("title").toString() == title)
+      ++matchingTitles;
+  }
+  return matchingTitles > 1 ? QStringLiteral("%1 (%2)").arg(
+                                  title, parent.value("id").toString())
+                            : title;
+}
 QVariantMap Panel::workRow(QVariantMap row,
                            const QVariantMap *knownParent) const {
   if (row.isEmpty())
@@ -709,7 +736,7 @@ QVariantMap Panel::workRow(QVariantMap row,
   const auto parent =
       knownParent ? *knownParent
                   : find(m_client->tasks(), row.value("parent_id").toString());
-  row.insert("parentTitle", parent.value("title"));
+  row.insert("parentTitle", parentTitle(parent));
   row.insert("parentState", parent.value("state"));
   const auto summary = row.value("summary").toMap();
   if (kind == "epic")
@@ -746,7 +773,7 @@ QVariantList Panel::parentCandidates() const {
         row.value("kind").toString() == "epic" &&
         (state == "open" || state == "in_progress"))
       rows.append(QVariantMap{{"id", row.value("id")},
-                              {"title", row.value("title")},
+                              {"title", parentTitle(row)},
                               {"state", state}});
   }
   return rows;
@@ -760,7 +787,7 @@ QString Panel::editorParentTitle() const {
     return {};
   const auto parent =
       find(m_client->tasks(), editor().value("parent_id").toString());
-  return parent.value("title").toString();
+  return parentTitle(parent);
 }
 QString Panel::editorParentState() const {
   if (m_kind != "task")
@@ -808,7 +835,7 @@ QVariantList Panel::tasks() const {
     const auto parentID = row.value("parent_id").toString();
     const auto parent =
         parentID.isEmpty() ? QVariantMap{} : parents.value(parentID);
-    row.insert("parentTitle", parent.value("title"));
+    row.insert("parentTitle", parentTitle(parent));
     row.insert("parentState", parent.value("state"));
     const int position = ids.indexOf(row.value("id"));
     row.insert("position", position);
@@ -860,7 +887,17 @@ QString Panel::currentText() const {
         .arg(row.value("name").toString(), row.value("root_path").toString(),
              row.value("description").toString());
   }
-  const auto row = task();
+  if (m_editorId.isEmpty()) {
+    auto text = tr("No stored work item (create draft).");
+    const auto parent =
+        find(m_client->tasks(), editor().value("parent_id").toString());
+    if (!parent.isEmpty())
+      text += tr("\nSelected Epic parent: %1 (%2)")
+                  .arg(parentTitle(parent),
+                       stateLabel(parent.value("state").toString()));
+    return text;
+  }
+  const auto row = workRow(find(m_client->tasks(), m_editorId));
   auto text =
       tr("Type: %1\nTitle: %2\nDescription: %3\nAcceptance criteria: %4")
           .arg(row.value("kindLabel").toString(), row.value("title").toString(),
@@ -884,6 +921,9 @@ QString Panel::message() const {
               "abandonment before continuing; the draft will be kept.");
   if (dirty() && m_editorInstance != m_client->instance())
     return tr("Database changed; copy or discard the draft before continuing");
+  if (unsupportedWorkTypeDraft())
+    return tr("Daemon upgrade required for Epic, Bug and Epic parent actions. "
+              "Existing tasks remain available.");
   return m_client->error();
 }
 QString Panel::connection() const {
@@ -901,9 +941,17 @@ QString Panel::updated() const {
 bool Panel::writable() const {
   return m_client->online() && !m_client->pending() && !m_client->uncertain();
 }
+bool Panel::unsupportedWorkTypeDraft() const {
+  if (m_kind != "task" || workTypesAvailable())
+    return false;
+  const auto draft = editor();
+  return draft.value("kind", "task").toString() != "task" ||
+         !draft.value("parent_id").toString().isEmpty();
+}
 bool Panel::saveable() const {
   const bool newProject = m_kind == "project" && m_editorId.isEmpty();
   return writable() && !conflict() && !m_kind.isEmpty() &&
+         !unsupportedWorkTypeDraft() &&
          m_editorInstance == m_client->instance() &&
          (newProject || !project().value("archived").toBool());
 }
@@ -1004,22 +1052,15 @@ void Panel::field(const QString &name, const QString &value) {
         !QStringList{"epic", "task", "bug"}.contains(value))
       return;
     draft[name] = value;
-    if (value == "epic") {
-      draft.remove("parent_id");
-      draft.remove("expected_behavior");
-      draft.remove("actual_behavior");
-      draft.remove("fix_evidence");
-    } else {
-      if (!draft.contains("parent_id"))
-        draft.insert("parent_id", QString());
+    // Hidden fields stay in the local draft so a type round trip is lossless;
+    // save() independently filters fields inapplicable to the selected kind.
+    if (value != "epic" && !draft.contains("parent_id"))
+      draft.insert("parent_id", QString());
+    if (value == "bug")
       for (const auto *key :
-           {"expected_behavior", "actual_behavior", "fix_evidence"}) {
-        if (value == "bug")
+           {"expected_behavior", "actual_behavior", "fix_evidence"})
+        if (!draft.contains(key))
           draft.insert(key, QString());
-        else
-          draft.remove(key);
-      }
-    }
   } else if (name == "parent_id") {
     if (!workTypesAvailable() || draft.value("kind").toString() == "epic")
       return;
@@ -1096,8 +1137,11 @@ void Panel::reload() {
 bool Panel::rebase() {
   // Explicit owner action: retain text but adopt the freshly loaded editable
   // base. A parent-state conflict need not advance (or create) the work row.
-  if (!writable() || m_client->loading() ||
+  if (!writable() || m_client->loading() || !m_client->conflict() ||
+      !m_conflictTracked || m_conflictInstance != m_client->instance() ||
       m_editorInstance != m_client->instance() ||
+      m_conflictEditorId != m_editorId || m_conflictEditorKind != m_kind ||
+      m_client->snapshotRevision() <= m_conflictSnapshotRevision ||
       (m_editorId.isEmpty() && m_kind != "task"))
     return false;
   if (!m_editorId.isEmpty()) {

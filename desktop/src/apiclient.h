@@ -129,6 +129,8 @@ public:
   QString instance() const { return m_instance; }
   qint64 sequence() const { return m_sequence; }
   qint64 streamCursor() const { return m_cursor; }
+  // Advances only after a complete valid snapshot has replaced the models.
+  quint64 snapshotRevision() const { return m_snapshotRevision; }
   // Scope is exposed only for the latest accepted snapshot. Unknown coverage
   // must always invalidate task-scoped reads conservatively.
   bool snapshotScopeKnown() const { return m_snapshotScopeKnown; }
@@ -194,7 +196,8 @@ private:
                 *m_deliveryReply = nullptr, *m_questionsReply = nullptr,
                 *m_questionStatusReply = nullptr;
   QTimer m_reconnect, m_coalesce;
-  quint64 m_generation = 0, m_draftRevision = 0, m_sentRevision = 0;
+  quint64 m_generation = 0, m_draftRevision = 0, m_sentRevision = 0,
+          m_snapshotRevision = 0;
   QString m_instance, m_status = QStringLiteral("disconnected"), m_error,
                       m_historyError, m_currentResultError, m_resultsError,
                       m_messagesError;

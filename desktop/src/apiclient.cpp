@@ -511,6 +511,7 @@ void ApiClient::snapshotFinished(QNetworkReply *reply, quint64 generation) {
     m_reloadAgain = false;
     m_coalesce.start();
   }
+  ++m_snapshotRevision;
   emit changed();
 }
 bool ApiClient::snapshotAffectsTask(const QString &project,

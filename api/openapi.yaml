@@ -850,7 +850,7 @@ components:
         name: {type: string, minLength: 1, maxLength: 120}
         root_path: {type: string}
         description: {type: string, description: At most 16 KiB UTF-8}
-        archived: {type: boolean, description: Archive requires no queued/in_progress tasks; unarchive rechecks root uniqueness}
+        archived: {type: boolean, description: Archive requires no queued/in_progress Task/Bug rows; in-progress Epics are allowed; unarchive rechecks root uniqueness}
     Project:
       type: object
       additionalProperties: false
