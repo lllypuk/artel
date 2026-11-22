@@ -3058,6 +3058,83 @@ private slots:
                  QString::fromUtf8("Данные ревью несогласованы"));
     QCoreApplication::removeTranslator(&appearance);
   }
+  void workTypeEditSendsOnlyChangedFields() {
+    UiFixture fixture;
+    auto initial = QJsonDocument::fromJson(fixture.state).object();
+    initial.insert("work_types_version", 1);
+    auto tasks = initial.value("tasks").toArray();
+    auto bug = tasks.first().toObject();
+    bug.insert("kind", "bug");
+    const QString large(60 * 1024, 'a');
+    for (const auto *key :
+         {"description", "acceptance_criteria", "expected_behavior",
+          "actual_behavior", "fix_evidence"})
+      bug.insert(key, large);
+    tasks[0] = bug;
+    initial.insert("tasks", tasks);
+    fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    QPointer<QTcpSocket> held;
+    QList<QJsonObject> patches;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("PATCH /v1/tasks/")) {
+        held = socket;
+        patches.append(QJsonDocument::fromJson(
+                           request.mid(request.indexOf("\r\n\r\n") + 4))
+                           .object());
+        return;
+      }
+      fixture.normal(socket, request);
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    QVERIFY(panel.editTask(false));
+    panel.field("title", "Only the title and one cleared field changed");
+    panel.field("expected_behavior", "");
+    QVERIFY(panel.save());
+    QTRY_VERIFY(held);
+    QCOMPARE(patches.size(), 1);
+    const auto patch = patches.first();
+    QCOMPARE(patch.value("expected_version").toInt(), 1);
+    QCOMPARE(patch.value("title").toString(),
+             QString("Only the title and one cleared field changed"));
+    QVERIFY(patch.contains("expected_behavior"));
+    QCOMPARE(patch.value("expected_behavior").toString(), QString());
+    for (const auto *key : {"kind", "description", "acceptance_criteria",
+                            "actual_behavior", "fix_evidence", "parent_id"})
+      QVERIFY(!patch.contains(key));
+    QVERIFY(QJsonDocument(patch).toJson(QJsonDocument::Compact).size() < 1024);
+
+    bug.insert("title", patch.value("title"));
+    bug.insert("expected_behavior", "");
+    bug.insert("version", 2);
+    tasks[0] = bug;
+    initial.insert("tasks", tasks);
+    initial.insert("event_seq", initial.value("event_seq").toInt() + 1);
+    fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    UiFixture::respond(
+        held, 200,
+        QJsonDocument(QJsonObject{{"id", fixture.task}, {"version", 2}})
+            .toJson());
+    QTRY_VERIFY(!client.pending() && !client.loading() && !panel.dirty());
+    QTRY_COMPARE(panel.task().value("version").toInt(), 2);
+
+    QVERIFY(panel.editTask(false));
+    const QString changed(60 * 1024, 'b');
+    for (const auto *key :
+         {"description", "acceptance_criteria", "expected_behavior",
+          "actual_behavior", "fix_evidence"})
+      panel.field(key, changed);
+    QVERIFY(!panel.save());
+    QVERIFY(panel.message().contains("too large"));
+    QCOMPARE(patches.size(), 1);
+    QVERIFY(panel.dirty());
+    client.stop();
+  }
   void workTypesProductionQml() {
     UiFixture fixture;
     const QString epic = "77777777-7777-4777-8777-777777777777";
@@ -3067,6 +3144,8 @@ private slots:
     initial.insert("tasks", QJsonArray{});
     fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
     QList<QJsonObject> transitions;
+    QPointer<QTcpSocket> heldCreate;
+    bool holdCreate = false;
     const auto recalculateSummaries = [&] {
       auto state = QJsonDocument::fromJson(fixture.state).object();
       auto tasks = state.value("tasks").toArray();
@@ -3113,6 +3192,10 @@ private slots:
       }
       if (request.startsWith("POST /v1/projects/") &&
           request.contains("/tasks ")) {
+        if (holdCreate) {
+          heldCreate = socket;
+          return;
+        }
         const auto body = QJsonDocument::fromJson(
                               request.mid(request.indexOf("\r\n\r\n") + 4))
                               .object();
@@ -3253,15 +3336,41 @@ private slots:
     QVERIFY(click(window, "createBugButton"));
     QCOMPARE(panel.editor().value("kind").toString(), QString("bug"));
     QCOMPARE(panel.parentCandidates().size(), 1);
+    const auto verifyReveal = [&](const QString &name) {
+      auto *control = item(window, name);
+      auto *scroll = item(window, "detailsScroll");
+      QVERIFY(control && scroll);
+      auto *viewport = scroll->property("contentItem").value<QQuickItem *>();
+      QVERIFY(viewport);
+      auto *content = viewport->property("contentItem").value<QQuickItem *>();
+      QVERIFY(content);
+      viewport->setProperty("contentY",
+                            viewport->property("contentHeight").toReal());
+      control->forceActiveFocus();
+      QTRY_VERIFY([&] {
+        const qreal top = control->mapToItem(content, 0, 0).y();
+        const qreal scroll = viewport->property("contentY").toReal();
+        return control->hasActiveFocus() && top >= scroll - 1 &&
+               top + control->height() <= scroll + viewport->height() + 1;
+      }());
+    };
+    verifyReveal("kindCombo");
     auto *parents = item(window, "parentCombo");
+    verifyReveal("parentCombo");
     QCOMPARE(parents->property("count").toInt(), 2);
     parents->forceActiveFocus();
     QTest::keyClick(window, Qt::Key_Down);
     QTRY_COMPARE(panel.editor().value("parent_id").toString(), epic);
+    panel.field("kind", "task");
+    QCOMPARE(panel.editor().value("parent_id").toString(), epic);
+    panel.field("kind", "bug");
+    QCOMPARE(panel.editor().value("parent_id").toString(), epic);
     QVERIFY(enter(window, "nameField", "Crash on save"));
     QVERIFY(enter(window, "expectedBehaviorField", "Saved text remains"));
     QVERIFY(enter(window, "actualBehaviorField", "The window closes"));
     const auto bugDraft = panel.editor();
+    panel.field("kind", "bug");
+    QCOMPARE(panel.editor(), bugDraft);
     item(window, "actualBehaviorField")->forceActiveFocus();
     panel.reload();
     QTRY_VERIFY(!client.loading());
@@ -3338,6 +3447,26 @@ private slots:
     panel.field("parent_id", fixture.task);
     QCOMPARE(panel.editor().value("parent_id").toString(), epic);
     panel.discard();
+
+    // The immutable kind is locked both in production QML and C++ while a
+    // create is pending or has an uncertain outcome; ordinary text stays live.
+    QVERIFY(click(window, "createTaskButton"));
+    QVERIFY(enter(window, "nameField", "Pending kind lock"));
+    holdCreate = true;
+    QVERIFY(panel.save());
+    QTRY_VERIFY(heldCreate && client.pending());
+    QVERIFY(!item(window, "kindCombo")->isEnabled());
+    panel.field("kind", "bug");
+    QCOMPARE(panel.editor().value("kind").toString(), QString("task"));
+    panel.field("title", "Text remains editable while pending");
+    QCOMPARE(panel.editor().value("title").toString(),
+             QString("Text remains editable while pending"));
+    heldCreate->disconnectFromHost();
+    heldCreate = nullptr;
+    QTRY_VERIFY(panel.uncertain());
+    QVERIFY(!item(window, "kindCombo")->isEnabled());
+    panel.field("kind", "bug");
+    QCOMPARE(panel.editor().value("kind").toString(), QString("task"));
     client.stop();
     QVERIFY(!item(window, "createEpicButton")->isEnabled());
     QVERIFY(!panel.editTask(true, "epic"));

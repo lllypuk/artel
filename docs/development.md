@@ -587,7 +587,8 @@ owner decisions.
 Normal-session Omarchy desktop smoke and installation are owner decisions, not
 claims made by offscreen tests. No macOS support, remote access, agent control, scheduler,
 Product workflow, MR checks or operational start/stop actions are implemented.
-Events/receipts are not pruned; snapshots are complete with a 32 MiB limit, and
+Events/receipts are not pruned; snapshots are complete with a 64 MiB limit (including
+migration headroom for formerly valid 32 MiB v6 snapshots), and
 mutations currently load/persist the full store snapshot: this is not a large-scale
 or hardware-failure durability guarantee. External legacy installations/volumes
 remain untouched; see [cleanup inventory](legacy-cleanup.md).

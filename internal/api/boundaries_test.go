@@ -54,22 +54,33 @@ func TestAPIBoundaries(t *testing.T) {
 	}
 }
 
-func TestOversizedRealSnapshot(t *testing.T) {
-	s, h := fixture(t)
-	p := eventProject(t, s)
-	// Seed legal-sized task records in one store transaction, avoiding quadratic
-	// fixture setup through the intentionally full-snapshot MVP app persistence.
-	_, err := s.Apply(t.Context(), store.Mutation{Key: uuid.NewString(), Method: "fixture", Path: "fixture", Hash: "fixture"}, func(snap *store.Snapshot) (store.Result, *store.Event, error) {
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		for range 520 {
-			snap.Tasks = append(snap.Tasks, domain.Task{ID: uuid.NewString(), ProjectID: p, Title: "Large fixture", Description: strings.Repeat("x", 65536), State: domain.Backlog, Version: 1, CreatedAt: now, UpdatedAt: now})
-		}
-		return store.Result{Status: 200, Body: []byte(`{}`)}, &store.Event{Action: "fixture", ProjectID: p, Source: "owner_manual", Timestamp: now, Changes: []store.Change{}}, nil
-	})
-	if err != nil {
-		t.Fatal(err)
+func TestSnapshotSizeLimitCompatibility(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		count  int
+		status int
+	}{
+		{name: "former v6 boundary remains readable after v7 overhead", count: 520, status: 200},
+		{name: "expanded limit is still bounded", count: 1040, status: 413},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, h := fixture(t)
+			p := eventProject(t, s)
+			// Seed legal-sized task records in one store transaction, avoiding quadratic
+			// fixture setup through the intentionally full-snapshot MVP app persistence.
+			_, err := s.Apply(t.Context(), store.Mutation{Key: uuid.NewString(), Method: "fixture", Path: "fixture", Hash: "fixture"}, func(snap *store.Snapshot) (store.Result, *store.Event, error) {
+				now := time.Now().UTC().Format(time.RFC3339Nano)
+				for range test.count {
+					snap.Tasks = append(snap.Tasks, domain.Task{ID: uuid.NewString(), ProjectID: p, Title: "Large fixture", Description: strings.Repeat("x", 65536), State: domain.Backlog, Version: 1, CreatedAt: now, UpdatedAt: now})
+				}
+				return store.Result{Status: 200, Body: []byte(`{}`)}, &store.Event{Action: "fixture", ProjectID: p, Source: "owner_manual", Timestamp: now, Changes: []store.Change{}}, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request(t, h, "GET", "/v1/snapshot", "", "", test.status)
+		})
 	}
-	request(t, h, "GET", "/v1/snapshot", "", "", 413)
 }
 
 func TestInternalErrorsAreSanitized(t *testing.T) {

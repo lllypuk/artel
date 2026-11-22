@@ -1,5 +1,6 @@
 #include "panel.h"
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonDocument>
 #include <QLocale>
 #include <algorithm>
@@ -86,6 +87,7 @@ Panel::Panel(ApiClient *client, QObject *parent)
             if (!m_client->dirty() || m_kind.isEmpty() ||
                 m_editorInstance != instance)
               return;
+            m_editorBase = m_sentEditorBase;
             m_editorId = result.value("id").toString();
             m_version = result.value("version").toLongLong();
             m_adopted = false;
@@ -767,6 +769,12 @@ QVariantList Panel::queueIds() const {
 QVariantList Panel::tasks() const {
   QVariantList rows;
   const auto ids = queueIds();
+  QHash<QString, QVariantMap> parents;
+  parents.reserve(m_client->tasks()->rowCount());
+  for (int i = 0; i < m_client->tasks()->rowCount(); ++i) {
+    const auto row = m_client->tasks()->get(i);
+    parents.insert(row.value("id").toString(), row);
+  }
   for (int i = 0; i < m_client->tasks()->rowCount(); ++i) {
     auto row = m_client->tasks()->get(i);
     if (row.value("project_id").toString() != m_project)
@@ -774,8 +782,9 @@ QVariantList Panel::tasks() const {
     const auto kind = row.value("kind", "task").toString();
     row.insert("kind", kind);
     row.insert("kindLabel", kindLabel(kind));
+    const auto parentID = row.value("parent_id").toString();
     const auto parent =
-        find(m_client->tasks(), row.value("parent_id").toString());
+        parentID.isEmpty() ? QVariantMap{} : parents.value(parentID);
     row.insert("parentTitle", parent.value("title"));
     row.insert("parentState", parent.value("state"));
     const int position = ids.indexOf(row.value("id"));
@@ -955,6 +964,8 @@ bool Panel::begin(const QString &kind, const QVariantMap &value) {
     }
   }
   m_client->setDraft(fields);
+  m_editorBase = fields;
+  m_sentEditorBase.clear();
   return true;
 }
 bool Panel::editProject(bool create) {
@@ -981,7 +992,10 @@ void Panel::field(const QString &name, const QString &value) {
   if (!draft.contains(name))
     return;
   if (name == "kind") {
-    if (!m_editorId.isEmpty() || !workTypesAvailable() ||
+    if (draft.value("kind").toString() == value)
+      return;
+    if (!m_editorId.isEmpty() || m_client->pending() || m_client->uncertain() ||
+        !workTypesAvailable() ||
         !QStringList{"epic", "task", "bug"}.contains(value))
       return;
     draft[name] = value;
@@ -991,7 +1005,8 @@ void Panel::field(const QString &name, const QString &value) {
       draft.remove("actual_behavior");
       draft.remove("fix_evidence");
     } else {
-      draft.insert("parent_id", QString());
+      if (!draft.contains("parent_id"))
+        draft.insert("parent_id", QString());
       for (const auto *key :
            {"expected_behavior", "actual_behavior", "fix_evidence"}) {
         if (value == "bug")
@@ -1021,7 +1036,8 @@ bool Panel::save() {
   if (!saveable())
     return false;
   m_adopted = false;
-  auto payload = editor();
+  const auto sentEditorBase = editor();
+  auto payload = sentEditorBase;
   if (m_kind == "task") {
     const auto kind = payload.value("kind", "task").toString();
     if (!m_editorId.isEmpty())
@@ -1039,18 +1055,32 @@ bool Panel::save() {
     if (!workTypesAvailable())
       payload.remove("kind");
   }
-  if (!m_editorId.isEmpty())
+  if (!m_editorId.isEmpty()) {
+    // PATCH is a delta from the editor's confirmed base. In particular, a
+    // title-only Bug edit must not resend several individually valid 64 KiB
+    // fields and exceed the whole-request limit.
+    for (auto it = payload.begin(); it != payload.end();) {
+      if (m_editorBase.contains(it.key()) &&
+          m_editorBase.value(it.key()) == it.value())
+        it = payload.erase(it);
+      else
+        ++it;
+    }
     payload.insert("expected_version", m_version);
+  }
   const auto path = m_kind == "project"
                         ? "/v1/projects"
                         : "/v1/projects/" + m_editorProject + "/tasks";
-  return m_client->save(
+  const bool sent = m_client->save(
       m_editorId.isEmpty() ? "POST" : "PATCH",
       m_editorId.isEmpty()
           ? path
           : QStringLiteral("/v1/") +
                 (m_kind == "project" ? "projects/" : "tasks/") + m_editorId,
       payload);
+  if (sent)
+    m_sentEditorBase = sentEditorBase;
+  return sent;
 }
 void Panel::discard() { m_client->discardDraft(); }
 void Panel::reload() {

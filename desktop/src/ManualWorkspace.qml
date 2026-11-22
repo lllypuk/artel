@@ -537,12 +537,13 @@ Item {
                             id: kindCombo
                             objectName: "kindCombo"
                             visible: manual.panel.editorKind === "task"
-                            enabled: manual.panel.editorCreating && manual.panel.workTypesAvailable
+                            enabled: manual.panel.editorCreating && manual.panel.workTypesAvailable && !manual.panel.busy && !manual.panel.uncertain
                             model: manual.panel.creationKinds
                             textRole: "label"
                             valueRole: "id"
                             currentIndex: Math.max(0, indexOfValue(manual.panel.editor.kind || "task"))
                             onActivated: manual.panel.field("kind", currentValue)
+                            onActiveFocusChanged: manual.revealField(this, 0)
                             Accessible.name: qsTr("Work type")
                             Layout.fillWidth: true
                         }
@@ -559,6 +560,7 @@ Item {
                             valueRole: "id"
                             currentIndex: Math.max(0, indexOfValue(manual.panel.editor.parent_id || ""))
                             onActivated: manual.panel.field("parent_id", currentValue)
+                            onActiveFocusChanged: manual.revealField(this, 0)
                             Accessible.name: qsTr("Epic parent (optional)")
                             Layout.fillWidth: true
                         }

@@ -43,29 +43,32 @@ type snapshotDTO struct {
 func wireSnapshot(s store.Snapshot) snapshotDTO {
 	out := snapshotDTO{InstanceID: s.InstanceID, EventSeq: s.EventSeq, WorkTypesVersion: 1,
 		Projects: s.Projects, Tasks: []taskDTO{}, Queues: []queueDTO{}}
+	summaries := make(map[string]epicSummaryDTO)
+	for _, child := range s.Tasks {
+		if child.ParentID == "" {
+			continue
+		}
+		summary := summaries[child.ParentID]
+		switch child.State {
+		case domain.Backlog:
+			summary.Backlog++
+		case domain.Queued:
+			summary.Queued++
+		case domain.InProgress:
+			summary.InProgress++
+		case domain.Done:
+			summary.Done++
+		case domain.Cancelled:
+			summary.Cancelled++
+		}
+		summaries[child.ParentID] = summary
+	}
 	for _, t := range s.Tasks {
 		row := taskDTO{Task: t, Kind: t.Kind, ParentID: t.ParentID,
 			ExpectedBehavior: t.ExpectedBehavior, ActualBehavior: t.ActualBehavior, FixEvidence: t.FixEvidence}
 		if t.Kind == domain.KindEpic {
-			summary := &epicSummaryDTO{}
-			for _, child := range s.Tasks {
-				if child.ParentID != t.ID {
-					continue
-				}
-				switch child.State {
-				case domain.Backlog:
-					summary.Backlog++
-				case domain.Queued:
-					summary.Queued++
-				case domain.InProgress:
-					summary.InProgress++
-				case domain.Done:
-					summary.Done++
-				case domain.Cancelled:
-					summary.Cancelled++
-				}
-			}
-			row.Summary = summary
+			summary := summaries[t.ID]
+			row.Summary = &summary
 		}
 		out.Tasks = append(out.Tasks, row)
 	}

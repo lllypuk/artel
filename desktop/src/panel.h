@@ -205,6 +205,7 @@ private:
   qint64 m_version = 0, m_historyCursor = 0, m_resultsCursor = 0;
   QVariantList m_history, m_resultEntries;
   QVariantMap m_currentResultData;
+  QVariantMap m_editorBase, m_sentEditorBase;
   QString m_currentResult, m_currentReviewsCursor;
   bool m_archived = false, m_historyMore = false, m_adopted = false,
        m_wasOnline = false, m_currentResultLoaded = false,

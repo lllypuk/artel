@@ -189,6 +189,7 @@
   "Save outcome unknown; retry the same request": "Исход сохранения неизвестен; повторите тот же запрос",
   "Conflict; draft preserved. Reload before editing again": "Конфликт; черновик сохранён. Перечитайте данные перед редактированием",
   "Save rejected; draft preserved": "Сохранение отклонено; черновик сохранён",
+  "Save request is too large; shorten the changed fields": "Запрос сохранения слишком велик; сократите изменённые поля",
   "Conflict; reload before trying the action again": "Конфликт; перечитайте данные перед повтором действия",
   "Owner authorization failed; draft preserved": "Ошибка авторизации владельца; черновик сохранён",
   "Pi commission": "Поручение в Pi",

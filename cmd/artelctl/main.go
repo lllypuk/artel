@@ -96,7 +96,9 @@ func diagnostic(args []string, out, errOut io.Writer) int {
 		_, _ = fmt.Fprintln(errOut, "artelctl: API request failed")
 		return 1
 	}
-	const limit = 32 * 1024 * 1024
+	// Preserve readability of a formerly valid 32 MiB v6 snapshot after the
+	// mandatory v7 work-type fields are added, while keeping a firm bound.
+	const limit = 64 * 1024 * 1024
 	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil || len(body) > limit || !validResponse(args[0], body) {
 		_, _ = fmt.Fprintln(errOut, "artelctl: invalid API response")

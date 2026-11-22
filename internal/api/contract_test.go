@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -57,6 +58,52 @@ func TestWorkTypeOpenAPISchema(t *testing.T) {
 	task := doc.Components.Schemas["Task"].Value
 	if !slices.Contains(task.Required, "kind") || task.Properties["summary"] == nil || task.Properties["parent_id"] == nil || task.Properties["fix_evidence"] == nil {
 		t.Fatal("wire Task lacks work-type projection fields")
+	}
+	if task.Discriminator == nil || task.Discriminator.PropertyName != "kind" || len(task.OneOf) != 3 {
+		t.Fatal("wire Task is not discriminated into Epic, Task and Bug shapes")
+	}
+	workRow := func(kind, state string) map[string]any {
+		return map[string]any{
+			"id": "11111111-1111-4111-8111-111111111111", "project_id": "22222222-2222-4222-8222-222222222222",
+			"kind": kind, "title": "Work", "description": "", "acceptance_criteria": "", "state": state,
+			"version": float64(1), "created_at": "2026-11-21T12:00:00Z", "updated_at": "2026-11-21T12:00:00Z",
+		}
+	}
+	summary := map[string]any{"backlog": float64(0), "queued": float64(0), "in_progress": float64(0), "done": float64(0), "cancelled": float64(0)}
+	validEpic := workRow("epic", "open")
+	validEpic["summary"] = summary
+	for _, test := range []struct {
+		name  string
+		row   map[string]any
+		valid bool
+	}{
+		{name: "Epic", row: validEpic, valid: true},
+		{name: "Epic executable state", row: func() map[string]any { row := maps.Clone(validEpic); row["state"] = "backlog"; return row }()},
+		{name: "Epic missing summary", row: func() map[string]any { row := maps.Clone(validEpic); delete(row, "summary"); return row }()},
+		{name: "Epic parent", row: func() map[string]any {
+			row := maps.Clone(validEpic)
+			row["parent_id"] = "33333333-3333-4333-8333-333333333333"
+			return row
+		}()},
+		{name: "Task", row: workRow("task", "backlog"), valid: true},
+		{name: "Task Bug field", row: func() map[string]any {
+			row := workRow("task", "backlog")
+			row["fix_evidence"] = "not applicable"
+			return row
+		}()},
+		{name: "Bug", row: func() map[string]any {
+			row := workRow("bug", "done")
+			row["fix_evidence"] = "owner-written"
+			return row
+		}(), valid: true},
+		{name: "Bug summary", row: func() map[string]any { row := workRow("bug", "done"); row["summary"] = summary; return row }()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := task.VisitJSON(test.row)
+			if (err == nil) != test.valid {
+				t.Fatalf("schema validity = %v, error = %v", err == nil, err)
+			}
+		})
 	}
 	legacy := doc.Components.Schemas["LegacyTask"].Value
 	if _, exists := legacy.Properties["kind"]; exists {

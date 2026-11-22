@@ -562,7 +562,7 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
     TooLarge:
-      description: Request over 256 KiB or snapshot over 32 MiB
+      description: Request over 256 KiB or snapshot over 64 MiB (with v6 migration headroom)
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
@@ -909,6 +909,37 @@ components:
       type: object
       additionalProperties: false
       required: [id, project_id, kind, title, description, acceptance_criteria, state, version, created_at, updated_at]
+      discriminator:
+        propertyName: kind
+      oneOf:
+        - title: Epic
+          required: [summary]
+          properties:
+            kind: {type: string, enum: [epic]}
+            state: {type: string, enum: [open, in_progress, closed]}
+            summary: {$ref: '#/components/schemas/EpicSummary'}
+          not:
+            anyOf:
+              - {required: [parent_id]}
+              - {required: [expected_behavior]}
+              - {required: [actual_behavior]}
+              - {required: [fix_evidence]}
+        - title: Task
+          properties:
+            kind: {type: string, enum: [task]}
+            state: {type: string, enum: [backlog, queued, in_progress, done, cancelled]}
+          not:
+            anyOf:
+              - {required: [summary]}
+              - {required: [expected_behavior]}
+              - {required: [actual_behavior]}
+              - {required: [fix_evidence]}
+        - title: Bug
+          properties:
+            kind: {type: string, enum: [bug]}
+            state: {type: string, enum: [backlog, queued, in_progress, done, cancelled]}
+          not:
+            required: [summary]
       properties:
         id: {$ref: '#/components/schemas/UUID'}
         project_id: {$ref: '#/components/schemas/UUID'}
@@ -920,20 +951,21 @@ components:
         expected_behavior: {type: string}
         actual_behavior: {type: string}
         fix_evidence: {type: string}
-        state: {enum: [backlog, queued, in_progress, done, cancelled, open, closed]}
+        state: {type: string, enum: [backlog, queued, in_progress, done, cancelled, open, closed]}
         version: {$ref: '#/components/schemas/Version'}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
-        summary:
-          type: object
-          additionalProperties: false
-          required: [backlog, queued, in_progress, done, cancelled]
-          properties:
-            backlog: {type: integer, minimum: 0}
-            queued: {type: integer, minimum: 0}
-            in_progress: {type: integer, minimum: 0}
-            done: {type: integer, minimum: 0}
-            cancelled: {type: integer, minimum: 0}
+        summary: {$ref: '#/components/schemas/EpicSummary'}
+    EpicSummary:
+      type: object
+      additionalProperties: false
+      required: [backlog, queued, in_progress, done, cancelled]
+      properties:
+        backlog: {type: integer, minimum: 0}
+        queued: {type: integer, minimum: 0}
+        in_progress: {type: integer, minimum: 0}
+        done: {type: integer, minimum: 0}
+        cancelled: {type: integer, minimum: 0}
     Queue:
       type: object
       additionalProperties: false

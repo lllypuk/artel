@@ -282,7 +282,7 @@ private slots:
     obj = QJsonDocument::fromJson(snapshot()).object();
     obj["projects"] = QJsonArray{QJsonObject{{"id", projectID}}};
     QTest::newRow("invalid-row") << 200 << QJsonDocument(obj).toJson();
-    QTest::newRow("oversized") << 200 << QByteArray(32 * 1024 * 1024 + 1, ' ');
+    QTest::newRow("oversized") << 200 << QByteArray(64 * 1024 * 1024 + 1, ' ');
   }
   void rejectsInvalidResponses() {
     QFETCH(int, status);
@@ -317,6 +317,24 @@ private slots:
     row.remove("kind");
     add("v6-task-without-kind",
         QJsonDocument::fromJson(workSnapshot({row}, true)).object(), true, 0);
+    row = workRow("epic", "in_progress");
+    add("v6-rejects-epic-fields",
+        QJsonDocument::fromJson(workSnapshot({row}, true)).object(), false, 0);
+    for (const auto *key : {"parent_id", "expected_behavior", "actual_behavior",
+                            "fix_evidence", "summary"}) {
+      row = workRow();
+      row.remove("kind");
+      row.insert(key, key == QStringLiteral("summary")
+                          ? QJsonValue(QJsonObject{})
+                      : key == QStringLiteral("parent_id")
+                          ? QJsonValue(taskID)
+                          : QJsonValue("unexpected v7 field"));
+      add((QByteArray("v6-rejects-") + key).constData(),
+          QJsonDocument::fromJson(workSnapshot({row}, true)).object(), false,
+          0);
+    }
+    row = workRow();
+    row.remove("kind");
     add("v7-missing-kind",
         QJsonDocument::fromJson(workSnapshot({row})).object(), false);
     row = workRow("story");
@@ -383,6 +401,56 @@ private slots:
       QVERIFY(!client.online());
       QCOMPARE(client.tasks()->rowCount(), 0);
     }
+    client.stop();
+  }
+  void snapshotBudgetIncludesMigrationOverhead() {
+    Fixture fixture;
+    auto row = workRow();
+    row.insert("description", QString(32 * 1024 * 1024, 'x'));
+    fixture.state = workSnapshot({row});
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QCOMPARE(client.tasks()->rowCount(), 1);
+    QCOMPARE(client.tasks()->get(0).value("description").toString().size(),
+             32 * 1024 * 1024);
+    client.stop();
+  }
+  void oversizedHistoryPageRetriesWithSmallerLimit() {
+    Fixture fixture;
+    QList<QByteArray> historyRequests;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (!request.startsWith("GET /v1/events?")) {
+        fixture.normal(socket, request);
+        return;
+      }
+      historyRequests.append(request);
+      if (request.contains("&limit=20&")) {
+        respond(socket, 200, QByteArray(32 * 1024 * 1024 + 1, ' '));
+        return;
+      }
+      respond(socket, 200,
+              QJsonDocument(QJsonObject{{"instance_id", instanceID},
+                                        {"events", QJsonArray{}},
+                                        {"next_cursor", 0}})
+                  .toJson(QJsonDocument::Compact));
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    client.reload();
+    QTRY_VERIFY(client.online());
+    QSignalSpy received(&client, &ApiClient::historyReceived);
+    client.loadHistory(projectID, taskID, 0);
+    QTRY_COMPARE(received.size(), 1);
+    QCOMPARE(historyRequests.size(), 2);
+    QVERIFY(historyRequests[0].contains("&limit=20&"));
+    QVERIFY(historyRequests[1].contains("&limit=10&"));
+    QVERIFY(historyRequests[1].contains("&after=0&"));
+    QVERIFY(
+        historyRequests[1].contains("&project_id=" + projectID.toUtf8() + "&"));
+    QVERIFY(historyRequests[1].contains("&task_id=" + taskID.toUtf8() + " "));
+    QVERIFY(client.error().isEmpty());
     client.stop();
   }
   void legacyValidatorFixturesDocumentEpicException() {

@@ -57,7 +57,8 @@ public:
                               const QByteArray &body = {},
                               const QByteArray &key = {}) const;
   bool historyLoading() const { return m_historyReply; }
-  void loadHistory(const QString &project, const QString &task, qint64 after);
+  void loadHistory(const QString &project, const QString &task, qint64 after,
+                   int limit = 20);
   void cancelHistory();
   // The bounded candidate read and its bounded review pages are independent
   // from history. Decisions stay pending until every current review page ends.

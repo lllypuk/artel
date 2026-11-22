@@ -15,7 +15,6 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/lllypuk/artel/internal/app"
 	"github.com/lllypuk/artel/internal/domain"
 	"github.com/lllypuk/artel/internal/store"
 )
@@ -130,9 +129,8 @@ type legacyDomainReceipts struct {
 	createResponse, editResponse []byte
 }
 
-func legacyCommandHash(c app.Command) string {
-	data, _ := json.Marshal(c)
-	sum := sha256.Sum256(data)
+func legacyCommandHash(command string) string {
+	sum := sha256.Sum256([]byte(command))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -148,10 +146,10 @@ func execLegacySchema(t *testing.T, db *sql.DB, name string) {
 	}
 }
 
-func insertLegacyDomainReceipt(t *testing.T, db *sql.DB, key, method, path string, command app.Command, status int, body []byte) {
+func insertLegacyDomainReceipt(t *testing.T, db *sql.DB, key, method, path, canonicalCommand string, status int, body string) {
 	t.Helper()
 	if _, err := db.ExecContext(t.Context(), "INSERT INTO mutation_receipts(key,method,path,payload_hash,status,body) VALUES(?,?,?,?,?,?)",
-		key, method, path, legacyCommandHash(command), status, body); err != nil {
+		key, method, path, legacyCommandHash(canonicalCommand), status, body); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -165,40 +163,43 @@ func seedLegacyDomainReceipts(t *testing.T, path string) legacyDomainReceipts {
 	for _, name := range []string{"testdata/v1.sql", "observer_schema.sql", "delivery_schema.sql", "questions_schema.sql", "results_schema.sql", "current_reviews_schema.sql"} {
 		execLegacySchema(t, db, name)
 	}
-	created := "2026-11-21T12:00:00Z"
-	project := domain.Project{ID: uuid.NewString(), Name: "Legacy", RootPath: t.TempDir(), Version: 1, QueueVersion: 1, CreatedAt: created, UpdatedAt: created}
-	task := domain.Task{ID: uuid.NewString(), ProjectID: project.ID, Title: "Edited", State: domain.Backlog, Version: 2, CreatedAt: created, UpdatedAt: "2026-11-21T12:01:00Z"}
-	original := task
-	original.Title, original.Version, original.UpdatedAt = "Legacy", 1, created
-	projectData, _ := json.Marshal(project)
-	taskData, _ := json.Marshal(task)
-	createBody, _ := json.Marshal(original)
-	editBody, _ := json.Marshal(task)
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO metadata(id,instance_id) VALUES(1,?)", uuid.NewString()); err != nil {
+	const (
+		projectID = "11111111-1111-4111-8111-111111111111"
+		taskID    = "22222222-2222-4222-8222-222222222222"
+		createKey = "33333333-3333-4333-8333-333333333333"
+		editKey   = "44444444-4444-4444-8444-444444444444"
+		created   = "2026-11-21T12:00:00Z"
+		edited    = "2026-11-21T12:01:00Z"
+	)
+	// These bytes and hashes are frozen v6 data, not values produced by the
+	// current domain or app.Command serializers. Reordering current fields must
+	// therefore break this fixture rather than silently changing both sides.
+	projectData := `{"id":"` + projectID + `","name":"Legacy","root_path":"/fictional/v6","description":"","version":1,"queue_version":1,"archived":false,"created_at":"` + created + `","updated_at":"` + created + `"}`
+	createBody := `{"id":"` + taskID + `","project_id":"` + projectID + `","title":"Legacy","description":"","acceptance_criteria":"","state":"backlog","version":1,"created_at":"` + created + `","updated_at":"` + created + `"}`
+	editBody := `{"id":"` + taskID + `","project_id":"` + projectID + `","title":"Edited","description":"","acceptance_criteria":"","state":"backlog","version":2,"created_at":"` + created + `","updated_at":"` + edited + `"}`
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO metadata(id,instance_id) VALUES(1,?)", "55555555-5555-4555-8555-555555555555"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO projects(id,root_path,archived,record) VALUES(?,?,0,?)", project.ID, project.RootPath, projectData); err != nil {
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO projects(id,root_path,archived,record) VALUES(?,?,0,?)", projectID, "/fictional/v6", projectData); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO tasks(id,project_id,state,record) VALUES(?,?,?,?)", task.ID, project.ID, task.State, taskData); err != nil {
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO tasks(id,project_id,state,record) VALUES(?,?,?,?)", taskID, projectID, domain.Backlog, editBody); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(t.Context(), `INSERT INTO events(action,project_id,task_id,source,timestamp,changes) VALUES
-		('task.create',?,?,'owner_manual',?,'[]'),('task.edit',?,?,'owner_manual',?,'[]')`, project.ID, task.ID, created, project.ID, task.ID, task.UpdatedAt); err != nil {
+		('task.create',?,?,'owner_manual',?,'[]'),('task.edit',?,?,'owner_manual',?,'[]')`, projectID, taskID, created, projectID, taskID, edited); err != nil {
 		t.Fatal(err)
 	}
-	createTitle, editTitle := "Legacy", "Edited"
-	createCommand := app.Command{Action: app.CreateTask, ProjectID: project.ID, Title: &createTitle}
-	editCommand := app.Command{Action: app.EditTask, TaskID: task.ID, Title: &editTitle, ExpectedVersion: 1}
-	createPath, editPath := "/v1/projects/"+project.ID+"/tasks", "/v1/tasks/"+task.ID
-	createKey, editKey := uuid.NewString(), uuid.NewString()
-	insertLegacyDomainReceipt(t, db, createKey, "POST", createPath, createCommand, 201, createBody)
-	insertLegacyDomainReceipt(t, db, editKey, "PATCH", editPath, editCommand, 200, editBody)
+	createPath, editPath := "/v1/projects/"+projectID+"/tasks", "/v1/tasks/"+taskID
+	const createCanonical = `{"action":"task.create","project_id":"11111111-1111-4111-8111-111111111111","title":"Legacy"}`
+	const editCanonical = `{"action":"task.edit","task_id":"22222222-2222-4222-8222-222222222222","title":"Edited","expected_version":1}`
+	insertLegacyDomainReceipt(t, db, createKey, "POST", createPath, createCanonical, 201, createBody)
+	insertLegacyDomainReceipt(t, db, editKey, "PATCH", editPath, editCanonical, 200, editBody)
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	return legacyDomainReceipts{projectID: project.ID, taskID: task.ID, createKey: createKey, editKey: editKey,
-		createRequest: `{"title":"Legacy"}`, editRequest: `{"title":"Edited","expected_version":1}`, createResponse: createBody, editResponse: editBody}
+	return legacyDomainReceipts{projectID: projectID, taskID: taskID, createKey: createKey, editKey: editKey,
+		createRequest: `{"title":"Legacy"}`, editRequest: `{"title":"Edited","expected_version":1}`, createResponse: []byte(createBody), editResponse: []byte(editBody)}
 }
 
 func TestLegacyV6CreateEditReceiptReplayAfterMigration(t *testing.T) {

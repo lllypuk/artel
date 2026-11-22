@@ -18,7 +18,9 @@ import (
 	"github.com/lllypuk/artel/internal/store"
 )
 
-const MaxSnapshot = 32 * 1024 * 1024
+// A v6 snapshot could already occupy the former 32 MiB limit. Keep headroom
+// for the mandatory kind and work_types_version fields added during migration.
+const MaxSnapshot = 64 * 1024 * 1024
 
 type server struct {
 	ctx   context.Context
