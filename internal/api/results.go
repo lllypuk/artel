@@ -29,10 +29,13 @@ func mountTaskResults(mux *http.ServeMux, s *store.Store) {
 	})
 	const attachPath = "POST /v1/tasks/{task_id}/results/{result_id}/reviews"
 	mux.HandleFunc(attachPath, func(w http.ResponseWriter, r *http.Request) {
-		attachTaskReview(w, r, s, false)
+		attachTaskReview(w, r, s, reviewAttachment)
 	})
 	mux.HandleFunc(attachPath+legacyReviewReceiptSuffix, func(w http.ResponseWriter, r *http.Request) {
-		attachTaskReview(w, r, s, true)
+		attachTaskReview(w, r, s, reviewLegacyReceipt)
+	})
+	mux.HandleFunc(attachPath+reviewReceiptSuffix, func(w http.ResponseWriter, r *http.Request) {
+		attachTaskReview(w, r, s, reviewExactReceipt)
 	})
 }
 
@@ -146,8 +149,17 @@ func submitTaskResult(w http.ResponseWriter, r *http.Request, s *store.Store) {
 }
 
 const legacyReviewReceiptSuffix = "/legacy-receipt"
+const reviewReceiptSuffix = "/receipt"
 
-func attachTaskReview(w http.ResponseWriter, r *http.Request, s *store.Store, legacyOnly bool) {
+type reviewRequestMode uint8
+
+const (
+	reviewAttachment reviewRequestMode = iota
+	reviewLegacyReceipt
+	reviewExactReceipt
+)
+
+func attachTaskReview(w http.ResponseWriter, r *http.Request, s *store.Store, mode reviewRequestMode) {
 	taskID, resultID := r.PathValue("task_id"), r.PathValue("result_id")
 	mutation, ok := resultMutation(r)
 	if !validUUID(taskID) || !validUUID(resultID) || !ok {
@@ -162,10 +174,14 @@ func attachTaskReview(w http.ResponseWriter, r *http.Request, s *store.Store, le
 	}
 	var result store.Result
 	var err error
-	if legacyOnly {
+	switch mode {
+	case reviewLegacyReceipt:
 		mutation.Path = strings.TrimSuffix(mutation.Path, legacyReviewReceiptSuffix)
 		result, err = s.ReplayLegacyReview(r.Context(), taskID, resultID, mutation, body)
-	} else {
+	case reviewExactReceipt:
+		mutation.Path = strings.TrimSuffix(mutation.Path, reviewReceiptSuffix)
+		result, err = s.ReplayReviewReceipt(r.Context(), taskID, resultID, mutation, body)
+	default:
 		result, err = s.AttachReview(r.Context(), taskID, resultID, mutation, body)
 	}
 	if err != nil {

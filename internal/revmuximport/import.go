@@ -472,6 +472,17 @@ func readPair(binding Binding, reportDir string) (manifest, findingsDocument, er
 	return manifestDoc, findingsDoc, nil
 }
 
+func validateFreshArtifactPair(manifestDoc manifest, findingsDoc findingsDocument) error {
+	if strings.TrimSpace(manifestDoc.FinishedAt) == "" {
+		return errors.New("revmux completion timestamp is blank")
+	}
+	if manifestDoc.ScopePath != "" && findingsDoc.Scope.ScopePath != "" &&
+		manifestDoc.ScopePath != findingsDoc.Scope.ScopePath {
+		return errors.New("revmux scope mismatch")
+	}
+	return nil
+}
+
 func validateReviewItemIDs(findingsDoc findingsDocument) error {
 	seen := make(map[string]bool)
 	for _, items := range [][]reviewItem{findingsDoc.Findings, findingsDoc.PreExisting, findingsDoc.OpenQuestions, findingsDoc.Immaterial} {
@@ -644,19 +655,39 @@ func (doc findingsDocument) hasUnattributedItems() bool {
 
 type ReviewInputs struct {
 	current      *store.AttachReviewInput
+	receipt      *store.AttachReviewInput
+	freshErr     error
 	LegacyReplay *store.AttachReviewInput
 }
 
 func (in ReviewInputs) FreshAttachment() (store.AttachReviewInput, error) {
+	if in.freshErr != nil {
+		return store.AttachReviewInput{}, in.freshErr
+	}
 	if in.current == nil {
 		return store.AttachReviewInput{}, errors.New("counted finding item has no source attribution")
 	}
 	return *in.current, nil
 }
 
+// ReceiptReplay returns the normalization accepted by stage 5a before the
+// stricter fresh-artifact checks. It is suitable only for a read-only exact
+// receipt lookup, never for a fresh attachment.
+func (in ReviewInputs) ReceiptReplay() (store.AttachReviewInput, error) {
+	if in.receipt == nil {
+		return store.AttachReviewInput{}, errors.New("review receipt payload unavailable")
+	}
+	return *in.receipt, nil
+}
+
 // Import validates one completed pair. When legacy normalization differs or
 // fresh attribution is invalid, LegacyReplay holds the old payload from the
 // same read of findings.json. It is only suitable for exact receipt lookup.
+// Scope/completion rules introduced after the original stage 5a candidate are
+// deferred until FreshAttachment so an already-accepted exact receipt remains
+// recoverable. ReceiptReplay is unavailable when the old normalization already
+// failed attribution: that legacy-only branch must not broaden into recovery
+// of a current receipt for a changed artifact.
 func Import(binding Binding, reportDir string, required []store.ReviewRequirement) (ReviewInputs, error) {
 	var inputs ReviewInputs
 	if err := binding.Validate(); err != nil {
@@ -670,6 +701,7 @@ func Import(binding Binding, reportDir string, required []store.ReviewRequiremen
 	if err != nil {
 		return inputs, err
 	}
+	freshErr := validateFreshArtifactPair(manifestDoc, findingsDoc)
 	sources, reported, err := normalizeSources(manifestDoc, findingsDoc, requiredPairs)
 	if err != nil {
 		return inputs, err
@@ -682,10 +714,15 @@ func Import(binding Binding, reportDir string, required []store.ReviewRequiremen
 		IncompleteReasons: reasons, Findings: len(findingsDoc.Findings),
 		PreExisting: len(findingsDoc.PreExisting), OpenQuestions: len(findingsDoc.OpenQuestions),
 	}
-	if !findingsDoc.hasUnattributedItems() {
+	inputs.freshErr = freshErr
+	attributionValid := !findingsDoc.hasUnattributedItems()
+	if attributionValid {
+		inputs.receipt = &current
+	}
+	if freshErr == nil && attributionValid {
 		inputs.current = &current
 	}
-	if inputs.current == nil || reported != nil {
+	if !attributionValid || reported != nil {
 		legacy := current
 		if reported != nil {
 			legacy.Sources = reported

@@ -8,6 +8,7 @@
 #include <QStandardPaths>
 #include <QUrlQuery>
 #include <QUuid>
+#include <algorithm>
 #include <cmath>
 #include <fcntl.h>
 #include <optional>
@@ -17,6 +18,7 @@
 namespace {
 constexpr qsizetype responseLimit = 32 * 1024 * 1024;
 constexpr qsizetype frameLimit = 64 * 1024;
+constexpr qsizetype invalidationLimit = 1024;
 bool integer(const QJsonValue &value) {
   const double number = value.toDouble(-1);
   return value.isDouble() && number >= 0 && number <= 9007199254740991.0 &&
@@ -265,6 +267,10 @@ bool ApiClient::configure(const QUrl &endpoint, const QString &tokenFile) {
   m_queues.replace({});
   m_instance.clear();
   m_sequence = m_cursor = 0;
+  m_pendingInvalidations.clear();
+  m_snapshotInvalidations.clear();
+  m_snapshotScopeKnown = false;
+  m_invalidationsOverflowed = false;
   m_updated = {};
   if (!validEndpoint(endpoint)) {
     fail(tr("Invalid local endpoint"));
@@ -397,10 +403,35 @@ void ApiClient::snapshotFinished(QNetworkReply *reply, quint64 generation) {
   const auto obj = doc.object();
   const auto instance = obj.value("instance_id").toString();
   const auto sequence = obj.value("event_seq").toInteger();
+  const auto previousSequence = m_sequence;
   if (instance == m_instance && sequence < m_sequence) {
     fail(tr("Outdated snapshot rejected"));
     m_reconnect.start();
     return;
+  }
+  const bool sameInstance = instance == m_instance;
+  const bool hadStream = m_stream != nullptr;
+  m_snapshotInvalidations.clear();
+  m_snapshotScopeKnown = sameInstance && hadStream &&
+                         !m_invalidationsOverflowed && sequence <= m_cursor;
+  if (sameInstance && hadStream) {
+    for (const auto &event : m_pendingInvalidations)
+      if (event.sequence > previousSequence && event.sequence <= sequence)
+        m_snapshotInvalidations.append(event);
+  }
+  if (!sameInstance || !hadStream) {
+    m_pendingInvalidations.clear();
+    m_invalidationsOverflowed = false;
+  } else {
+    m_pendingInvalidations.erase(std::remove_if(m_pendingInvalidations.begin(),
+                                                m_pendingInvalidations.end(),
+                                                [sequence](const auto &event) {
+                                                  return event.sequence <=
+                                                         sequence;
+                                                }),
+                                 m_pendingInvalidations.end());
+    if (m_pendingInvalidations.isEmpty() && m_cursor <= sequence)
+      m_invalidationsOverflowed = false;
   }
   if (instance != m_instance) {
     cancel(m_stream);
@@ -427,6 +458,14 @@ void ApiClient::snapshotFinished(QNetworkReply *reply, quint64 generation) {
     m_coalesce.start();
   }
   emit changed();
+}
+bool ApiClient::snapshotAffectsTask(const QString &project,
+                                    const QString &task) const {
+  for (const auto &event : m_snapshotInvalidations)
+    if (event.task == task ||
+        (event.task.isEmpty() && event.project == project))
+      return true;
+  return false;
 }
 void ApiClient::subscribe() {
   const QString path = "/v1/stream?instance_id=" + m_instance +
@@ -491,12 +530,20 @@ void ApiClient::streamReady(QNetworkReply *reply, quint64 generation) {
     bool ok = false;
     const auto seq = id.toLongLong(&ok);
     const auto doc = QJsonDocument::fromJson(data);
-    if (!ok || seq <= m_cursor || event != "invalidation" || !doc.isObject() ||
-        !doc.object().value("kind").isString() ||
-        !uuid(doc.object().value("project_id").toString())) {
+    const auto object = doc.object();
+    const auto task = object.value("task_id");
+    if (!ok || seq != m_cursor + 1 || event != "invalidation" ||
+        !doc.isObject() || !object.value("kind").isString() ||
+        !uuid(object.value("project_id").toString()) ||
+        (!task.isUndefined() && !uuid(task.toString()))) {
       reply->abort();
       return;
     }
+    if (m_pendingInvalidations.size() < invalidationLimit)
+      m_pendingInvalidations.append(
+          {seq, object.value("project_id").toString(), task.toString()});
+    else
+      m_invalidationsOverflowed = true;
     m_cursor = seq;
     if (!m_coalesce.isActive())
       m_coalesce.start();

@@ -381,6 +381,67 @@ func TestImportRejectsBrokenOrInconsistentPair(t *testing.T) {
 	}
 }
 
+func TestImportDefersNewFreshRulesForExactReceiptRecovery(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*manifest, *findingsDocument)
+	}{
+		{name: "contradicting scope", mutate: func(_ *manifest, findings *findingsDocument) {
+			findings.Scope.ScopePath = "different-scope"
+		}},
+		{name: "blank finish without stats", mutate: func(manifest *manifest, findings *findingsDocument) {
+			manifest.FinishedAt = " \t\n"
+			findings.Stats.FinishedAt = ""
+		}},
+		{name: "matching blank finish metadata", mutate: func(manifest *manifest, findings *findingsDocument) {
+			manifest.FinishedAt = " \t\n"
+			findings.Stats.FinishedAt = manifest.FinishedAt
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manifestDoc, findingsDoc := syntheticPair()
+			manifestDoc.ScopePath = "fictional-scope"
+			findingsDoc.Scope.ScopePath = "fictional-scope"
+			test.mutate(&manifestDoc, &findingsDoc)
+			inputs, err := Import(testBinding(t), writeSyntheticPair(t, manifestDoc, findingsDoc),
+				[]store.ReviewRequirement{{Name: "reviewer", Executor: "pi"}})
+			if err != nil {
+				t.Fatalf("old receipt normalization unavailable: %v", err)
+			}
+			if _, err := inputs.FreshAttachment(); err == nil {
+				t.Fatal("invalid pair eligible for a fresh attachment")
+			}
+			if _, err := inputs.ReceiptReplay(); err != nil {
+				t.Fatalf("old payload unavailable for exact receipt recovery: %v", err)
+			}
+			if inputs.LegacyReplay != nil {
+				t.Fatal("unchanged roster normalization was mislabeled legacy-only")
+			}
+		})
+	}
+}
+
+func TestImportAllowsAbsentOptionalScopeMetadata(t *testing.T) {
+	for _, mode := range []string{"manifest", "findings", "both"} {
+		t.Run(mode, func(t *testing.T) {
+			manifestDoc, findingsDoc := syntheticPair()
+			manifestDoc.ScopePath = "fictional-scope"
+			findingsDoc.Scope.ScopePath = "fictional-scope"
+			if mode == "manifest" || mode == "both" {
+				manifestDoc.ScopePath = ""
+			}
+			if mode == "findings" || mode == "both" {
+				findingsDoc.Scope.ScopePath = ""
+			}
+			if _, err := importSynthetic(t, manifestDoc, findingsDoc,
+				[]store.ReviewRequirement{{Name: "reviewer", Executor: "pi"}}); err != nil {
+				t.Fatalf("absent optional scope rejected: %v", err)
+			}
+		})
+	}
+}
+
 func TestImportRejectsMalformedUnsupportedAndOversizedArtifacts(t *testing.T) {
 	t.Run("malformed", func(t *testing.T) {
 		directory := writeDefaultPair(t)

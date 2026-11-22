@@ -40,22 +40,29 @@ Panel::Panel(ApiClient *client, QObject *parent)
     if (m_seenSequence != m_client->sequence() ||
         m_historyInstance != m_client->instance()) {
       const bool sameInstance = m_historyInstance == m_client->instance();
+      const bool preserveTask =
+          sameInstance && !m_task.isEmpty() &&
+          m_seenSequence != m_client->sequence() &&
+          m_client->snapshotScopeKnown() &&
+          !m_client->snapshotAffectsTask(m_project, m_task);
       m_seenSequence = m_client->sequence();
       m_historyInstance = m_client->instance();
-      m_client->cancelHistory();
-      m_history.clear();
-      m_historyCursor = 0;
-      m_historyMore = true;
-      resetCommissions();
-      resetResults(sameInstance);
-      if (!sameInstance) {
-        resetQuestions();
-        emit detachedAnswerDraftsChanged();
-      }
-      if (!m_task.isEmpty()) {
-        moreHistory();
-        loadCommissionPage();
-        loadResults();
+      if (!preserveTask) {
+        m_client->cancelHistory();
+        m_history.clear();
+        m_historyCursor = 0;
+        m_historyMore = true;
+        resetCommissions();
+        resetResults(sameInstance);
+        if (!sameInstance) {
+          resetQuestions();
+          emit detachedAnswerDraftsChanged();
+        }
+        if (!m_task.isEmpty()) {
+          moreHistory();
+          loadCommissionPage();
+          loadResults();
+        }
       }
     } else if (reconnected && !m_task.isEmpty()) {
       // A selection or reload made offline still needs its first reads on a

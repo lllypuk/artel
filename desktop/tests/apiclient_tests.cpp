@@ -125,12 +125,16 @@ public:
     } else
       respond(socket, 409, "{\"code\":\"conflict\",\"message\":\"safe\"}");
   }
-  void publishEvent(int seq) {
-    if (stream)
-      stream->write("id: " + QByteArray::number(seq) +
-                    "\nevent: invalidation\ndata: "
-                    "{\"kind\":\"project_updated\",\"project_id\":\"" +
-                    projectID.toUtf8() + "\"}\n\n");
+  void publishEvent(int seq) { publishTaskEvent(seq, "project_updated", {}); }
+  void publishTaskEvent(int seq, const QString &kind, const QString &task) {
+    if (!stream)
+      return;
+    QJsonObject data{{"kind", kind}, {"project_id", projectID}};
+    if (!task.isEmpty())
+      data.insert("task_id", task);
+    stream->write("id: " + QByteArray::number(seq) +
+                  "\nevent: invalidation\ndata: " +
+                  QJsonDocument(data).toJson(QJsonDocument::Compact) + "\n\n");
   }
 };
 } // namespace
@@ -196,6 +200,53 @@ private slots:
     QVERIFY(!client.loading());
     QVERIFY(!client.save("POST", "/v1/projects", {{"name", "offline"}}));
     QCOMPARE(client.projects()->rowCount(), 1);
+  }
+  void taskScopedInvalidationCoverage() {
+    Fixture fixture;
+    fixture.state = snapshot(0, instanceID, true);
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    client.reload();
+    QTRY_VERIFY(client.online() && fixture.stream);
+
+    fixture.state = snapshot(1, instanceID, true);
+    fixture.publishTaskEvent(1, "task_updated", bindingID);
+    QTRY_COMPARE(client.sequence(), 1);
+    QVERIFY(client.snapshotScopeKnown());
+    QVERIFY(!client.snapshotAffectsTask(projectID, taskID));
+    QVERIFY(client.snapshotAffectsTask(projectID, bindingID));
+
+    fixture.state = snapshot(2, instanceID, true);
+    fixture.publishEvent(2);
+    QTRY_COMPARE(client.sequence(), 2);
+    QVERIFY(client.snapshotScopeKnown());
+    QVERIFY(client.snapshotAffectsTask(projectID, taskID));
+
+    // Every event in the interval matters: an unrelated last event must not
+    // hide an earlier result/review invalidation for the selected task.
+    fixture.state = snapshot(4, instanceID, true);
+    fixture.publishTaskEvent(3, "task.result.submit", taskID);
+    fixture.publishTaskEvent(4, "task_updated", bindingID);
+    QTRY_COMPARE(client.sequence(), 4);
+    QVERIFY(client.snapshotScopeKnown());
+    QVERIFY(client.snapshotAffectsTask(projectID, taskID));
+
+    // A snapshot ahead of SSE has unknown event coverage and must not be
+    // treated as an unrelated-only interval.
+    fixture.state = snapshot(6, instanceID, true);
+    client.reload();
+    QTRY_COMPARE(client.sequence(), 6);
+    QVERIFY(!client.snapshotScopeKnown());
+
+    // A skipped SSE ID is a coverage gap even on a live socket. Reconnect
+    // through a fresh snapshot instead of trusting the first newer frame.
+    fixture.state = snapshot(8, instanceID, true);
+    fixture.publishTaskEvent(8, "task.review.attach", bindingID);
+    QTRY_COMPARE(fixture.streamCount, 2);
+    QTRY_COMPARE(client.sequence(), 8);
+    QTRY_VERIFY(client.online());
+    QVERIFY(!client.snapshotScopeKnown());
+    client.stop();
   }
   void rejectsInvalidResponses_data() {
     QTest::addColumn<int>("status");
