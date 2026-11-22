@@ -28,9 +28,48 @@ bool uuid(const QString &value) { return !QUuid(value).isNull(); }
 bool oneOf(const QString &value, const QStringList &options) {
   return options.contains(value);
 }
+bool validEpicSummary(const QJsonValue &value) {
+  if (!value.isObject())
+    return false;
+  const auto summary = value.toObject();
+  for (const auto *key :
+       {"backlog", "queued", "in_progress", "done", "cancelled"})
+    if (!integer(summary.value(key)))
+      return false;
+  return true;
+}
+bool validWorkType(const QJsonObject &object) {
+  const auto kind = object.value("kind");
+  if (!kind.isString() || !oneOf(kind.toString(), {"epic", "task", "bug"}))
+    return false;
+  const auto state = object.value("state").toString();
+  const bool epic = kind == "epic";
+  if (epic ? !oneOf(state, {"open", "in_progress", "closed"})
+           : !oneOf(state,
+                    {"backlog", "queued", "in_progress", "done", "cancelled"}))
+    return false;
+  const auto parent = object.value("parent_id");
+  if (epic ? !parent.isUndefined()
+           : !(parent.isUndefined() ||
+               (parent.isString() && uuid(parent.toString()))))
+    return false;
+  const bool bug = kind == "bug";
+  for (const auto *key :
+       {"expected_behavior", "actual_behavior", "fix_evidence"}) {
+    const auto field = object.value(key);
+    if (bug ? !(field.isUndefined() || field.isString()) : !field.isUndefined())
+      return false;
+  }
+  const auto summary = object.value("summary");
+  return epic ? validEpicSummary(summary) : summary.isUndefined();
+}
 bool validSnapshot(const QJsonObject &obj) {
   if (!uuid(obj.value("instance_id").toString()) ||
       !integer(obj.value("event_seq")))
+    return false;
+  const auto advertised = obj.value("work_types_version");
+  const bool workTypes = !advertised.isUndefined();
+  if (workTypes && (!integer(advertised) || advertised.toInt() != 1))
     return false;
   for (const auto &collection : {"projects", "tasks", "queues"}) {
     if (!obj.value(collection).isArray())
@@ -63,10 +102,12 @@ bool validSnapshot(const QJsonObject &obj) {
         if (project && (!object.value("archived").isBool() ||
                         !integer(object.value("queue_version"))))
           return false;
-        if (!project && (!uuid(object.value("project_id").toString()) ||
-                         !QStringList{"backlog", "queued", "in_progress",
-                                      "done", "cancelled"}
-                              .contains(object.value("state").toString())))
+        if (!project &&
+            (!uuid(object.value("project_id").toString()) ||
+             (workTypes ? !validWorkType(object)
+                        : !oneOf(object.value("state").toString(),
+                                 {"backlog", "queued", "in_progress", "done",
+                                  "cancelled"}))))
           return false;
       }
     }
@@ -266,6 +307,7 @@ bool ApiClient::configure(const QUrl &endpoint, const QString &tokenFile) {
   m_tasks.replace({});
   m_queues.replace({});
   m_instance.clear();
+  m_workTypesVersion = 0;
   m_sequence = m_cursor = 0;
   m_pendingInvalidations.clear();
   m_snapshotInvalidations.clear();
@@ -438,6 +480,7 @@ void ApiClient::snapshotFinished(QNetworkReply *reply, quint64 generation) {
     m_cursor = 0;
   }
   m_instance = instance;
+  m_workTypesVersion = obj.value("work_types_version").toInt();
   if (instance == m_mutationInstance &&
       !reply->property("beforeAnswerRetryCheck").toBool())
     m_answerRetryNeedsSnapshot = false;

@@ -100,11 +100,11 @@ TDD: сначала миграционные и доменные отказы, �
 **Files:**
 - Modify: `desktop/src/apiclient.h`, `desktop/src/apiclient.cpp`, `desktop/src/panel.h`, `desktop/src/panel.cpp`, `desktop/src/ManualWorkspace.qml`, `desktop/src/i18n/ru.json`, `desktop/tests/apiclient_tests.cpp`, `desktop/tests/artel_tests.cpp`.
 
-- [ ] Добавить DTO/viewmodel типа, parent и Bug-полей; выбор типа при создании, необязательный parent только подходящих Epic, Epic summary и допустимые действия.
-- [ ] Показать детей Epic, тип/родителя работы и Bug evidence; при done с пустым evidence выводить «Доказательство не указано». Сохранить независимые черновики и startup Team.
-- [ ] Проверить строгие DTO, текущего closed parent вне списка новых кандидатов, смену сводки после transition, запрет несовместимых кнопок/драфтов, keyboard/offline/conflict поведение и отсутствие credentials в QML.
-- [ ] Проверить новый Qt со старым daemon: прежние Task доступны, новые действия отключены с явным upgrade-признаком. Две пустые фикстуры доказывают, что `work_types_version` позволяет первой записью стать Epic на v7 и обычной Task на v6. При наличии признака v7 отсутствующий/некорректный kind отклоняется как ошибка данных. Зафиксировать legacy-validator fixtures для `open/closed` и `in_progress` Epic: старый Qt не поддерживает v7/Epic вообще, хотя последний случай может быть принят старым бинарником за Task и поэтому является документированным исключением, а не допустимой классификацией.
-- [ ] `./desktop/bin/test` и `make lint test build`.
+- [x] Добавить DTO/viewmodel типа, parent и Bug-полей; выбор типа при создании, необязательный parent только подходящих Epic, Epic summary и допустимые действия.
+- [x] Показать детей Epic, тип/родителя работы и Bug evidence; при done с пустым evidence выводить «Доказательство не указано». Сохранить независимые черновики и startup Team.
+- [x] Проверить строгие DTO, текущего closed parent вне списка новых кандидатов, смену сводки после transition, запрет несовместимых кнопок/драфтов, keyboard/offline/conflict поведение и отсутствие credentials в QML.
+- [x] Проверить новый Qt со старым daemon: прежние Task доступны, новые действия отключены с явным upgrade-признаком. Две пустые фикстуры доказывают, что `work_types_version` позволяет первой записью стать Epic на v7 и обычной Task на v6. При наличии признака v7 отсутствующий/некорректный kind отклоняется как ошибка данных. Зафиксировать legacy-validator fixtures для `open/closed` и `in_progress` Epic: старый Qt не поддерживает v7/Epic вообще, хотя последний случай может быть принят старым бинарником за Task и поэтому является документированным исключением, а не допустимой классификацией.
+- [x] `./desktop/bin/test` и `make lint test build`.
 
 ### Task 5: Доказать сквозной сценарий и зафиксировать документацию
 

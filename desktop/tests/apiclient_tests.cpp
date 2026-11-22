@@ -53,6 +53,26 @@ QByteArray snapshot(qint64 seq = 0, const QString &instance = instanceID,
                                    {"queues", QJsonArray{}}})
       .toJson(QJsonDocument::Compact);
 }
+QJsonObject workRow(const QString &kind = "task",
+                    const QString &state = "backlog") {
+  return QJsonObject{{"id", taskID},
+                     {"project_id", projectID},
+                     {"kind", kind},
+                     {"title", "Work"},
+                     {"description", ""},
+                     {"acceptance_criteria", ""},
+                     {"state", state},
+                     {"version", 1},
+                     {"created_at", "2026-11-17T00:00:00Z"},
+                     {"updated_at", "2026-11-17T00:00:00Z"}};
+}
+QByteArray workSnapshot(const QJsonArray &tasks = {}, bool legacy = false) {
+  auto object = QJsonDocument::fromJson(snapshot(0, instanceID, true)).object();
+  if (!legacy)
+    object.insert("work_types_version", 1);
+  object.insert("tasks", tasks);
+  return QJsonDocument(object).toJson(QJsonDocument::Compact);
+}
 void respond(QTcpSocket *socket, int status, const QByteArray &body,
              const QByteArray &extra = {}) {
   socket->write("HTTP/1.1 " + QByteArray::number(status) +
@@ -280,6 +300,107 @@ private slots:
     QCOMPARE(fixture.requests.size(), 1);
     QVERIFY(!client.error().contains(QString::fromLatin1(secret)));
     client.stop();
+  }
+  void workTypeSnapshotValidation_data() {
+    QTest::addColumn<QJsonObject>("snapshot");
+    QTest::addColumn<bool>("valid");
+    QTest::addColumn<int>("version");
+    const auto add = [](const char *name, QJsonObject object, bool valid,
+                        int version = 1) {
+      QTest::newRow(name) << object << valid << version;
+    };
+    add("empty-v7", QJsonDocument::fromJson(workSnapshot()).object(), true);
+    add("empty-v6", QJsonDocument::fromJson(workSnapshot({}, true)).object(),
+        true, 0);
+    auto row = workRow();
+    add("v7-task", QJsonDocument::fromJson(workSnapshot({row})).object(), true);
+    row.remove("kind");
+    add("v6-task-without-kind",
+        QJsonDocument::fromJson(workSnapshot({row}, true)).object(), true, 0);
+    add("v7-missing-kind",
+        QJsonDocument::fromJson(workSnapshot({row})).object(), false);
+    row = workRow("story");
+    add("v7-invalid-kind",
+        QJsonDocument::fromJson(workSnapshot({row})).object(), false);
+    row = workRow("task", "open");
+    add("task-open", QJsonDocument::fromJson(workSnapshot({row})).object(),
+        false);
+    row = workRow("epic", "backlog");
+    row.insert("summary", QJsonObject{{"backlog", 0},
+                                      {"queued", 0},
+                                      {"in_progress", 0},
+                                      {"done", 0},
+                                      {"cancelled", 0}});
+    add("epic-backlog", QJsonDocument::fromJson(workSnapshot({row})).object(),
+        false);
+    row = workRow("epic", "open");
+    add("epic-missing-summary",
+        QJsonDocument::fromJson(workSnapshot({row})).object(), false);
+    row.insert("summary", QJsonObject{{"backlog", 0},
+                                      {"queued", 0},
+                                      {"in_progress", 0},
+                                      {"done", 0},
+                                      {"cancelled", 0}});
+    add("epic-summary", QJsonDocument::fromJson(workSnapshot({row})).object(),
+        true);
+    row.insert("parent_id", taskID);
+    add("epic-parent", QJsonDocument::fromJson(workSnapshot({row})).object(),
+        false);
+    row = workRow("bug");
+    row.insert("parent_id", taskID);
+    row.insert("expected_behavior", "Expected");
+    row.insert("actual_behavior", "Actual");
+    row.insert("fix_evidence", "Owner evidence");
+    add("bug-fields", QJsonDocument::fromJson(workSnapshot({row})).object(),
+        true);
+    row.insert("fix_evidence", 42);
+    add("invalid-bug-field",
+        QJsonDocument::fromJson(workSnapshot({row})).object(), false);
+    row = workRow();
+    row.insert("fix_evidence", "Not a Bug");
+    add("task-bug-field", QJsonDocument::fromJson(workSnapshot({row})).object(),
+        false);
+    auto object = QJsonDocument::fromJson(workSnapshot()).object();
+    object.insert("work_types_version", 2);
+    add("unknown-work-types-version", object, false);
+    object.insert("work_types_version", "1");
+    add("noninteger-work-types-version", object, false);
+  }
+  void workTypeSnapshotValidation() {
+    QFETCH(QJsonObject, snapshot);
+    QFETCH(bool, valid);
+    QFETCH(int, version);
+    Fixture fixture;
+    fixture.state = QJsonDocument(snapshot).toJson(QJsonDocument::Compact);
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    client.reload();
+    if (valid) {
+      QTRY_VERIFY(client.online());
+      QCOMPARE(client.workTypesVersion(), version);
+    } else {
+      QTRY_VERIFY(!client.error().isEmpty());
+      QVERIFY(!client.online());
+      QCOMPARE(client.tasks()->rowCount(), 0);
+    }
+    client.stop();
+  }
+  void legacyValidatorFixturesDocumentEpicException() {
+    // This is the previous validator's task predicate, retained only as a
+    // fixture for the old binary's behavior. Old Qt has no v7/Epic support:
+    // open/closed fail its state CHECK. Its unknown-field tolerance can mistake
+    // an in_progress Epic for a Task; that is a documented legacy exception,
+    // never a valid work-type classification in the new client.
+    const auto oldValidator = [](const QJsonObject &row) {
+      return uuidIsValid(row.value("id").toString()) &&
+             uuidIsValid(row.value("project_id").toString()) &&
+             QStringList{"backlog", "queued", "in_progress", "done",
+                         "cancelled"}
+                 .contains(row.value("state").toString());
+    };
+    QVERIFY(!oldValidator(workRow("epic", "open")));
+    QVERIFY(!oldValidator(workRow("epic", "closed")));
+    QVERIFY(oldValidator(workRow("epic", "in_progress")));
   }
   void timeoutDoesNotBlockEventLoop() {
     Fixture fixture;

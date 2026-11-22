@@ -36,6 +36,7 @@ class ApiClient : public QObject {
   Q_PROPERTY(QString status READ status NOTIFY changed)
   Q_PROPERTY(QString error READ error NOTIFY changed)
   Q_PROPERTY(bool online READ online NOTIFY changed)
+  Q_PROPERTY(int workTypesVersion READ workTypesVersion NOTIFY changed)
   Q_PROPERTY(bool loading READ loading NOTIFY changed)
   Q_PROPERTY(bool pending READ pending NOTIFY changed)
   Q_PROPERTY(bool uncertain READ uncertain NOTIFY changed)
@@ -109,6 +110,8 @@ public:
                                        : m_messagesError;
   }
   bool online() const { return m_online; }
+  // Zero is the legacy v6 snapshot contract; v7 explicitly advertises 1.
+  int workTypesVersion() const { return m_workTypesVersion; }
   bool loading() const { return m_snapshot; }
   bool pending() const { return m_mutation; }
   bool uncertain() const { return m_uncertain; }
@@ -200,6 +203,7 @@ private:
   qint64 m_sequence = 0, m_cursor = 0;
   bool m_online = false, m_uncertain = false, m_conflict = false,
        m_reloadAgain = false, m_stopped = true;
+  int m_workTypesVersion = 0;
   bool m_answerRetryNeedsSnapshot = false;
   int m_timeout = 5000;
   QVariantMap m_draft;

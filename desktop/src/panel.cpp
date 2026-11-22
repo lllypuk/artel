@@ -372,7 +372,7 @@ QVariantMap Panel::questionRow(QVariantMap row) const {
   const auto binding = m_delivery.value("binding").toMap();
   const auto selected = task();
   const auto state = selected.value("state").toString();
-  const bool openTask = !selected.isEmpty() &&
+  const bool openTask = !selected.isEmpty() && executable(selected) &&
                         !project().value("archived").toBool() &&
                         state != "done" && state != "cancelled";
   const bool openQuestion = row.value("status").toString() == "open";
@@ -455,7 +455,7 @@ void Panel::resetResults(bool preserveCurrent) {
     m_currentResult.clear();
 }
 void Panel::loadResults() {
-  if (!m_task.isEmpty() && m_client->online()) {
+  if (!m_task.isEmpty() && executable(task()) && m_client->online()) {
     m_client->loadResults(m_task, 0);
     m_client->loadCurrentResult(m_task);
   }
@@ -500,7 +500,7 @@ QVariantMap Panel::assignment() const {
                      {"canSend", false},
                      {"reason", QString()}};
   const auto task = this->task();
-  if (task.isEmpty())
+  if (task.isEmpty() || !executable(task))
     return result;
   result.insert("taskId", m_task);
   const auto state = task.value("state").toString();
@@ -558,7 +558,7 @@ void Panel::resetCommissionView() {
   m_sentAnswers.clear();
 }
 void Panel::loadCommissionPage() {
-  if (m_task.isEmpty() || !m_client->online())
+  if (m_task.isEmpty() || !executable(task()) || !m_client->online())
     return;
   m_messagesTask = m_task;
   m_deliveryTask = m_task;
@@ -642,7 +642,8 @@ QVariantList Panel::projects() const {
     QMap<QString, int> counts;
     for (int j = 0; j < m_client->tasks()->rowCount(); ++j) {
       const auto task = m_client->tasks()->get(j);
-      if (task.value("project_id") == row.value("id"))
+      if (task.value("project_id") == row.value("id") &&
+          task.value("kind", "task").toString() != "epic")
         ++counts[task.value("state").toString()];
     }
     row.insert("counts", tr("Backlog %1 · Queued %2 · Current %3 · Done %4")
@@ -661,7 +662,100 @@ QVariantMap Panel::project() const {
                QFileInfo(row.value("root_path").toString()).isDir());
   return row;
 }
-QVariantMap Panel::task() const { return find(m_client->tasks(), m_task); }
+QVariantMap Panel::task() const {
+  return workRow(find(m_client->tasks(), m_task));
+}
+bool Panel::workTypesUpgradeRequired() const {
+  return m_client->lastUpdated().isValid() && !workTypesAvailable();
+}
+QString Panel::kindLabel(const QString &kind) const {
+  if (kind == "epic")
+    return tr("Epic");
+  if (kind == "bug")
+    return tr("Bug");
+  return tr("Task");
+}
+QVariantMap Panel::workRow(QVariantMap row) const {
+  if (row.isEmpty())
+    return row;
+  const auto kind = row.value("kind", "task").toString();
+  row.insert("kind", kind);
+  row.insert("kindLabel", kindLabel(kind));
+  row.insert("stateLabel", stateLabel(row.value("state").toString()));
+  const auto parent =
+      find(m_client->tasks(), row.value("parent_id").toString());
+  row.insert("parentTitle", parent.value("title"));
+  row.insert("parentState", parent.value("state"));
+  const auto summary = row.value("summary").toMap();
+  if (kind == "epic")
+    row.insert("summaryText",
+               tr("Backlog %1 · Queued %2 · In progress %3 · Done %4 · "
+                  "Cancelled %5")
+                   .arg(summary.value("backlog").toInt())
+                   .arg(summary.value("queued").toInt())
+                   .arg(summary.value("in_progress").toInt())
+                   .arg(summary.value("done").toInt())
+                   .arg(summary.value("cancelled").toInt()));
+  return row;
+}
+bool Panel::executable(const QVariantMap &row) const {
+  const auto kind = row.value("kind", "task").toString();
+  return kind == "task" || kind == "bug";
+}
+QVariantList Panel::creationKinds() const {
+  QVariantList rows{QVariantMap{{"id", "task"}, {"label", kindLabel("task")}}};
+  if (workTypesAvailable()) {
+    rows.append(QVariantMap{{"id", "epic"}, {"label", kindLabel("epic")}});
+    rows.append(QVariantMap{{"id", "bug"}, {"label", kindLabel("bug")}});
+  }
+  return rows;
+}
+QVariantList Panel::parentCandidates() const {
+  QVariantList rows;
+  if (!workTypesAvailable())
+    return rows;
+  for (int i = 0; i < m_client->tasks()->rowCount(); ++i) {
+    const auto row = m_client->tasks()->get(i);
+    const auto state = row.value("state").toString();
+    if (row.value("project_id").toString() == m_editorProject &&
+        row.value("kind").toString() == "epic" &&
+        (state == "open" || state == "in_progress"))
+      rows.append(QVariantMap{{"id", row.value("id")},
+                              {"title", row.value("title")},
+                              {"state", state}});
+  }
+  return rows;
+}
+QVariantList Panel::parentOptions() const {
+  QVariantList rows{QVariantMap{{"id", ""}, {"title", tr("No Epic parent")}}};
+  return rows + parentCandidates();
+}
+QString Panel::editorParentTitle() const {
+  if (m_kind != "task")
+    return {};
+  const auto parent =
+      find(m_client->tasks(), editor().value("parent_id").toString());
+  return parent.value("title").toString();
+}
+QString Panel::editorParentState() const {
+  if (m_kind != "task")
+    return {};
+  const auto parent =
+      find(m_client->tasks(), editor().value("parent_id").toString());
+  return parent.value("state").toString();
+}
+QVariantList Panel::epicChildren() const {
+  QVariantList rows;
+  const auto selected = task();
+  if (selected.value("kind").toString() != "epic")
+    return rows;
+  for (int i = 0; i < m_client->tasks()->rowCount(); ++i) {
+    auto row = m_client->tasks()->get(i);
+    if (row.value("parent_id").toString() == m_task)
+      rows.append(workRow(row));
+  }
+  return rows;
+}
 QVariantList Panel::queueIds() const {
   for (int i = 0; i < m_client->queues()->rowCount(); ++i) {
     const auto row = m_client->queues()->get(i);
@@ -677,14 +771,21 @@ QVariantList Panel::tasks() const {
     auto row = m_client->tasks()->get(i);
     if (row.value("project_id").toString() != m_project)
       continue;
+    const auto kind = row.value("kind", "task").toString();
+    row.insert("kind", kind);
+    row.insert("kindLabel", kindLabel(kind));
+    const auto parent =
+        find(m_client->tasks(), row.value("parent_id").toString());
+    row.insert("parentTitle", parent.value("title"));
+    row.insert("parentState", parent.value("state"));
     const int position = ids.indexOf(row.value("id"));
     row.insert("position", position);
     row.insert("canDown", position >= 0 && position + 1 < ids.size());
     row.insert("stateLabel", stateLabel(row.value("state").toString()));
     rows.append(row);
   }
-  const QStringList states{"backlog", "queued", "in_progress", "done",
-                           "cancelled"};
+  const QStringList states{"open", "backlog",   "queued", "in_progress",
+                           "done", "cancelled", "closed"};
   std::stable_sort(
       rows.begin(), rows.end(), [&](const QVariant &a, const QVariant &b) {
         const auto x = a.toMap(), y = b.toMap();
@@ -714,6 +815,10 @@ QString Panel::stateLabel(const QString &state) const {
     return tr("Completed manually");
   if (state == "cancelled")
     return tr("Cancelled");
+  if (state == "open")
+    return tr("Open");
+  if (state == "closed")
+    return tr("Closed");
   return {};
 }
 QString Panel::currentText() const {
@@ -724,9 +829,22 @@ QString Panel::currentText() const {
              row.value("description").toString());
   }
   const auto row = task();
-  return tr("Title: %1\nDescription: %2\nAcceptance criteria: %3")
-      .arg(row.value("title").toString(), row.value("description").toString(),
-           row.value("acceptance_criteria").toString());
+  auto text =
+      tr("Type: %1\nTitle: %2\nDescription: %3\nAcceptance criteria: %4")
+          .arg(row.value("kindLabel").toString(), row.value("title").toString(),
+               row.value("description").toString(),
+               row.value("acceptance_criteria").toString());
+  if (row.value("kind").toString() != "epic")
+    text += tr("\nEpic parent: %1")
+                .arg(row.value("parentTitle").toString().isEmpty()
+                         ? tr("None")
+                         : row.value("parentTitle").toString());
+  if (row.value("kind").toString() == "bug")
+    text += tr("\nExpected behavior: %1\nActual behavior: %2\nFix evidence: %3")
+                .arg(row.value("expected_behavior").toString(),
+                     row.value("actual_behavior").toString(),
+                     row.value("fix_evidence").toString());
+  return text;
 }
 QString Panel::message() const {
   if (canAbandon())
@@ -823,9 +941,18 @@ bool Panel::begin(const QString &kind, const QVariantMap &value) {
               {"root_path", value.value("root_path", "")},
               {"description", value.value("description", "")}};
   } else {
+    const auto kind = value.value("kind", "task").toString();
     fields = {{"title", value.value("title", "")},
               {"description", value.value("description", "")},
-              {"acceptance_criteria", value.value("acceptance_criteria", "")}};
+              {"acceptance_criteria", value.value("acceptance_criteria", "")},
+              {"kind", kind}};
+    if (kind != "epic")
+      fields.insert("parent_id", value.value("parent_id", ""));
+    if (kind == "bug") {
+      fields.insert("expected_behavior", value.value("expected_behavior", ""));
+      fields.insert("actual_behavior", value.value("actual_behavior", ""));
+      fields.insert("fix_evidence", value.value("fix_evidence", ""));
+    }
   }
   m_client->setDraft(fields);
   return true;
@@ -835,16 +962,59 @@ bool Panel::editProject(bool create) {
           (!project().isEmpty() && !project().value("archived").toBool())) &&
          begin("project", create ? QVariantMap{} : project());
 }
-bool Panel::editTask(bool create) {
+bool Panel::editTask(bool create, const QString &kind) {
+  const auto selectedKind =
+      create ? kind : task().value("kind", "task").toString();
+  if (!QStringList{"epic", "task", "bug"}.contains(selectedKind) ||
+      (create && !workTypesAvailable() && selectedKind != "task"))
+    return false;
+  QVariantMap value;
+  if (create)
+    value.insert("kind", selectedKind);
+  else
+    value = task();
   return !project().isEmpty() && !project().value("archived").toBool() &&
-         (create || !task().isEmpty()) &&
-         begin("task", create ? QVariantMap{} : task());
+         (create || !task().isEmpty()) && begin("task", value);
 }
 void Panel::field(const QString &name, const QString &value) {
   auto draft = editor();
   if (!draft.contains(name))
     return;
-  draft[name] = value;
+  if (name == "kind") {
+    if (!m_editorId.isEmpty() || !workTypesAvailable() ||
+        !QStringList{"epic", "task", "bug"}.contains(value))
+      return;
+    draft[name] = value;
+    if (value == "epic") {
+      draft.remove("parent_id");
+      draft.remove("expected_behavior");
+      draft.remove("actual_behavior");
+      draft.remove("fix_evidence");
+    } else {
+      draft.insert("parent_id", QString());
+      for (const auto *key :
+           {"expected_behavior", "actual_behavior", "fix_evidence"}) {
+        if (value == "bug")
+          draft.insert(key, QString());
+        else
+          draft.remove(key);
+      }
+    }
+  } else if (name == "parent_id") {
+    if (!workTypesAvailable() || draft.value("kind").toString() == "epic")
+      return;
+    bool valid = value.isEmpty();
+    if (value ==
+        find(m_client->tasks(), m_editorId).value("parent_id").toString())
+      valid = true;
+    for (const auto &candidate : parentCandidates())
+      valid = valid || candidate.toMap().value("id").toString() == value;
+    if (!valid)
+      return;
+    draft[name] = value;
+  } else {
+    draft[name] = value;
+  }
   m_client->setDraft(draft);
 }
 bool Panel::save() {
@@ -852,6 +1022,23 @@ bool Panel::save() {
     return false;
   m_adopted = false;
   auto payload = editor();
+  if (m_kind == "task") {
+    const auto kind = payload.value("kind", "task").toString();
+    if (!m_editorId.isEmpty())
+      payload.remove("kind");
+    if (!workTypesAvailable() || kind == "epic") {
+      payload.remove("parent_id");
+      payload.remove("expected_behavior");
+      payload.remove("actual_behavior");
+      payload.remove("fix_evidence");
+    } else if (kind != "bug") {
+      payload.remove("expected_behavior");
+      payload.remove("actual_behavior");
+      payload.remove("fix_evidence");
+    }
+    if (!workTypesAvailable())
+      payload.remove("kind");
+  }
   if (!m_editorId.isEmpty())
     payload.insert("expected_version", m_version);
   const auto path = m_kind == "project"
@@ -895,8 +1082,9 @@ bool Panel::canArchive() const {
   if (project().value("archived").toBool())
     return true;
   for (const auto &row : tasks()) {
-    const auto state = row.toMap().value("state").toString();
-    if (state == "queued" || state == "in_progress")
+    const auto task = row.toMap();
+    const auto state = task.value("state").toString();
+    if (executable(task) && (state == "queued" || state == "in_progress"))
       return false;
   }
   return true;
@@ -913,7 +1101,7 @@ bool Panel::queue(const QString &id, int direction) {
       direction < -1 || direction > 1)
     return false;
   const auto row = find(m_client->tasks(), id);
-  if (row.value("project_id").toString() != m_project)
+  if (row.value("project_id").toString() != m_project || !executable(row))
     return false;
   auto ids = queueIds();
   const int position = ids.indexOf(id);
@@ -937,19 +1125,38 @@ bool Panel::queue(const QString &id, int direction) {
 }
 bool Panel::queueStartEligible() const {
   const auto state = task().value("state").toString();
+  if (!executable(task()))
+    return false;
   const auto ids = queueIds();
   if (state != "queued" || ids.isEmpty() || ids.first().toString() != m_task)
     return false;
   for (const auto &row : tasks())
-    if (row.toMap().value("state") == "in_progress")
+    if (executable(row.toMap()) &&
+        row.toMap().value("state").toString() == "in_progress")
       return false;
   return true;
 }
 bool Panel::allowed(const QString &target) const {
   if (!writable() || dirty() || project().value("archived").toBool() ||
-      task().isEmpty() || !m_resultsLoaded)
+      task().isEmpty())
     return false;
-  const auto state = task().value("state").toString();
+  const auto selected = task();
+  const auto state = selected.value("state").toString();
+  if (selected.value("kind").toString() == "epic") {
+    if (target == "in_progress")
+      return state == "open";
+    if (target == "open")
+      return state == "in_progress" || state == "closed";
+    if (target != "closed" || state != "in_progress")
+      return false;
+    for (const auto &child : epicChildren())
+      if (!QStringList{"done", "cancelled"}.contains(
+              child.toMap().value("state").toString()))
+        return false;
+    return true;
+  }
+  if (!m_resultsLoaded)
+    return false;
   if (target == "in_progress" && !queueStartEligible())
     return false;
   if (target == "in_progress")
@@ -959,15 +1166,17 @@ bool Panel::allowed(const QString &target) const {
   if (target == "cancelled")
     return QStringList{"backlog", "queued", "in_progress"}.contains(state);
   if (target == "backlog")
-    return QStringList{"in_progress", "done", "cancelled"}.contains(state);
+    return QStringList{"in_progress", "done", "cancelled"}.contains(state) &&
+           selected.value("parentState").toString() != "closed";
   return false;
 }
 bool Panel::transition(const QString &state) {
   if (!allowed(state))
     return false;
   QVariantMap payload{{"state", state},
-                      {"expected_version", task().value("version")},
-                      {"expected_result_id", m_currentResult}};
+                      {"expected_version", task().value("version")}};
+  if (executable(task()))
+    payload.insert("expected_result_id", m_currentResult);
   if (task().value("state") == "queued")
     payload.insert("expected_queue_version", project().value("queue_version"));
   return m_client->save("POST", "/v1/tasks/" + m_task + "/transition", payload);
