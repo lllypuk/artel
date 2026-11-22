@@ -362,7 +362,7 @@ func TestDeliveryV2UpgradePreservesDomainObserverAndReceipts(t *testing.T) {
 			t.Fatal(err)
 		}
 		clearFreshness(registry.Observers)
-		if !reflect.DeepEqual(snap, after) || !reflect.DeepEqual(events, history) ||
+		if !reflect.DeepEqual(expectedMigratedSnapshot(snap), after) || !reflect.DeepEqual(events, history) ||
 			string(receipts) != string(receiptDump(t, s)) || string(observerReceipts) != string(observerReceiptDump(t, s)) ||
 			!reflect.DeepEqual(observers, registry.Observers) {
 			t.Fatal("v2 domain/observer/receipt data changed by upgrade")
@@ -371,7 +371,7 @@ func TestDeliveryV2UpgradePreservesDomainObserverAndReceipts(t *testing.T) {
 		if err := s.db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil {
 			t.Fatal(err)
 		}
-		if version != 6 {
+		if version != 7 {
 			t.Fatal(version)
 		}
 		for table, want := range map[string]int{"delivery_bindings": 0, "delivery_messages": 0, "delivery_attempts": 0} {

@@ -99,14 +99,14 @@ func TestObserverV1UpgradePreservesPopulatedDatabase(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(snap, after) || !reflect.DeepEqual(events, history) || string(receipts) != string(receiptDump(t, s)) {
+		if !reflect.DeepEqual(expectedMigratedSnapshot(snap), after) || !reflect.DeepEqual(events, history) || string(receipts) != string(receiptDump(t, s)) {
 			t.Fatal("v1 domain data/identity/receipt changed")
 		}
 		var version int
 		if err := s.db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil {
 			t.Fatal(err)
 		}
-		if version != 6 {
+		if version != 7 {
 			t.Fatal(version)
 		}
 		if countRows(t, s, "observers") != 0 {

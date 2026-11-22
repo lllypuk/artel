@@ -720,7 +720,7 @@ func assertV3StatePreserved(t *testing.T, s *Store, before populatedV3State) {
 		t.Fatal(err)
 	}
 	messages, _, err := s.ListDeliveryMessages(t.Context(), before.messages[0].TaskID, 0, 50, nil)
-	if err != nil || !reflect.DeepEqual(after, before.snapshot) || !reflect.DeepEqual(events, before.events) ||
+	if err != nil || !reflect.DeepEqual(after, expectedMigratedSnapshot(before.snapshot)) || !reflect.DeepEqual(events, before.events) ||
 		string(receiptDump(t, s)) != string(before.domainReceipts) || string(observerReceiptDump(t, s)) != string(before.observerReceipts) ||
 		!reflect.DeepEqual(messages, before.messages) || countRows(t, s, "delivery_attempts") != before.attempts || countRows(t, s, "owner_questions") != 0 {
 		t.Fatal("v3 migration changed domain, delivery, attempts or receipts")
@@ -734,7 +734,7 @@ func assertV3StatePreserved(t *testing.T, s *Store, before populatedV3State) {
 		t.Fatalf("v3 revoke lost-ACK replay: %+v %v", revokeReplay, err)
 	}
 	var version int
-	if err := s.db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil || version != 6 {
+	if err := s.db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil || version != 7 {
 		t.Fatalf("version=%d err=%v", version, err)
 	}
 }

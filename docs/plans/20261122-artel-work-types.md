@@ -65,11 +65,11 @@ TDD: сначала миграционные и доменные отказы, �
 - Modify: `internal/domain/domain.go`, `internal/store/schema.sql`, `internal/store/store.go`, `internal/store/migration_test.go`, `internal/store/store_test.go`, `internal/store/questions_test.go`, `internal/store/observer_migration_test.go`, `internal/store/delivery_test.go`, `tests/staged_acceptance.py`.
 - Create: `internal/store/work_types_schema.sql`, `internal/store/work_types_test.go`.
 
-- [ ] Добавить kind/parent/Bug DTO и v7: транзакционно перестроить tasks с новым CHECK, скопировать прежние строки, восстановить FK/indexes и синхронизировать SQL/JSON. Epic summary формировать только в read-projection; существующие записи мигрируют как Task без родителя.
-- [ ] Ограничить освобождение partial unique index при persist исполняемыми типами, чтобы посторонняя мутация сохраняла одновременные Epic/Bug `in_progress`; обновить **все** оракулы текущей `user_version` на 7 в store/staged tests, не меняя исторический `PRAGMA user_version=6` в `current_reviews_schema.sql`.
-- [ ] Проверить чистую и заполненную v6, сохранение UUID/state/version/queue/results/reviews/delivery/questions/events/receipts, `PRAGMA foreign_key_check` и отсутствие событий миграции.
-- [ ] Проверить SQL kind/state/parent ограничения, rollback с исходными данными/`user_version=6` и отказ старого бинарника на v7.
-- [ ] `go test ./internal/domain ./internal/store -count=1` и `make lint test build`.
+- [x] Добавить kind/parent/Bug DTO и v7: транзакционно перестроить tasks с новым CHECK, скопировать прежние строки, восстановить FK/indexes и синхронизировать SQL/JSON. Epic summary формировать только в read-projection; существующие записи мигрируют как Task без родителя.
+- [x] Ограничить освобождение partial unique index при persist исполняемыми типами, чтобы посторонняя мутация сохраняла одновременные Epic/Bug `in_progress`; обновить **все** оракулы текущей `user_version` на 7 в store/staged tests, не меняя исторический `PRAGMA user_version=6` в `current_reviews_schema.sql`.
+- [x] Проверить чистую и заполненную v6, сохранение UUID/state/version/queue/results/reviews/delivery/questions/events/receipts, `PRAGMA foreign_key_check` и отсутствие событий миграции.
+- [x] Проверить SQL kind/state/parent ограничения, rollback с исходными данными/`user_version=6` и отказ старого бинарника на v7.
+- [x] `go test ./internal/domain ./internal/store -count=1` и `make lint test build`.
 
 ### Task 2: Реализовать owner операции и доменные инварианты
 
