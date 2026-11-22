@@ -414,6 +414,7 @@ void ApiClient::reload() {
   m_reconnect.stop();
   m_status = "loading";
   auto *reply = request("GET", "/v1/snapshot");
+  reply->setProperty("snapshotRequestSerial", ++m_snapshotRequestSerial);
   m_snapshot = reply;
   const auto generation = m_generation;
   connect(reply, &QIODevice::readyRead, this, [reply] {
@@ -511,7 +512,8 @@ void ApiClient::snapshotFinished(QNetworkReply *reply, quint64 generation) {
     m_reloadAgain = false;
     m_coalesce.start();
   }
-  ++m_snapshotRevision;
+  m_appliedSnapshotRequestSerial =
+      reply->property("snapshotRequestSerial").toULongLong();
   emit changed();
 }
 bool ApiClient::snapshotAffectsTask(const QString &project,

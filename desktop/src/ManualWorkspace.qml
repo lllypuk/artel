@@ -542,6 +542,7 @@ Item {
                             textRole: "label"
                             valueRole: "id"
                             currentIndex: Math.max(0, indexOfValue(manual.panel.editor.kind || "task"))
+                            displayText: indexOfValue(manual.panel.editor.kind || "task") < 0 ? manual.panel.kindLabel(manual.panel.editor.kind || "task") : currentText
                             onActivated: manual.panel.field("kind", currentValue)
                             onActiveFocusChanged: manual.revealField(this, 0)
                             Accessible.name: qsTr("Work type")

@@ -1693,10 +1693,11 @@ private slots:
         beforeDetach.value("queues").toArray().first().toObject();
     QVERIFY(click(ui->window, "editTaskButton"));
     QCOMPARE(ui->panel.parentCandidates().size(), 0);
-    QCOMPARE(ui->panel.parentOptions().size(), 1);
+    QCOMPARE(ui->panel.parentOptions().size(), 2);
     auto *parents = item(ui->window, "parentCombo");
     parents->forceActiveFocus();
     QTest::keyClick(ui->window, Qt::Key_Space);
+    QTest::keyClick(ui->window, Qt::Key_Home);
     QTest::keyClick(ui->window, Qt::Key_Return);
     QTRY_COMPARE(ui->panel.editor().value("parent_id").toString(), QString());
     QTest::keyClick(ui->window, Qt::Key_S, Qt::ControlModifier);

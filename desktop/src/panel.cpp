@@ -63,7 +63,7 @@ Panel::Panel(ApiClient *client, QObject *parent)
         m_conflictInstance = m_client->instance();
         m_conflictEditorId = m_editorId;
         m_conflictEditorKind = m_kind;
-        m_conflictSnapshotRevision = m_client->snapshotRevision();
+        m_conflictSnapshotRequestSerial = m_client->snapshotRequestSerial();
       }
     } else {
       m_conflictTracked = false;
@@ -709,26 +709,40 @@ QString Panel::kindLabel(const QString &kind) const {
     return tr("Bug");
   return tr("Task");
 }
-QString Panel::parentTitle(const QVariantMap &parent) const {
+Panel::EpicTitleCounts Panel::epicTitleCounts() const {
+  EpicTitleCounts counts;
+  for (int i = 0; i < m_client->tasks()->rowCount(); ++i) {
+    const auto row = m_client->tasks()->get(i);
+    if (row.value("kind").toString() == "epic")
+      ++counts[row.value("project_id").toString()]
+              [row.value("title").toString()];
+  }
+  return counts;
+}
+QString Panel::parentTitle(const QVariantMap &parent,
+                           const EpicTitleCounts &titleCounts) const {
   if (parent.isEmpty())
     return {};
   const auto title = parent.value("title").toString();
-  int matchingTitles = 0;
-  for (int i = 0; i < m_client->tasks()->rowCount(); ++i) {
-    const auto row = m_client->tasks()->get(i);
-    if (row.value("kind").toString() == "epic" &&
-        row.value("project_id") == parent.value("project_id") &&
-        row.value("title").toString() == title)
-      ++matchingTitles;
-  }
-  return matchingTitles > 1 ? QStringLiteral("%1 (%2)").arg(
-                                  title, parent.value("id").toString())
+  const int matchingTitles =
+      titleCounts.value(parent.value("project_id").toString()).value(title);
+  // The UUID comes first because compact combo delegates elide on the right.
+  return matchingTitles > 1 ? QStringLiteral("(%1) %2").arg(
+                                  parent.value("id").toString(), title)
                             : title;
 }
-QVariantMap Panel::workRow(QVariantMap row,
-                           const QVariantMap *knownParent) const {
+QString Panel::parentTitle(const QVariantMap &parent) const {
+  return parentTitle(parent, epicTitleCounts());
+}
+QVariantMap Panel::workRow(QVariantMap row, const QVariantMap *knownParent,
+                           const EpicTitleCounts *titleCounts) const {
   if (row.isEmpty())
     return row;
+  EpicTitleCounts computedTitleCounts;
+  if (!titleCounts) {
+    computedTitleCounts = epicTitleCounts();
+    titleCounts = &computedTitleCounts;
+  }
   const auto kind = row.value("kind", "task").toString();
   row.insert("kind", kind);
   row.insert("kindLabel", kindLabel(kind));
@@ -736,7 +750,7 @@ QVariantMap Panel::workRow(QVariantMap row,
   const auto parent =
       knownParent ? *knownParent
                   : find(m_client->tasks(), row.value("parent_id").toString());
-  row.insert("parentTitle", parentTitle(parent));
+  row.insert("parentTitle", parentTitle(parent, *titleCounts));
   row.insert("parentState", parent.value("state"));
   const auto summary = row.value("summary").toMap();
   if (kind == "epic")
@@ -766,6 +780,7 @@ QVariantList Panel::parentCandidates() const {
   QVariantList rows;
   if (!workTypesAvailable())
     return rows;
+  const auto titleCounts = epicTitleCounts();
   for (int i = 0; i < m_client->tasks()->rowCount(); ++i) {
     const auto row = m_client->tasks()->get(i);
     const auto state = row.value("state").toString();
@@ -773,14 +788,38 @@ QVariantList Panel::parentCandidates() const {
         row.value("kind").toString() == "epic" &&
         (state == "open" || state == "in_progress"))
       rows.append(QVariantMap{{"id", row.value("id")},
-                              {"title", parentTitle(row)},
+                              {"title", parentTitle(row, titleCounts)},
                               {"state", state}});
   }
   return rows;
 }
 QVariantList Panel::parentOptions() const {
   QVariantList rows{QVariantMap{{"id", ""}, {"title", tr("No Epic parent")}}};
-  return rows + parentCandidates();
+  const auto candidates = parentCandidates();
+  if (m_kind == "task" && workTypesAvailable() &&
+      editor().value("kind").toString() != "epic") {
+    const auto selected = editor().value("parent_id").toString();
+    const bool eligible = std::any_of(
+        candidates.begin(), candidates.end(), [&](const QVariant &value) {
+          return value.toMap().value("id").toString() == selected;
+        });
+    if (!selected.isEmpty() && !eligible) {
+      const auto parent = find(m_client->tasks(), selected);
+      auto title = parentTitle(parent);
+      if (title.isEmpty())
+        title = selected;
+      const bool unchanged =
+          !m_editorId.isEmpty() &&
+          selected == m_editorBase.value("parent_id").toString();
+      rows.append(QVariantMap{
+          {"id", selected},
+          {"title", unchanged
+                        ? tr("Current Epic parent (unchanged): %1").arg(title)
+                        : tr("Unavailable Epic parent: %1").arg(title)},
+          {"state", parent.value("state")}});
+    }
+  }
+  return rows + candidates;
 }
 QString Panel::editorParentTitle() const {
   if (m_kind != "task")
@@ -798,13 +837,15 @@ QString Panel::editorParentState() const {
 }
 QVariantList Panel::epicChildren() const {
   QVariantList rows;
-  const auto selected = task();
+  const auto titleCounts = epicTitleCounts();
+  const auto selected =
+      workRow(find(m_client->tasks(), m_task), nullptr, &titleCounts);
   if (selected.value("kind").toString() != "epic")
     return rows;
   for (int i = 0; i < m_client->tasks()->rowCount(); ++i) {
     auto row = m_client->tasks()->get(i);
     if (row.value("parent_id").toString() == m_task)
-      rows.append(workRow(row, &selected));
+      rows.append(workRow(row, &selected, &titleCounts));
   }
   return rows;
 }
@@ -819,6 +860,7 @@ QVariantList Panel::queueIds() const {
 QVariantList Panel::tasks() const {
   QVariantList rows;
   const auto ids = queueIds();
+  const auto titleCounts = epicTitleCounts();
   QHash<QString, QVariantMap> parents;
   parents.reserve(m_client->tasks()->rowCount());
   for (int i = 0; i < m_client->tasks()->rowCount(); ++i) {
@@ -835,7 +877,7 @@ QVariantList Panel::tasks() const {
     const auto parentID = row.value("parent_id").toString();
     const auto parent =
         parentID.isEmpty() ? QVariantMap{} : parents.value(parentID);
-    row.insert("parentTitle", parentTitle(parent));
+    row.insert("parentTitle", parentTitle(parent, titleCounts));
     row.insert("parentState", parent.value("state"));
     const int position = ids.indexOf(row.value("id"));
     row.insert("position", position);
@@ -924,6 +966,9 @@ QString Panel::message() const {
   if (unsupportedWorkTypeDraft())
     return tr("Daemon upgrade required for Epic, Bug and Epic parent actions. "
               "Existing tasks remain available.");
+  if (invalidParentAttachment())
+    return tr("Selected Epic parent is unavailable; choose an eligible Epic "
+              "or clear the parent");
   return m_client->error();
 }
 QString Panel::connection() const {
@@ -948,10 +993,30 @@ bool Panel::unsupportedWorkTypeDraft() const {
   return draft.value("kind", "task").toString() != "task" ||
          !draft.value("parent_id").toString().isEmpty();
 }
+bool Panel::invalidParentAttachment() const {
+  if (m_kind != "task" || !workTypesAvailable() ||
+      editor().value("kind").toString() == "epic")
+    return false;
+  const auto selected = editor().value("parent_id").toString();
+  if (selected.isEmpty() ||
+      (!m_editorId.isEmpty() &&
+       selected == m_editorBase.value("parent_id").toString()))
+    return false;
+  for (int i = 0; i < m_client->tasks()->rowCount(); ++i) {
+    const auto row = m_client->tasks()->get(i);
+    const auto state = row.value("state").toString();
+    if (row.value("id").toString() == selected &&
+        row.value("project_id").toString() == m_editorProject &&
+        row.value("kind").toString() == "epic" &&
+        (state == "open" || state == "in_progress"))
+      return false;
+  }
+  return true;
+}
 bool Panel::saveable() const {
   const bool newProject = m_kind == "project" && m_editorId.isEmpty();
   return writable() && !conflict() && !m_kind.isEmpty() &&
-         !unsupportedWorkTypeDraft() &&
+         !unsupportedWorkTypeDraft() && !invalidParentAttachment() &&
          m_editorInstance == m_client->instance() &&
          (newProject || !project().value("archived").toBool());
 }
@@ -1081,7 +1146,6 @@ void Panel::field(const QString &name, const QString &value) {
 bool Panel::save() {
   if (!saveable())
     return false;
-  m_adopted = false;
   const auto sentEditorBase = editor();
   auto payload = sentEditorBase;
   if (m_kind == "task") {
@@ -1124,8 +1188,10 @@ bool Panel::save() {
           : QStringLiteral("/v1/") +
                 (m_kind == "project" ? "projects/" : "tasks/") + m_editorId,
       payload);
-  if (sent)
+  if (sent) {
+    m_adopted = false;
     m_sentEditorBase = sentEditorBase;
+  }
   return sent;
 }
 void Panel::discard() { m_client->discardDraft(); }
@@ -1141,7 +1207,8 @@ bool Panel::rebase() {
       !m_conflictTracked || m_conflictInstance != m_client->instance() ||
       m_editorInstance != m_client->instance() ||
       m_conflictEditorId != m_editorId || m_conflictEditorKind != m_kind ||
-      m_client->snapshotRevision() <= m_conflictSnapshotRevision ||
+      m_client->appliedSnapshotRequestSerial() <=
+          m_conflictSnapshotRequestSerial ||
       (m_editorId.isEmpty() && m_kind != "task"))
     return false;
   if (!m_editorId.isEmpty()) {

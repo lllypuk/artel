@@ -1,6 +1,7 @@
 #pragma once
 #include "apiclient.h"
 #include "observerclient.h"
+#include <QHash>
 #include <QObject>
 #include <QtQml/qqmlregistration.h>
 
@@ -185,12 +186,17 @@ private:
   QVariantMap messageRow(const QVariantMap &row) const;
   QString answerKey(const QString &question) const;
   void discardAnswerDraft(const QString &key);
+  using EpicTitleCounts = QHash<QString, QHash<QString, int>>;
   QVariantList queueIds() const;
-  QVariantMap workRow(QVariantMap row,
-                      const QVariantMap *knownParent = nullptr) const;
+  EpicTitleCounts epicTitleCounts() const;
+  QVariantMap workRow(QVariantMap row, const QVariantMap *knownParent = nullptr,
+                      const EpicTitleCounts *titleCounts = nullptr) const;
+  QString parentTitle(const QVariantMap &parent,
+                      const EpicTitleCounts &titleCounts) const;
   QString parentTitle(const QVariantMap &parent) const;
   bool executable(const QVariantMap &row) const;
   bool unsupportedWorkTypeDraft() const;
+  bool invalidParentAttachment() const;
   bool begin(const QString &kind, const QVariantMap &value);
   ApiClient *m_client;
   ObserverClient m_observers;
@@ -211,7 +217,7 @@ private:
   QVariantMap m_editorBase, m_sentEditorBase;
   QString m_currentResult, m_currentReviewsCursor;
   QString m_conflictInstance, m_conflictEditorId, m_conflictEditorKind;
-  quint64 m_conflictSnapshotRevision = 0;
+  quint64 m_conflictSnapshotRequestSerial = 0;
   bool m_archived = false, m_historyMore = false, m_adopted = false,
        m_wasOnline = false, m_currentResultLoaded = false,
        m_resultsLoaded = false, m_resultsMore = false,

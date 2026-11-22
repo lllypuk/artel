@@ -3275,7 +3275,16 @@ private slots:
     initial.insert("tasks", tasks);
     fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
     QList<QJsonObject> saves;
+    QPointer<QTcpSocket> heldPreConflictSnapshot;
+    QByteArray preConflictSnapshot;
+    bool holdPreConflictSnapshot = false;
     fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/snapshot ") && holdPreConflictSnapshot) {
+        holdPreConflictSnapshot = false;
+        heldPreConflictSnapshot = socket;
+        preConflictSnapshot = fixture.state;
+        return;
+      }
       const bool taskSave =
           (create && request.startsWith("POST /v1/projects/") &&
            request.contains("/tasks ")) ||
@@ -3348,6 +3357,11 @@ private slots:
     panel.field("expected_behavior", "Draft field survives parent recovery");
     panel.field("parent_id", epic);
     const auto draft = panel.editor();
+    // This GET reads the open parent before the rejected save, but its reply
+    // is delayed until after the 409. Its completion must not authorize rebase.
+    holdPreConflictSnapshot = true;
+    panel.reload();
+    QTRY_VERIFY(heldPreConflictSnapshot);
     auto remote = QJsonDocument::fromJson(fixture.state).object();
     auto remoteTasks = remote.value("tasks").toArray();
     auto parent = remoteTasks.last().toObject();
@@ -3360,6 +3374,12 @@ private slots:
     QTRY_VERIFY(panel.conflict());
     QCOMPARE(saves.size(), 1);
     // A 409 alone does not make the cached snapshot a valid adoption base.
+    QVERIFY(!panel.rebase());
+    QVERIFY(panel.conflict());
+    UiFixture::respond(heldPreConflictSnapshot, 200, preConflictSnapshot);
+    heldPreConflictSnapshot = nullptr;
+    QTRY_COMPARE(panel.parentCandidates().size(), 1);
+    // Completing the older pre-conflict GET is still not a fresh adoption base.
     QVERIFY(!panel.rebase());
     QVERIFY(panel.conflict());
     if (create) {
@@ -3376,7 +3396,31 @@ private slots:
     }
     QVERIFY(panel.rebase());
     QCOMPARE(panel.editor(), draft);
+    // The retained new attachment is not silently reinterpreted as no parent.
+    const auto unavailableOptions = panel.parentOptions();
+    QCOMPARE(unavailableOptions.size(), 2);
+    QCOMPARE(unavailableOptions[1].toMap().value("id").toString(), epic);
+    QVERIFY(unavailableOptions[1].toMap().value("title").toString().contains(
+        "Unavailable Epic parent"));
+    QVERIFY(!panel.saveable());
+    QVERIFY(panel.message().contains("Selected Epic parent is unavailable"));
     panel.field("parent_id", "");
+    QVERIFY(panel.saveable());
+
+    // A locally rejected, unsent oversized request keeps the explicit adoption.
+    const QString oversized(60 * 1024, 'x');
+    for (const auto *key :
+         {"description", "acceptance_criteria", "expected_behavior",
+          "actual_behavior", "fix_evidence"})
+      panel.field(key, oversized);
+    QVERIFY(!panel.save());
+    QVERIFY(panel.message().contains("too large"));
+    QVERIFY(!panel.conflict());
+    QCOMPARE(saves.size(), 1);
+    for (const auto *key :
+         {"description", "acceptance_criteria", "expected_behavior",
+          "actual_behavior", "fix_evidence"})
+      panel.field(key, draft.value(key).toString());
     QVERIFY(panel.saveable());
     QVERIFY(panel.save());
     QTRY_VERIFY(!client.pending() && !client.loading() && !panel.dirty());
@@ -3414,6 +3458,7 @@ private slots:
     UiFixture fixture;
     const QString firstEpic = "77777777-7777-4777-8777-777777777777";
     const QString secondEpic = "88888888-8888-4888-8888-888888888888";
+    const QString duplicateTitle(200, 'R');
     auto initial = QJsonDocument::fromJson(fixture.state).object();
     initial.insert("work_types_version", 1);
     auto tasks = initial.value("tasks").toArray();
@@ -3425,7 +3470,7 @@ private slots:
       return QJsonObject{{"id", id},
                          {"project_id", fixture.project},
                          {"kind", "epic"},
-                         {"title", "Duplicate release"},
+                         {"title", duplicateTitle},
                          {"description", ""},
                          {"acceptance_criteria", ""},
                          {"state", "open"},
@@ -3449,8 +3494,8 @@ private slots:
     QTRY_VERIFY(panel.writable());
     QVERIFY(panel.selectProject(fixture.project));
     QVERIFY(panel.selectTask(fixture.task));
-    const QString firstLabel = "Duplicate release (" + firstEpic + ")";
-    const QString secondLabel = "Duplicate release (" + secondEpic + ")";
+    const QString firstLabel = "(" + firstEpic + ") " + duplicateTitle;
+    const QString secondLabel = "(" + secondEpic + ") " + duplicateTitle;
     QCOMPARE(panel.task().value("parentTitle").toString(), firstLabel);
     QVERIFY(panel.editTask(false));
     QCOMPARE(panel.editorParentTitle(), firstLabel);
@@ -3464,6 +3509,23 @@ private slots:
     QCOMPARE(panel.parentOptions().size(), 3);
     panel.field("parent_id", secondEpic);
     QCOMPARE(panel.editorParentTitle(), secondLabel);
+
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance);
+    QVERIFY(window);
+    window->setWidth(1000);
+    window->setHeight(680);
+    auto *parents = item(window, "parentCombo");
+    QVERIFY(parents);
+    QTRY_COMPARE(parents->property("currentText").toString(), secondLabel);
+    // The full title is intentionally elided at compact width; the leading
+    // UUID remains in the visible prefix for both indistinguishable titles.
+    QVERIFY(parents->property("currentText")
+                .toString()
+                .startsWith("(" + secondEpic + ")"));
+    QVERIFY(parents->width() <= window->width());
     client.stop();
   }
   void workTypeRoundTripRetainsFieldsAndFiltersPayload_data() {
@@ -3606,6 +3668,18 @@ private slots:
     QVERIFY(!panel.save());
     QVERIFY(panel.message().contains("Daemon upgrade required"));
     QCOMPARE(fixture.mutations.size(), 0);
+    {
+      Appearance appearance(fixture.directory.path(),
+                            fixture.directory.filePath("language"));
+      QQmlApplicationEngine engine;
+      auto *window = load(engine, panel, appearance);
+      QVERIFY(window);
+      const auto *kind = item(window, "kindCombo");
+      QVERIFY(kind);
+      QVERIFY(!kind->isEnabled());
+      QTRY_COMPARE(kind->property("displayText").toString(), QString("Bug"));
+      QCOMPARE(panel.editor().value("kind").toString(), QString("bug"));
+    }
 
     fixture.state = v7;
     client.reload();
@@ -3975,10 +4049,14 @@ private slots:
     QVERIFY(!panel.allowed("backlog"));
     QVERIFY(click(window, "editTaskButton"));
     QVERIFY(panel.parentCandidates().isEmpty());
-    QCOMPARE(panel.parentOptions().size(), 1);
+    QCOMPARE(panel.parentOptions().size(), 2);
+    QCOMPARE(panel.parentOptions()[1].toMap().value("id").toString(), epic);
+    QVERIFY(panel.parentOptions()[1].toMap().value("title").toString().contains(
+        "unchanged"));
     QCOMPARE(panel.editorParentTitle(), QString("Release"));
     QCOMPARE(panel.editorParentState(), QString("closed"));
     QVERIFY(item(window, "editorCurrentParent")->isVisible());
+    QVERIFY(panel.saveable()); // Unchanged closed parent remains a valid no-op.
     panel.field("parent_id", epic); // Explicit current UUID is a valid no-op.
     QCOMPARE(panel.editor().value("parent_id").toString(), epic);
     panel.field("parent_id", fixture.task);
