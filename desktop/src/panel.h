@@ -52,6 +52,7 @@ class Panel : public QObject {
   Q_PROPERTY(bool uncertain READ uncertain NOTIFY changed)
   Q_PROPERTY(bool canAbandon READ canAbandon NOTIFY changed)
   Q_PROPERTY(bool conflict READ conflict NOTIFY changed)
+  Q_PROPERTY(bool rebaseEligible READ rebaseEligible NOTIFY changed)
   Q_PROPERTY(bool historyMore READ historyMore NOTIFY changed)
   Q_PROPERTY(bool historyLoading READ historyLoading NOTIFY changed)
   Q_PROPERTY(QString commissionText READ commissionText WRITE setCommissionText
@@ -109,6 +110,7 @@ public:
   bool uncertain() const { return m_client->uncertain(); }
   bool canAbandon() const { return m_client->canAbandon(); }
   bool conflict() const { return m_client->conflict() && !m_adopted; }
+  bool rebaseEligible() const;
   bool busy() const { return m_client->pending(); }
   bool retryable() const { return m_client->canRetry(); }
   bool historyMore() const { return m_historyMore; }
@@ -194,6 +196,7 @@ private:
   QString parentTitle(const QVariantMap &parent,
                       const EpicTitleCounts &titleCounts) const;
   QString parentTitle(const QVariantMap &parent) const;
+  QString parentOptionTitle(const QVariantMap &parent) const;
   bool executable(const QVariantMap &row) const;
   bool unsupportedWorkTypeDraft() const;
   bool invalidParentAttachment() const;

@@ -3136,6 +3136,93 @@ private slots:
     QVERIFY(panel.dirty());
     client.stop();
   }
+  void closedParentRemainsUnchangedOptionThroughoutEdit() {
+    UiFixture fixture;
+    const QString closedEpic = "77777777-7777-4777-8777-777777777777";
+    const QString openEpic = "88888888-8888-4888-8888-888888888888";
+    auto initial = QJsonDocument::fromJson(fixture.state).object();
+    initial.insert("work_types_version", 1);
+    auto tasks = initial.value("tasks").toArray();
+    auto child = tasks.first().toObject();
+    child.insert("kind", "bug");
+    child.insert("state", "done");
+    child.insert("parent_id", closedEpic);
+    tasks[0] = child;
+    const auto epicRow = [&](const QString &id, const QString &title,
+                             const QString &state) {
+      return QJsonObject{{"id", id},
+                         {"project_id", fixture.project},
+                         {"kind", "epic"},
+                         {"title", title},
+                         {"description", ""},
+                         {"acceptance_criteria", ""},
+                         {"state", state},
+                         {"version", 1},
+                         {"created_at", "2026-11-17T12:00:00Z"},
+                         {"updated_at", "2026-11-17T12:00:00Z"},
+                         {"summary", QJsonObject{{"backlog", 0},
+                                                 {"queued", 0},
+                                                 {"in_progress", 0},
+                                                 {"done", 0},
+                                                 {"cancelled", 0}}}};
+    };
+    tasks.append(epicRow(closedEpic, "Stored closed parent", "closed"));
+    tasks.append(epicRow(openEpic, "Eligible replacement", "open"));
+    initial.insert("tasks", tasks);
+    fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+
+    // Seed a previous comparison base, then verify the new editor's base is
+    // already installed when setDraft synchronously notifies its observers.
+    QVERIFY(panel.editTask(true, "bug"));
+    panel.field("title", "Previous editor");
+    panel.discard();
+    bool notificationSeen = false;
+    bool unchangedAtNotification = false;
+    bool saveableAtNotification = false;
+    connect(&panel, &Panel::changed, &panel, [&] {
+      if (notificationSeen || panel.editor().value("title").toString() !=
+                                  QString("Design the first screen"))
+        return;
+      notificationSeen = true;
+      const auto options = panel.parentOptions();
+      unchangedAtNotification =
+          options.size() == 3 &&
+          options[1].toMap().value("id").toString() == closedEpic &&
+          options[1].toMap().value("title").toString().contains("unchanged");
+      saveableAtNotification = panel.saveable();
+    });
+    QVERIFY(panel.editTask(false));
+    QVERIFY(notificationSeen);
+    QVERIFY(unchangedAtNotification);
+    QVERIFY(saveableAtNotification);
+    QCOMPARE(panel.parentCandidates().size(), 1);
+    QCOMPARE(panel.parentCandidates().first().toMap().value("id").toString(),
+             openEpic);
+
+    const auto closedOptionRemains = [&] {
+      const auto options = panel.parentOptions();
+      return options.size() == 3 &&
+             options[1].toMap().value("id").toString() == closedEpic &&
+             options[1].toMap().value("title").toString().contains("unchanged");
+    };
+    QVERIFY(closedOptionRemains());
+    panel.field("parent_id", "");
+    QVERIFY(closedOptionRemains());
+    panel.field("parent_id", openEpic);
+    QVERIFY(closedOptionRemains());
+    QCOMPARE(panel.parentCandidates().size(), 1);
+    panel.field("parent_id", closedEpic);
+    QCOMPARE(panel.editor().value("parent_id").toString(), closedEpic);
+    QVERIFY(panel.saveable());
+    client.stop();
+  }
   void workTypeRebaseUsesReloadedEditableBase() {
     UiFixture fixture;
     const QString epic = "77777777-7777-4777-8777-777777777777";
@@ -3282,7 +3369,14 @@ private slots:
       if (request.startsWith("GET /v1/snapshot ") && holdPreConflictSnapshot) {
         holdPreConflictSnapshot = false;
         heldPreConflictSnapshot = socket;
-        preConflictSnapshot = fixture.state;
+        auto stale = QJsonDocument::fromJson(fixture.state).object();
+        auto staleTasks = stale.value("tasks").toArray();
+        auto staleParent = staleTasks.last().toObject();
+        staleParent.insert("title", "Open parent from delayed snapshot");
+        staleTasks[staleTasks.size() - 1] = staleParent;
+        stale.insert("tasks", staleTasks);
+        preConflictSnapshot =
+            QJsonDocument(stale).toJson(QJsonDocument::Compact);
         return;
       }
       const bool taskSave =
@@ -3374,22 +3468,32 @@ private slots:
     QTRY_VERIFY(panel.conflict());
     QCOMPARE(saves.size(), 1);
     // A 409 alone does not make the cached snapshot a valid adoption base.
+    QVERIFY(!panel.rebaseEligible());
     QVERIFY(!panel.rebase());
     QVERIFY(panel.conflict());
     UiFixture::respond(heldPreConflictSnapshot, 200, preConflictSnapshot);
     heldPreConflictSnapshot = nullptr;
     QTRY_COMPARE(panel.parentCandidates().size(), 1);
-    // Completing the older pre-conflict GET is still not a fresh adoption base.
+    QTRY_COMPARE(
+        panel.parentCandidates().first().toMap().value("title").toString(),
+        QString("(" + epic + ") Open parent from delayed snapshot"));
+    QTRY_VERIFY(!client.loading());
+    // The observable stale reply has been applied and loading has finished;
+    // a completion counter would now incorrectly authorize adoption.
+    QVERIFY(!panel.rebaseEligible());
     QVERIFY(!panel.rebase());
     QVERIFY(panel.conflict());
     if (create) {
       QVERIFY(!panel.currentText().contains("Design the first screen"));
       QVERIFY(panel.currentText().contains("No stored work item"));
-      QVERIFY(panel.currentText().contains("Parent closes during save"));
+      QVERIFY(
+          panel.currentText().contains("Open parent from delayed snapshot"));
       QVERIFY(panel.currentText().contains("In progress (manual)"));
     }
     panel.reload();
     QTRY_VERIFY(panel.parentCandidates().isEmpty());
+    QTRY_VERIFY(!client.loading());
+    QTRY_VERIFY(panel.rebaseEligible());
     if (create) {
       QVERIFY(panel.currentText().contains("Parent closes during save"));
       QVERIFY(panel.currentText().contains("Closed"));
@@ -3454,11 +3558,13 @@ private slots:
     }
     client.stop();
   }
-  void duplicateEpicTitlesIncludeIds() {
+  void parentCandidateIdsSurviveTitleElision() {
     UiFixture fixture;
     const QString firstEpic = "77777777-7777-4777-8777-777777777777";
     const QString secondEpic = "88888888-8888-4888-8888-888888888888";
-    const QString duplicateTitle(200, 'R');
+    const QString commonTitle(200, 'R');
+    const QString firstTitle = commonTitle + " first suffix";
+    const QString secondTitle = commonTitle + " second suffix";
     auto initial = QJsonDocument::fromJson(fixture.state).object();
     initial.insert("work_types_version", 1);
     auto tasks = initial.value("tasks").toArray();
@@ -3466,11 +3572,11 @@ private slots:
     child.insert("kind", "bug");
     child.insert("parent_id", firstEpic);
     tasks[0] = child;
-    const auto epicRow = [&](const QString &id) {
+    const auto epicRow = [&](const QString &id, const QString &title) {
       return QJsonObject{{"id", id},
                          {"project_id", fixture.project},
                          {"kind", "epic"},
-                         {"title", duplicateTitle},
+                         {"title", title},
                          {"description", ""},
                          {"acceptance_criteria", ""},
                          {"state", "open"},
@@ -3483,8 +3589,8 @@ private slots:
                                                  {"done", 0},
                                                  {"cancelled", 0}}}};
     };
-    tasks.append(epicRow(firstEpic));
-    tasks.append(epicRow(secondEpic));
+    tasks.append(epicRow(firstEpic, firstTitle));
+    tasks.append(epicRow(secondEpic, secondTitle));
     initial.insert("tasks", tasks);
     fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
     ApiClient client;
@@ -3494,12 +3600,12 @@ private slots:
     QTRY_VERIFY(panel.writable());
     QVERIFY(panel.selectProject(fixture.project));
     QVERIFY(panel.selectTask(fixture.task));
-    const QString firstLabel = "(" + firstEpic + ") " + duplicateTitle;
-    const QString secondLabel = "(" + secondEpic + ") " + duplicateTitle;
-    QCOMPARE(panel.task().value("parentTitle").toString(), firstLabel);
+    const QString firstLabel = "(" + firstEpic + ") " + firstTitle;
+    const QString secondLabel = "(" + secondEpic + ") " + secondTitle;
+    QCOMPARE(panel.task().value("parentTitle").toString(), firstTitle);
     QVERIFY(panel.editTask(false));
-    QCOMPARE(panel.editorParentTitle(), firstLabel);
-    QVERIFY(panel.currentText().contains(firstEpic));
+    QCOMPARE(panel.editorParentTitle(), firstTitle);
+    QVERIFY(panel.currentText().contains(firstTitle));
     panel.discard();
     QVERIFY(panel.editTask(true, "bug"));
     const auto candidates = panel.parentCandidates();
@@ -3508,7 +3614,7 @@ private slots:
     QCOMPARE(candidates[1].toMap().value("title").toString(), secondLabel);
     QCOMPARE(panel.parentOptions().size(), 3);
     panel.field("parent_id", secondEpic);
-    QCOMPARE(panel.editorParentTitle(), secondLabel);
+    QCOMPARE(panel.editorParentTitle(), secondTitle);
 
     Appearance appearance(fixture.directory.path(),
                           fixture.directory.filePath("language"));
@@ -4321,6 +4427,9 @@ private slots:
     QTRY_VERIFY(!other.pending() && !other.loading());
     QVERIFY(click(window, "saveButton"));
     QTRY_VERIFY(panel.conflict());
+    QTRY_VERIFY(item(window, "rebaseButton")->isVisible());
+    QTRY_VERIFY(!item(window, "rebaseButton")->isEnabled());
+    QVERIFY(!panel.rebaseEligible());
     if (const auto capture = qEnvironmentVariable("ARTEL_STATE_SCREENSHOT");
         !capture.isEmpty()) {
       QTest::qWait(100);
@@ -4331,6 +4440,8 @@ private slots:
     QTRY_VERIFY(!client.loading());
     QTRY_COMPARE(panel.task().value("description").toString(),
                  QString("Другой редактор"));
+    QTRY_VERIFY(panel.rebaseEligible());
+    QTRY_VERIFY(item(window, "rebaseButton")->isEnabled());
     QVERIFY(click(window, "rebaseButton"));
     QVERIFY(click(window, "saveButton"));
     QTRY_VERIFY(!panel.dirty());

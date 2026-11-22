@@ -734,6 +734,13 @@ QString Panel::parentTitle(const QVariantMap &parent,
 QString Panel::parentTitle(const QVariantMap &parent) const {
   return parentTitle(parent, epicTitleCounts());
 }
+QString Panel::parentOptionTitle(const QVariantMap &parent) const {
+  if (parent.isEmpty())
+    return {};
+  // Combo delegates elide on the right, so every option starts with its UUID.
+  return QStringLiteral("(%1) %2").arg(parent.value("id").toString(),
+                                       parent.value("title").toString());
+}
 QVariantMap Panel::workRow(QVariantMap row, const QVariantMap *knownParent,
                            const EpicTitleCounts *titleCounts) const {
   if (row.isEmpty())
@@ -780,7 +787,6 @@ QVariantList Panel::parentCandidates() const {
   QVariantList rows;
   if (!workTypesAvailable())
     return rows;
-  const auto titleCounts = epicTitleCounts();
   for (int i = 0; i < m_client->tasks()->rowCount(); ++i) {
     const auto row = m_client->tasks()->get(i);
     const auto state = row.value("state").toString();
@@ -788,7 +794,7 @@ QVariantList Panel::parentCandidates() const {
         row.value("kind").toString() == "epic" &&
         (state == "open" || state == "in_progress"))
       rows.append(QVariantMap{{"id", row.value("id")},
-                              {"title", parentTitle(row, titleCounts)},
+                              {"title", parentOptionTitle(row)},
                               {"state", state}});
   }
   return rows;
@@ -798,25 +804,35 @@ QVariantList Panel::parentOptions() const {
   const auto candidates = parentCandidates();
   if (m_kind == "task" && workTypesAvailable() &&
       editor().value("kind").toString() != "epic") {
+    const auto isCandidate = [&](const QString &id) {
+      return std::any_of(candidates.begin(), candidates.end(),
+                         [&](const QVariant &value) {
+                           return value.toMap().value("id").toString() == id;
+                         });
+    };
+    const auto original = !m_editorId.isEmpty()
+                              ? m_editorBase.value("parent_id").toString()
+                              : QString();
+    if (!original.isEmpty() && !isCandidate(original)) {
+      const auto parent = find(m_client->tasks(), original);
+      auto title = parentOptionTitle(parent);
+      if (title.isEmpty())
+        title = original;
+      rows.append(QVariantMap{
+          {"id", original},
+          {"title", tr("Current Epic parent (unchanged): %1").arg(title)},
+          {"state", parent.value("state")}});
+    }
     const auto selected = editor().value("parent_id").toString();
-    const bool eligible = std::any_of(
-        candidates.begin(), candidates.end(), [&](const QVariant &value) {
-          return value.toMap().value("id").toString() == selected;
-        });
-    if (!selected.isEmpty() && !eligible) {
+    if (!selected.isEmpty() && selected != original && !isCandidate(selected)) {
       const auto parent = find(m_client->tasks(), selected);
-      auto title = parentTitle(parent);
+      auto title = parentOptionTitle(parent);
       if (title.isEmpty())
         title = selected;
-      const bool unchanged =
-          !m_editorId.isEmpty() &&
-          selected == m_editorBase.value("parent_id").toString();
-      rows.append(QVariantMap{
-          {"id", selected},
-          {"title", unchanged
-                        ? tr("Current Epic parent (unchanged): %1").arg(title)
-                        : tr("Unavailable Epic parent: %1").arg(title)},
-          {"state", parent.value("state")}});
+      rows.append(
+          QVariantMap{{"id", selected},
+                      {"title", tr("Unavailable Epic parent: %1").arg(title)},
+                      {"state", parent.value("state")}});
     }
   }
   return rows + candidates;
@@ -1081,9 +1097,9 @@ bool Panel::begin(const QString &kind, const QVariantMap &value) {
   m_editorInstance = m_client->instance();
   m_adopted = false;
   const auto fields = editableFields(kind, value);
-  m_client->setDraft(fields);
   m_editorBase = fields;
   m_sentEditorBase.clear();
+  m_client->setDraft(fields);
   return true;
 }
 bool Panel::editProject(bool create) {
@@ -1130,8 +1146,8 @@ void Panel::field(const QString &name, const QString &value) {
     if (!workTypesAvailable() || draft.value("kind").toString() == "epic")
       return;
     bool valid = value.isEmpty();
-    if (value ==
-        find(m_client->tasks(), m_editorId).value("parent_id").toString())
+    if (!m_editorId.isEmpty() &&
+        value == m_editorBase.value("parent_id").toString())
       valid = true;
     for (const auto &candidate : parentCandidates())
       valid = valid || candidate.toMap().value("id").toString() == value;
@@ -1200,9 +1216,7 @@ void Panel::reload() {
   resetResults(true);
   loadResults();
 }
-bool Panel::rebase() {
-  // Explicit owner action: retain text but adopt the freshly loaded editable
-  // base. A parent-state conflict need not advance (or create) the work row.
+bool Panel::rebaseEligible() const {
   if (!writable() || m_client->loading() || !m_client->conflict() ||
       !m_conflictTracked || m_conflictInstance != m_client->instance() ||
       m_editorInstance != m_client->instance() ||
@@ -1211,16 +1225,26 @@ bool Panel::rebase() {
           m_conflictSnapshotRequestSerial ||
       (m_editorId.isEmpty() && m_kind != "task"))
     return false;
+  if (m_editorId.isEmpty())
+    return true;
+  const auto row =
+      find(m_kind == "project" ? m_client->projects() : m_client->tasks(),
+           m_editorId);
+  if (row.isEmpty())
+    return false;
+  const auto version = row.value("version").toLongLong();
+  return version >= m_version && (m_kind != "project" || version != m_version);
+}
+bool Panel::rebase() {
+  // Explicit owner action: retain text but adopt the freshly loaded editable
+  // base. A parent-state conflict need not advance (or create) the work row.
+  if (!rebaseEligible())
+    return false;
   if (!m_editorId.isEmpty()) {
     const auto row =
         find(m_kind == "project" ? m_client->projects() : m_client->tasks(),
              m_editorId);
-    if (row.isEmpty())
-      return false;
-    const auto version = row.value("version").toLongLong();
-    if (version < m_version || (m_kind == "project" && version == m_version))
-      return false;
-    m_version = version;
+    m_version = row.value("version").toLongLong();
     m_editorBase = editableFields(m_kind, row);
   }
   m_adopted = true;

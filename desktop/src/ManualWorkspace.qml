@@ -208,7 +208,7 @@ Item {
                 text: qsTr("Use reloaded version, keep draft")
                 kind: "secondary"
                 visible: manual.panel.conflict && manual.panel.dirty
-                enabled: manual.panel.writable
+                enabled: manual.panel.rebaseEligible
                 onClicked: manual.panel.rebase()
             }
         }
