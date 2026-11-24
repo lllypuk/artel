@@ -448,7 +448,7 @@ Contracts: [owner API](../api/openapi.yaml), [observer API](../api/observer-open
 Implementation evidence lives in [observer experiments](experiments/pi-observer/README.md)
 and its storage/http/extension/desktop/navigation/recovery records. Completed plans
 are historical evidence, not active runtime instructions; this stable page remains
-the entry point when ralphex archives a plan.
+the entry point when the planning-exec skill archives a plan.
 
 ## Work types and Epic grouping
 
