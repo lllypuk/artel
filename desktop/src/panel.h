@@ -1,6 +1,7 @@
 #pragma once
 #include "apiclient.h"
 #include "observerclient.h"
+#include <QHash>
 #include <QObject>
 #include <QtQml/qqmlregistration.h>
 
@@ -14,6 +15,16 @@ class Panel : public QObject {
   Q_PROPERTY(QVariantList projects READ projects NOTIFY changed)
   Q_PROPERTY(QVariantList allProjects READ projectSnapshot NOTIFY changed)
   Q_PROPERTY(QVariantList tasks READ tasks NOTIFY changed)
+  Q_PROPERTY(QVariantList creationKinds READ creationKinds NOTIFY changed)
+  Q_PROPERTY(QVariantList parentCandidates READ parentCandidates NOTIFY changed)
+  Q_PROPERTY(QVariantList parentOptions READ parentOptions NOTIFY changed)
+  Q_PROPERTY(QVariantList epicChildren READ epicChildren NOTIFY changed)
+  Q_PROPERTY(QString editorParentTitle READ editorParentTitle NOTIFY changed)
+  Q_PROPERTY(QString editorParentState READ editorParentState NOTIFY changed)
+  Q_PROPERTY(bool editorCreating READ editorCreating NOTIFY changed)
+  Q_PROPERTY(bool workTypesAvailable READ workTypesAvailable NOTIFY changed)
+  Q_PROPERTY(bool workTypesUpgradeRequired READ workTypesUpgradeRequired NOTIFY
+                 changed)
   Q_PROPERTY(QVariantList history READ history NOTIFY changed)
   Q_PROPERTY(QVariant currentResult READ currentResult NOTIFY changed)
   Q_PROPERTY(QVariant resultHistory READ resultHistory NOTIFY changed)
@@ -41,6 +52,7 @@ class Panel : public QObject {
   Q_PROPERTY(bool uncertain READ uncertain NOTIFY changed)
   Q_PROPERTY(bool canAbandon READ canAbandon NOTIFY changed)
   Q_PROPERTY(bool conflict READ conflict NOTIFY changed)
+  Q_PROPERTY(bool rebaseEligible READ rebaseEligible NOTIFY changed)
   Q_PROPERTY(bool historyMore READ historyMore NOTIFY changed)
   Q_PROPERTY(bool historyLoading READ historyLoading NOTIFY changed)
   Q_PROPERTY(QString commissionText READ commissionText WRITE setCommissionText
@@ -63,6 +75,15 @@ public:
   // Owner snapshot names including archived projects, independent of UI filter.
   QVariantList projectSnapshot() const;
   QVariantList tasks() const;
+  QVariantList creationKinds() const;
+  QVariantList parentCandidates() const;
+  QVariantList parentOptions() const;
+  QVariantList epicChildren() const;
+  QString editorParentTitle() const;
+  QString editorParentState() const;
+  bool editorCreating() const { return m_editorId.isEmpty(); }
+  bool workTypesAvailable() const { return m_client->workTypesVersion() == 1; }
+  bool workTypesUpgradeRequired() const;
   QVariantList history() const;
   QVariant currentResult() const;
   QVariant resultHistory() const;
@@ -88,7 +109,12 @@ public:
   bool hasAnswerDrafts() const { return !m_answers.isEmpty(); }
   bool uncertain() const { return m_client->uncertain(); }
   bool canAbandon() const { return m_client->canAbandon(); }
-  bool conflict() const { return m_client->conflict() && !m_adopted; }
+  bool conflict() const {
+    return m_client->conflict() && !m_adopted && m_conflictTracked &&
+           !m_kind.isEmpty() && m_conflictEditorId == m_editorId &&
+           m_conflictEditorKind == m_kind;
+  }
+  bool rebaseEligible() const;
   bool busy() const { return m_client->pending(); }
   bool retryable() const { return m_client->canRetry(); }
   bool historyMore() const { return m_historyMore; }
@@ -109,7 +135,8 @@ public:
   Q_INVOKABLE bool selectProject(const QString &id);
   Q_INVOKABLE bool selectTask(const QString &id);
   Q_INVOKABLE bool editProject(bool create = false);
-  Q_INVOKABLE bool editTask(bool create = false);
+  Q_INVOKABLE bool editTask(bool create = false,
+                            const QString &kind = QStringLiteral("task"));
   Q_INVOKABLE void field(const QString &name, const QString &value);
   Q_INVOKABLE bool save();
   Q_INVOKABLE bool abandonUncertain() { return m_client->abandonUncertain(); }
@@ -143,6 +170,7 @@ public:
   Q_INVOKABLE void moreQuestions();
   Q_INVOKABLE void moreMessages();
   Q_INVOKABLE QString stateLabel(const QString &state) const;
+  Q_INVOKABLE QString kindLabel(const QString &kind) const;
 signals:
   void changed();
   void answerDraftsChanged();
@@ -164,7 +192,18 @@ private:
   QVariantMap messageRow(const QVariantMap &row) const;
   QString answerKey(const QString &question) const;
   void discardAnswerDraft(const QString &key);
+  using EpicTitleCounts = QHash<QString, QHash<QString, int>>;
   QVariantList queueIds() const;
+  EpicTitleCounts epicTitleCounts() const;
+  QVariantMap workRow(QVariantMap row, const QVariantMap *knownParent = nullptr,
+                      const EpicTitleCounts *titleCounts = nullptr) const;
+  QString parentTitle(const QVariantMap &parent,
+                      const EpicTitleCounts &titleCounts) const;
+  QString parentTitle(const QVariantMap &parent) const;
+  QString parentOptionTitle(const QVariantMap &parent) const;
+  bool executable(const QVariantMap &row) const;
+  bool unsupportedWorkTypeDraft() const;
+  bool invalidParentAttachment() const;
   bool begin(const QString &kind, const QVariantMap &value);
   ApiClient *m_client;
   ObserverClient m_observers;
@@ -182,8 +221,12 @@ private:
   qint64 m_version = 0, m_historyCursor = 0, m_resultsCursor = 0;
   QVariantList m_history, m_resultEntries;
   QVariantMap m_currentResultData;
+  QVariantMap m_editorBase, m_sentEditorBase;
   QString m_currentResult, m_currentReviewsCursor;
+  QString m_conflictInstance, m_conflictEditorId, m_conflictEditorKind;
+  quint64 m_conflictSnapshotRequestSerial = 0;
   bool m_archived = false, m_historyMore = false, m_adopted = false,
        m_wasOnline = false, m_currentResultLoaded = false,
-       m_resultsLoaded = false, m_resultsMore = false;
+       m_resultsLoaded = false, m_resultsMore = false,
+       m_conflictTracked = false;
 };

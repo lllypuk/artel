@@ -54,22 +54,58 @@ func TestAPIBoundaries(t *testing.T) {
 	}
 }
 
-func TestOversizedRealSnapshot(t *testing.T) {
-	s, h := fixture(t)
-	p := eventProject(t, s)
-	// Seed legal-sized task records in one store transaction, avoiding quadratic
-	// fixture setup through the intentionally full-snapshot MVP app persistence.
-	_, err := s.Apply(t.Context(), store.Mutation{Key: uuid.NewString(), Method: "fixture", Path: "fixture", Hash: "fixture"}, func(snap *store.Snapshot) (store.Result, *store.Event, error) {
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		for range 520 {
-			snap.Tasks = append(snap.Tasks, domain.Task{ID: uuid.NewString(), ProjectID: p, Title: "Large fixture", Description: strings.Repeat("x", 65536), State: domain.Backlog, Version: 1, CreatedAt: now, UpdatedAt: now})
-		}
-		return store.Result{Status: 200, Body: []byte(`{}`)}, &store.Event{Action: "fixture", ProjectID: p, Source: "owner_manual", Timestamp: now, Changes: []store.Change{}}, nil
-	})
-	if err != nil {
-		t.Fatal(err)
+func TestSnapshotSizeLimitCompatibility(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		count           int
+		descriptionSize int
+		status          int
+		crossesV6Limit  bool
+	}{
+		{name: "former v6 boundary remains readable after v7 overhead", count: 510, descriptionSize: 65505, status: 200, crossesV6Limit: true},
+		{name: "expanded limit is still bounded", count: 1040, descriptionSize: 65536, status: 413},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, h := fixture(t)
+			p := eventProject(t, s)
+			// Seed legal-sized task records in one store transaction, avoiding quadratic
+			// fixture setup through the intentionally full-snapshot MVP app persistence.
+			_, err := s.Apply(t.Context(), store.Mutation{Key: uuid.NewString(), Method: "fixture", Path: "fixture", Hash: "fixture"}, func(snap *store.Snapshot) (store.Result, *store.Event, error) {
+				now := time.Now().UTC().Format(time.RFC3339Nano)
+				for range test.count {
+					snap.Tasks = append(snap.Tasks, domain.Task{ID: uuid.NewString(), ProjectID: p, Kind: domain.KindTask, Title: "Large fixture", Description: strings.Repeat("x", test.descriptionSize), State: domain.Backlog, Version: 1, CreatedAt: now, UpdatedAt: now})
+				}
+				return store.Result{Status: 200, Body: []byte(`{}`)}, &store.Event{Action: "fixture", ProjectID: p, Source: "owner_manual", Timestamp: now, Changes: []store.Change{}}, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.crossesV6Limit {
+				snap, err := s.Snapshot(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				// domain.Task deliberately omits v7-only fields and Snapshot uses
+				// the legacy queue map, so this is the former v6 projection.
+				legacy, err := json.Marshal(snap)
+				if err != nil {
+					t.Fatal(err)
+				}
+				migrated, err := json.Marshal(wireSnapshot(snap))
+				if err != nil {
+					t.Fatal(err)
+				}
+				const v6Limit = 32 * 1024 * 1024
+				if len(legacy) >= v6Limit {
+					t.Fatalf("v6 fixture must fit below 32 MiB: got %d bytes", len(legacy))
+				}
+				if len(migrated) <= v6Limit {
+					t.Fatalf("v7 fixture must exceed 32 MiB: got %d bytes", len(migrated))
+				}
+			}
+			request(t, h, "GET", "/v1/snapshot", "", "", test.status)
+		})
 	}
-	request(t, h, "GET", "/v1/snapshot", "", "", 413)
 }
 
 func TestInternalErrorsAreSanitized(t *testing.T) {

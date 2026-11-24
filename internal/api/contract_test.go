@@ -3,9 +3,12 @@ package api
 import (
 	"bytes"
 	"context"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -44,6 +47,157 @@ func TestOpenAPIValid(t *testing.T) {
 	}
 	if count != 31 {
 		t.Fatalf("operations: %d", count)
+	}
+}
+
+func workTypeContractRow(kind, state string) map[string]any {
+	return map[string]any{
+		"id": "11111111-1111-4111-8111-111111111111", "project_id": "22222222-2222-4222-8222-222222222222",
+		"kind": kind, "title": "Work", "description": "", "acceptance_criteria": "", "state": state,
+		"version": float64(1), "created_at": "2026-11-21T12:00:00Z", "updated_at": "2026-11-21T12:00:00Z",
+	}
+}
+
+func TestWorkTypeOpenAPISchema(t *testing.T) {
+	doc := contract(t)
+	snapshot := doc.Components.Schemas["Snapshot"].Value
+	if !slices.Contains(snapshot.Required, "work_types_version") || snapshot.Properties["work_types_version"] == nil {
+		t.Fatal("snapshot does not advertise work_types_version")
+	}
+	task := doc.Components.Schemas["Task"].Value
+	if !slices.Contains(task.Required, "kind") || task.Properties["summary"] == nil || task.Properties["parent_id"] == nil || task.Properties["fix_evidence"] == nil {
+		t.Fatal("wire Task lacks work-type projection fields")
+	}
+	if task.Discriminator == nil || task.Discriminator.PropertyName != "kind" || len(task.OneOf) != 3 {
+		t.Fatal("wire Task is not discriminated into Epic, Task and Bug shapes")
+	}
+	workRow := workTypeContractRow
+	summary := map[string]any{"backlog": float64(0), "queued": float64(0), "in_progress": float64(0), "done": float64(0), "cancelled": float64(0)}
+	validEpic := workRow("epic", "open")
+	validEpic["summary"] = summary
+	for _, test := range []struct {
+		name  string
+		row   map[string]any
+		valid bool
+	}{
+		{name: "Epic", row: validEpic, valid: true},
+		{name: "Epic executable state", row: func() map[string]any { row := maps.Clone(validEpic); row["state"] = "backlog"; return row }()},
+		{name: "Epic missing summary", row: func() map[string]any { row := maps.Clone(validEpic); delete(row, "summary"); return row }()},
+		{name: "Epic parent", row: func() map[string]any {
+			row := maps.Clone(validEpic)
+			row["parent_id"] = "33333333-3333-4333-8333-333333333333"
+			return row
+		}()},
+		{name: "Task", row: workRow("task", "backlog"), valid: true},
+		{name: "Task Bug field", row: func() map[string]any {
+			row := workRow("task", "backlog")
+			row["fix_evidence"] = "not applicable"
+			return row
+		}()},
+		{name: "Bug", row: func() map[string]any {
+			row := workRow("bug", "done")
+			row["fix_evidence"] = "owner-written"
+			return row
+		}(), valid: true},
+		{name: "Bug summary", row: func() map[string]any { row := workRow("bug", "done"); row["summary"] = summary; return row }()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := task.VisitJSON(test.row)
+			if (err == nil) != test.valid {
+				t.Fatalf("schema validity = %v, error = %v", err == nil, err)
+			}
+		})
+	}
+	legacy := doc.Components.Schemas["LegacyTask"].Value
+	if _, exists := legacy.Properties["kind"]; exists {
+		t.Fatal("legacy mutation response gained a required work-type field")
+	}
+	create := doc.Components.Schemas["CreateTask"].Value
+	if slices.Contains(create.Required, "kind") || create.Properties["kind"] == nil || create.Properties["parent_id"] == nil {
+		t.Fatal("CreateTask broke omitted-kind compatibility or parent support")
+	}
+	edit := doc.Components.Schemas["EditTask"].Value
+	if _, exists := edit.Properties["kind"]; exists || edit.Properties["parent_id"] == nil {
+		t.Fatal("EditTask must reject kind and accept parent_id")
+	}
+	createResponse := doc.Paths.Find("/v1/projects/{id}/tasks").Post.Responses.Value("201").Value.Content.Get("application/json").Schema
+	if createResponse.Ref != "#/components/schemas/LegacyTask" {
+		t.Fatalf("create response schema = %q, want LegacyTask", createResponse.Ref)
+	}
+}
+
+func TestCreateTaskOpenAPIKindConstraints(t *testing.T) {
+	create := contract(t).Components.Schemas["CreateTask"].Value
+	for _, test := range []struct {
+		name  string
+		body  map[string]any
+		valid bool
+	}{
+		{name: "omitted kind remains Task", body: map[string]any{"title": "Legacy"}, valid: true},
+		{name: "omitted kind accepts Task parent", body: map[string]any{"title": "Legacy", "parent_id": ""}, valid: true},
+		{name: "Task accepts parent", body: map[string]any{"title": "Task", "kind": "task", "parent_id": ""}, valid: true},
+		{name: "Bug accepts empty fields", body: map[string]any{"title": "Bug", "kind": "bug", "parent_id": "", "expected_behavior": "", "actual_behavior": "", "fix_evidence": ""}, valid: true},
+		{name: "Epic accepts common fields", body: map[string]any{"title": "Epic", "kind": "epic", "description": ""}, valid: true},
+		{name: "Epic rejects empty parent", body: map[string]any{"title": "Epic", "kind": "epic", "parent_id": ""}},
+		{name: "Epic rejects empty Bug field", body: map[string]any{"title": "Epic", "kind": "epic", "fix_evidence": ""}},
+		{name: "Task rejects empty Bug field", body: map[string]any{"title": "Task", "kind": "task", "expected_behavior": ""}},
+		{name: "omitted kind rejects empty Bug field", body: map[string]any{"title": "Legacy", "fix_evidence": ""}},
+		{name: "omitted kind rejects populated Bug field", body: map[string]any{"title": "Legacy", "actual_behavior": "not applicable"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := create.VisitJSON(test.body)
+			if (err == nil) != test.valid {
+				t.Fatalf("schema validity = %v, error = %v", err == nil, err)
+			}
+		})
+	}
+}
+
+func TestWorkTypeOpenAPIDiscriminator(t *testing.T) {
+	doc := contract(t)
+	task := doc.Components.Schemas["Task"].Value
+	branchRefs := map[string]string{
+		"epic": "#/components/schemas/Epic",
+		"task": "#/components/schemas/TaskWork",
+		"bug":  "#/components/schemas/Bug",
+	}
+	for kind, ref := range branchRefs {
+		if got := task.Discriminator.Mapping[kind]; got != ref {
+			t.Fatalf("discriminator mapping %q = %q, want %q", kind, got, ref)
+		}
+		branch := doc.Components.Schemas[strings.TrimPrefix(ref, "#/components/schemas/")]
+		if branch == nil || branch.Value == nil {
+			t.Fatalf("discriminator target %q is not a named schema", ref)
+		}
+		found := false
+		for _, alternative := range task.OneOf {
+			found = found || alternative.Ref == ref
+		}
+		if !found {
+			t.Fatalf("oneOf does not reference discriminator target %q", ref)
+		}
+	}
+	summary := map[string]any{"backlog": float64(0), "queued": float64(0), "in_progress": float64(0), "done": float64(0), "cancelled": float64(0)}
+	validEpic := workTypeContractRow("epic", "open")
+	validEpic["summary"] = summary
+	for _, test := range []struct {
+		kind string
+		row  map[string]any
+	}{{"epic", validEpic}, {"task", workTypeContractRow("task", "backlog")}, {"bug", workTypeContractRow("bug", "done")}} {
+		t.Run("discriminator selects "+test.kind, func(t *testing.T) {
+			// Make every non-target alternative accept the row. Only discriminator
+			// resolution can now avoid a multiple-oneOf-match validation failure.
+			resolved := *task
+			resolved.OneOf = slices.Clone(task.OneOf)
+			for i, alternative := range resolved.OneOf {
+				if alternative.Ref != branchRefs[test.kind] {
+					resolved.OneOf[i] = openapi3.NewSchemaRef(alternative.Ref, openapi3.NewSchema())
+				}
+			}
+			if err := resolved.VisitJSON(test.row); err != nil {
+				t.Fatalf("mapped discriminator did not select %s: %v", test.kind, err)
+			}
+		})
 	}
 }
 

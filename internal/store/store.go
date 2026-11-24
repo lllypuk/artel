@@ -38,7 +38,10 @@ var resultsSchema string
 //go:embed current_reviews_schema.sql
 var currentReviewsSchema string
 
-const schemaVersion = 6
+//go:embed work_types_schema.sql
+var workTypesSchema string
+
+var schemaVersion = 7
 
 type Store struct {
 	db              *sql.DB
@@ -159,7 +162,32 @@ func requireSchemaQueries(ctx context.Context, tx *sql.Tx, queries []string, mes
 	return nil
 }
 
-func (s *Store) migrate(ctx context.Context) error {
+func (s *Store) disableForeignKeysForUpgrade(ctx context.Context) (func(*error), error) {
+	var version int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return nil, err
+	}
+	if version >= 7 {
+		return func(*error) {}, nil
+	}
+	// SQLite cannot rebuild a referenced parent table under FK enforcement. The
+	// migration transaction explicitly runs foreign_key_check before commit.
+	if _, err := s.db.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return nil, err
+	}
+	return func(returnErr *error) {
+		if _, err := s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON"); *returnErr == nil && err != nil {
+			*returnErr = fmt.Errorf("restore foreign key enforcement: %w", err)
+		}
+	}, nil
+}
+
+func (s *Store) migrate(ctx context.Context) (returnErr error) {
+	restoreForeignKeys, err := s.disableForeignKeysForUpgrade(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { restoreForeignKeys(&returnErr) }()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin migration: %w", err)
@@ -186,19 +214,8 @@ func (s *Store) migrate(ctx context.Context) error {
 	} else if version < 1 || version > schemaVersion {
 		return errors.New("unsupported database schema version")
 	}
-	var applicationID int
-	if err := tx.QueryRowContext(ctx, "PRAGMA application_id").Scan(&applicationID); err != nil {
+	if err := validateDatabaseIdentity(ctx, tx); err != nil {
 		return err
-	}
-	if applicationID != 1095914546 {
-		return errors.New("unrecognized database application")
-	}
-	var instance string
-	if err := tx.QueryRowContext(ctx, "SELECT instance_id FROM metadata WHERE id=1").Scan(&instance); err != nil {
-		return errors.New("invalid database metadata")
-	}
-	if _, err := uuid.Parse(instance); err != nil {
-		return errors.New("invalid database identity")
 	}
 	// Verify required tables/columns even when a foreign database claims our version.
 	if err := requireSchemaQueries(ctx, tx, []string{
@@ -221,6 +238,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := migrateResultsSchema(ctx, tx, version); err != nil {
 		return err
 	}
+	if err := migrateWorkTypesSchema(ctx, tx, version); err != nil {
+		return err
+	}
 	if err := requireSchemaQueries(ctx, tx, []string{
 		"SELECT id,verifier,record FROM observers LIMIT 0",
 		"SELECT observer_id,runtime_id,retired FROM observer_identities LIMIT 0",
@@ -231,6 +251,49 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	return commitAfterSchemaCheck(ctx, tx)
+}
+
+func validateDatabaseIdentity(ctx context.Context, tx *sql.Tx) error {
+	var applicationID int
+	if err := tx.QueryRowContext(ctx, "PRAGMA application_id").Scan(&applicationID); err != nil {
+		return err
+	}
+	if applicationID != 1095914546 {
+		return errors.New("unrecognized database application")
+	}
+	var instance string
+	if err := tx.QueryRowContext(ctx, "SELECT instance_id FROM metadata WHERE id=1").Scan(&instance); err != nil {
+		return errors.New("invalid database metadata")
+	}
+	if _, err := uuid.Parse(instance); err != nil {
+		return errors.New("invalid database identity")
+	}
+	return nil
+}
+
+func migrateWorkTypesSchema(ctx context.Context, tx *sql.Tx, version int) error {
+	if version >= 7 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, workTypesSchema); err != nil {
+		return fmt.Errorf("upgrade work types schema: %w", err)
+	}
+	return checkForeignKeys(ctx, tx)
+}
+
+func checkForeignKeys(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("check work types foreign keys: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	if rows.Next() {
+		return errors.New("work types migration foreign key violation")
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("check work types foreign keys: %w", err)
+	}
+	return nil
 }
 
 func migrateResultsSchema(ctx context.Context, tx *sql.Tx, version int) error {
@@ -278,6 +341,11 @@ func commitAfterSchemaCheck(ctx context.Context, tx *sql.Tx) error {
 	}, "invalid task results schema"); err != nil {
 		return err
 	}
+	if err := requireSchemaQueries(ctx, tx, []string{
+		"SELECT id,project_id,kind,parent_id,state,record FROM tasks LIMIT 0",
+	}, "invalid work types schema"); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -305,7 +373,7 @@ func load(ctx context.Context, tx *sql.Tx) (Snapshot, error) {
 	if err := readRecords(ctx, tx, "SELECT record FROM projects ORDER BY id", &snap.Projects); err != nil {
 		return snap, err
 	}
-	if err := readRecords(ctx, tx, "SELECT record FROM tasks ORDER BY id", &snap.Tasks); err != nil {
+	if err := readTaskRecords(ctx, tx, &snap.Tasks); err != nil {
 		return snap, err
 	}
 	var resultTables int
@@ -349,6 +417,104 @@ func load(ctx context.Context, tx *sql.Tx) (Snapshot, error) {
 		snap.Queues[p] = append(snap.Queues[p], t)
 	}
 	return snap, rows.Err()
+}
+
+type taskRecord struct {
+	domain.Task
+	Kind             domain.Kind `json:"kind,omitempty"`
+	ParentID         string      `json:"parent_id,omitempty"`
+	ExpectedBehavior string      `json:"expected_behavior,omitempty"`
+	ActualBehavior   string      `json:"actual_behavior,omitempty"`
+	FixEvidence      string      `json:"fix_evidence,omitempty"`
+}
+
+func marshalTaskRecord(task domain.Task) ([]byte, error) {
+	return json.Marshal(taskRecord{Task: task, Kind: task.Kind, ParentID: task.ParentID,
+		ExpectedBehavior: task.ExpectedBehavior, ActualBehavior: task.ActualBehavior, FixEvidence: task.FixEvidence})
+}
+
+func unmarshalTaskRecord(data []byte) (domain.Task, error) {
+	var record taskRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return domain.Task{}, err
+	}
+	task := record.Task
+	task.Kind = record.Kind
+	task.ParentID = record.ParentID
+	task.ExpectedBehavior = record.ExpectedBehavior
+	task.ActualBehavior = record.ActualBehavior
+	task.FixEvidence = record.FixEvidence
+	return task, nil
+}
+
+func hasWorkTypesSchema(ctx context.Context, tx *sql.Tx) (bool, error) {
+	var count int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('tasks') WHERE name='kind'").Scan(&count); err != nil {
+		return false, err
+	}
+	return count != 0, nil
+}
+
+func storedTaskKind(ctx context.Context, tx *sql.Tx, taskID string) (domain.Kind, error) {
+	workTypes, err := hasWorkTypesSchema(ctx, tx)
+	if err != nil {
+		return "", err
+	}
+	if !workTypes {
+		return domain.KindTask, nil
+	}
+	var kind domain.Kind
+	err = tx.QueryRowContext(ctx, "SELECT kind FROM tasks WHERE id=?", taskID).Scan(&kind)
+	return kind, err
+}
+
+func readTaskRecords(ctx context.Context, tx *sql.Tx, out *[]domain.Task) error {
+	workTypes, err := hasWorkTypesSchema(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if !workTypes {
+		rows, err := tx.QueryContext(ctx, "SELECT record FROM tasks ORDER BY id")
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var data string
+			if err := rows.Scan(&data); err != nil {
+				return err
+			}
+			record, err := unmarshalTaskRecord([]byte(data))
+			if err != nil {
+				return err
+			}
+			*out = append(*out, record)
+		}
+		return rows.Err()
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT kind,parent_id,state,record FROM tasks ORDER BY id")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var kind domain.Kind
+		var parentID sql.NullString
+		var state domain.State
+		var data string
+		if err := rows.Scan(&kind, &parentID, &state, &data); err != nil {
+			return err
+		}
+		record, err := unmarshalTaskRecord([]byte(data))
+		if err != nil {
+			return err
+		}
+		record.Kind = kind
+		record.ParentID = parentID.String
+		record.State = state
+		*out = append(*out, record)
+	}
+	return rows.Err()
 }
 
 func readRecords[T any](ctx context.Context, tx *sql.Tx, query string, out *[]T) error {
@@ -426,6 +592,10 @@ func nullable(s string) any {
 }
 
 func persist(ctx context.Context, tx *sql.Tx, snap Snapshot) error {
+	workTypes, err := hasWorkTypesSchema(ctx, tx)
+	if err != nil {
+		return err
+	}
 	for _, p := range snap.Projects {
 		data, err := json.Marshal(p)
 		if err != nil {
@@ -435,19 +605,8 @@ func persist(ctx context.Context, tx *sql.Tx, snap Snapshot) error {
 			return err
 		}
 	}
-	// Release the unique in_progress index before applying a possible state swap.
-	// Other connections cannot observe this temporary state inside the transaction.
-	if _, err := tx.ExecContext(ctx, "UPDATE tasks SET state='backlog' WHERE state='in_progress'"); err != nil {
+	if err := persistTasks(ctx, tx, snap.Tasks, workTypes); err != nil {
 		return err
-	}
-	for _, t := range snap.Tasks {
-		data, err := json.Marshal(t)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO tasks(id,project_id,state,record) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,record=excluded.record", t.ID, t.ProjectID, t.State, string(data)); err != nil {
-			return err
-		}
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM queue_entries"); err != nil {
 		return err
@@ -482,6 +641,37 @@ func persist(ctx context.Context, tx *sql.Tx, snap Snapshot) error {
 			if _, err := tx.ExecContext(ctx, "INSERT INTO queue_entries(project_id,position,task_id) VALUES(?,?,?)", project, pos, task); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+func persistTasks(ctx context.Context, tx *sql.Tx, tasks []domain.Task, workTypes bool) error {
+	// Release the executable unique in_progress index before a possible state
+	// swap. Epic state is independent and must survive unrelated persistence.
+	release := "UPDATE tasks SET state='backlog' WHERE state='in_progress'"
+	if workTypes {
+		release += " AND kind IN ('task','bug')"
+	}
+	if _, err := tx.ExecContext(ctx, release); err != nil {
+		return err
+	}
+	for _, t := range tasks {
+		if workTypes && t.Kind == "" {
+			t.Kind = domain.KindTask
+		}
+		data, err := marshalTaskRecord(t)
+		if err != nil {
+			return err
+		}
+		if workTypes {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO tasks(id,project_id,kind,parent_id,state,record) VALUES(?,?,?,?,?,?)
+				ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,parent_id=excluded.parent_id,state=excluded.state,record=excluded.record`,
+				t.ID, t.ProjectID, t.Kind, nullable(t.ParentID), t.State, string(data)); err != nil {
+				return err
+			}
+		} else if _, err := tx.ExecContext(ctx, "INSERT INTO tasks(id,project_id,state,record) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,record=excluded.record", t.ID, t.ProjectID, t.State, string(data)); err != nil {
+			return err
 		}
 	}
 	return nil

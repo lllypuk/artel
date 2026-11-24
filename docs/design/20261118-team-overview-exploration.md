@@ -49,4 +49,4 @@ Impeccable direction seed: `seed:bd140fb4412749ed`, mode Operate; назначе
 - Idle не означает done; stale не означает stopped; candidate не означает team assignment.
 - Сохранить manual CRUD, очереди/историю, CAS/idempotency, draft/unknown-outcome protection, отдельные owner и observer channels.
 - Без установки шрифтов/пакетов, глобальных настроек, реальной интеграции новых агентов и новых backend capabilities.
-- Сначала выбор композиции и понятный brief; DESIGN.md и исполняемый ralphex plan не подменяют этот выбор.
+- Сначала выбор композиции и понятный brief; DESIGN.md и план для `planning:exec` не подменяют этот выбор.

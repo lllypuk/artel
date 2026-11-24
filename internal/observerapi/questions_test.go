@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -132,6 +133,49 @@ func TestDeliveryQuestionChannelAuthenticationReplayAndStrictJSON(t *testing.T) 
 	registry := d.exchange(t, false, http.MethodGet, "/v1/observers", d.ownerToken, "", nil, 200)
 	if strings.Contains(registry, "question") {
 		t.Fatal("question text leaked into observer registry")
+	}
+}
+
+func TestDeliveryQuestionHTTPEpicFixtureRejectsFreshWritesAndRecoversACKs(t *testing.T) {
+	d := newQuestionChannelFixture(t)
+	instance := d.instanceID(t)
+	createKey := uuid.NewString()
+	answered := d.create(t, createKey, d.deliveryToken, d.writerID, instance, d.taskID, "answered before Epic fixture", 200)
+	open := d.create(t, uuid.NewString(), d.deliveryToken, d.writerID, instance, d.taskID, "open before Epic fixture", 200)
+	answerPath := "/v1/tasks/" + d.taskID + "/questions/" + answered.ID + "/answer"
+	answerKey := uuid.NewString()
+	answerBody := fmt.Sprintf(`{"instance_id":%q,"text":"stored answer"}`, instance)
+	answer := d.exchange(t, false, http.MethodPost, answerPath, d.ownerToken, answerBody,
+		map[string]string{"Idempotency-Key": answerKey}, 200)
+	setDeliveryChannelTaskKind(t, d.deliveryChannelFixture, d.taskID, domain.KindEpic)
+	beforePage, err := d.s.ListOwnerQuestions(t.Context(), d.taskID, instance, 0, 5, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents, err := d.s.Events(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d.create(t, uuid.NewString(), d.deliveryToken, d.writerID, instance, d.taskID, "stale delivery question", 400)
+	d.exchange(t, false, http.MethodPost, "/v1/tasks/"+d.taskID+"/questions/"+open.ID+"/answer", d.ownerToken,
+		fmt.Sprintf(`{"instance_id":%q,"text":"stale owner answer"}`, instance),
+		map[string]string{"Idempotency-Key": uuid.NewString()}, 400)
+	if replay := d.create(t, createKey, d.deliveryToken, d.writerID, instance, d.taskID, "answered before Epic fixture", 200); replay != answered {
+		t.Fatalf("question ACK recovery: %+v %+v", answered, replay)
+	}
+	if replay := d.exchange(t, false, http.MethodPost, answerPath, d.ownerToken, answerBody,
+		map[string]string{"Idempotency-Key": answerKey}, 200); replay != answer {
+		t.Fatalf("answer ACK recovery changed: %s", replay)
+	}
+	d.exchange(t, false, http.MethodGet, "/v1/tasks/"+d.taskID+"/questions?instance_id="+instance, d.ownerToken, "", nil, 200)
+	afterPage, err := d.s.ListOwnerQuestions(t.Context(), d.taskID, instance, 0, 5, nil)
+	if err != nil || !reflect.DeepEqual(afterPage, beforePage) {
+		t.Fatalf("Epic question history changed: before=%+v after=%+v err=%v", beforePage, afterPage, err)
+	}
+	afterEvents, err := d.s.Events(t.Context())
+	if err != nil || !reflect.DeepEqual(afterEvents, beforeEvents) {
+		t.Fatalf("Epic question HTTP operations wrote events: %v", err)
 	}
 }
 

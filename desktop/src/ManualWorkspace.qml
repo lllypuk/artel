@@ -208,7 +208,7 @@ Item {
                 text: qsTr("Use reloaded version, keep draft")
                 kind: "secondary"
                 visible: manual.panel.conflict && manual.panel.dirty
-                enabled: manual.panel.writable
+                enabled: manual.panel.rebaseEligible
                 onClicked: manual.panel.rebase()
             }
         }
@@ -368,12 +368,36 @@ Item {
                                 onClicked: manual.panel.archive()
                             }
                         }
-                        PanelButton {
-                            objectName: "createTaskButton"
-                            text: qsTr("Create task")
-                            kind: "primary"
-                            enabled: manual.panel.writable && !manual.panel.dirty && !manual.panel.project.archived
-                            onClicked: manual.panel.editTask(true)
+                        UI.StatusLabel {
+                            theme: manual.theme
+                            objectName: "workTypesUpgradeNotice"
+                            text: qsTr("Daemon upgrade required for Epic, Bug and Epic parent actions. Existing tasks remain available.")
+                            visible: manual.panel.workTypesUpgradeRequired
+                            severity: "warning"
+                            Layout.fillWidth: true
+                        }
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: theme.space2
+                            PanelButton {
+                                objectName: "createTaskButton"
+                                text: qsTr("Create task")
+                                kind: "primary"
+                                enabled: manual.panel.writable && !manual.panel.dirty && !manual.panel.project.archived
+                                onClicked: manual.panel.editTask(true, "task")
+                            }
+                            PanelButton {
+                                objectName: "createEpicButton"
+                                text: qsTr("Create Epic")
+                                enabled: manual.panel.workTypesAvailable && manual.panel.writable && !manual.panel.dirty && !manual.panel.project.archived
+                                onClicked: manual.panel.editTask(true, "epic")
+                            }
+                            PanelButton {
+                                objectName: "createBugButton"
+                                text: qsTr("Create Bug")
+                                enabled: manual.panel.workTypesAvailable && manual.panel.writable && !manual.panel.dirty && !manual.panel.project.archived
+                                onClicked: manual.panel.editTask(true, "bug")
+                            }
                         }
                     }
                     delegate: ItemDelegate {
@@ -406,10 +430,18 @@ Item {
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
                             }
+                            Caption {
+                                objectName: "taskKind_" + taskRow.modelData.id
+                                text: taskRow.modelData.parentTitle ? qsTr("%1 · Epic: %2").arg(taskRow.modelData.kindLabel).arg(taskRow.modelData.parentTitle) : taskRow.modelData.kindLabel
+                                color: taskRow.highlighted ? theme.selectedText : theme.muted
+                                font.pixelSize: theme.secondary
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
                             Flow {
                                 Layout.fillWidth: true
                                 spacing: theme.space1
-                                visible: taskRow.modelData.state === "backlog" || taskRow.modelData.state === "queued"
+                                visible: taskRow.modelData.kind !== "epic" && (taskRow.modelData.state === "backlog" || taskRow.modelData.state === "queued")
                                 enabled: manual.panel.writable && !manual.panel.project.archived
                                 PanelButton {
                                     objectName: "queue_" + taskRow.modelData.id
@@ -498,6 +530,50 @@ Item {
                             onTextEdited: manual.panel.field("root_path", text)
                         }
                         Caption {
+                            text: qsTr("Work type")
+                            visible: manual.panel.editorKind === "task"
+                        }
+                        ComboBox {
+                            id: kindCombo
+                            objectName: "kindCombo"
+                            visible: manual.panel.editorKind === "task"
+                            enabled: manual.panel.editorCreating && manual.panel.workTypesAvailable && !manual.panel.busy && !manual.panel.uncertain
+                            model: manual.panel.creationKinds
+                            textRole: "label"
+                            valueRole: "id"
+                            currentIndex: Math.max(0, indexOfValue(manual.panel.editor.kind || "task"))
+                            displayText: indexOfValue(manual.panel.editor.kind || "task") < 0 ? manual.panel.kindLabel(manual.panel.editor.kind || "task") : currentText
+                            onActivated: manual.panel.field("kind", currentValue)
+                            onActiveFocusChanged: manual.revealField(this, 0)
+                            Accessible.name: qsTr("Work type")
+                            Layout.fillWidth: true
+                        }
+                        Caption {
+                            text: qsTr("Epic parent (optional)")
+                            visible: manual.panel.editorKind === "task" && manual.panel.workTypesAvailable && manual.panel.editor.kind !== "epic"
+                        }
+                        ComboBox {
+                            id: parentCombo
+                            objectName: "parentCombo"
+                            visible: manual.panel.editorKind === "task" && manual.panel.workTypesAvailable && manual.panel.editor.kind !== "epic"
+                            model: manual.panel.parentOptions
+                            textRole: "title"
+                            valueRole: "id"
+                            currentIndex: Math.max(0, indexOfValue(manual.panel.editor.parent_id || ""))
+                            onActivated: manual.panel.field("parent_id", currentValue)
+                            onActiveFocusChanged: manual.revealField(this, 0)
+                            Accessible.name: qsTr("Epic parent (optional)")
+                            Layout.fillWidth: true
+                        }
+                        UI.StatusLabel {
+                            theme: manual.theme
+                            objectName: "editorCurrentParent"
+                            text: qsTr("Current Epic parent: %1 (%2)").arg(manual.panel.editorParentTitle, manual.panel.stateLabel(manual.panel.editorParentState))
+                            visible: parentCombo.visible && manual.panel.editorParentTitle !== ""
+                            severity: manual.panel.editorParentState === "closed" ? "warning" : "info"
+                            Layout.fillWidth: true
+                        }
+                        Caption {
                             text: qsTr("Description")
                         }
                         UI.LongText {
@@ -534,6 +610,66 @@ Item {
                                 if (activeFocus)
                                     manual.panel.field("acceptance_criteria", text);
                             }
+                        }
+                        Caption {
+                            text: qsTr("Expected behavior")
+                            visible: manual.panel.editorKind === "task" && manual.panel.editor.kind === "bug"
+                        }
+                        UI.LongText {
+                            theme: manual.theme
+                            objectName: "expectedBehaviorField"
+                            visible: manual.panel.editorKind === "task" && manual.panel.editor.kind === "bug"
+                            text: manual.panel.editor.expected_behavior || ""
+                            placeholderText: qsTr("Expected behavior")
+                            Accessible.name: placeholderText
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: Math.max(100, implicitHeight)
+                            onTextChanged: {
+                                if (activeFocus)
+                                    manual.panel.field("expected_behavior", text);
+                            }
+                            onActiveFocusChanged: manual.revealField(this, cursorRectangle.y)
+                            onCursorRectangleChanged: manual.revealField(this, cursorRectangle.y)
+                        }
+                        Caption {
+                            text: qsTr("Actual behavior")
+                            visible: manual.panel.editorKind === "task" && manual.panel.editor.kind === "bug"
+                        }
+                        UI.LongText {
+                            theme: manual.theme
+                            objectName: "actualBehaviorField"
+                            visible: manual.panel.editorKind === "task" && manual.panel.editor.kind === "bug"
+                            text: manual.panel.editor.actual_behavior || ""
+                            placeholderText: qsTr("Actual behavior")
+                            Accessible.name: placeholderText
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: Math.max(100, implicitHeight)
+                            onTextChanged: {
+                                if (activeFocus)
+                                    manual.panel.field("actual_behavior", text);
+                            }
+                            onActiveFocusChanged: manual.revealField(this, cursorRectangle.y)
+                            onCursorRectangleChanged: manual.revealField(this, cursorRectangle.y)
+                        }
+                        Caption {
+                            text: qsTr("Fix evidence (owner-written)")
+                            visible: manual.panel.editorKind === "task" && manual.panel.editor.kind === "bug"
+                        }
+                        UI.LongText {
+                            theme: manual.theme
+                            objectName: "fixEvidenceField"
+                            visible: manual.panel.editorKind === "task" && manual.panel.editor.kind === "bug"
+                            text: manual.panel.editor.fix_evidence || ""
+                            placeholderText: qsTr("Fix evidence (owner-written)")
+                            Accessible.name: placeholderText
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: Math.max(100, implicitHeight)
+                            onTextChanged: {
+                                if (activeFocus)
+                                    manual.panel.field("fix_evidence", text);
+                            }
+                            onActiveFocusChanged: manual.revealField(this, cursorRectangle.y)
+                            onCursorRectangleChanged: manual.revealField(this, cursorRectangle.y)
                         }
                         Flow {
                             Layout.fillWidth: true
@@ -578,6 +714,47 @@ Item {
                             text: manual.panel.stateLabel(manual.panel.task.state || "")
                         }
                         CopyText {
+                            objectName: "taskType"
+                            text: qsTr("Type: %1").arg(manual.panel.task.kindLabel || "")
+                        }
+                        CopyText {
+                            objectName: "taskParent"
+                            visible: manual.panel.task.kind !== "epic"
+                            text: manual.panel.task.parentTitle ? qsTr("Epic parent: %1 (%2)").arg(manual.panel.task.parentTitle, manual.panel.stateLabel(manual.panel.task.parentState || "")) : qsTr("Epic parent: none")
+                        }
+                        CopyText {
+                            objectName: "epicSummary"
+                            visible: manual.panel.task.kind === "epic"
+                            text: manual.panel.task.summaryText || ""
+                        }
+                        ColumnLayout {
+                            visible: manual.panel.task.kind === "epic"
+                            Layout.fillWidth: true
+                            Caption {
+                                text: qsTr("Epic children")
+                                font.bold: true
+                            }
+                            Caption {
+                                objectName: "noEpicChildren"
+                                visible: epicChildList.count === 0
+                                text: qsTr("No child Task or Bug work items.")
+                                color: theme.muted
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            Repeater {
+                                id: epicChildList
+                                model: manual.panel.epicChildren
+                                delegate: PanelButton {
+                                    id: epicChild
+                                    required property var modelData
+                                    objectName: "epicChild_" + epicChild.modelData.id
+                                    text: qsTr("%1 · %2 · %3").arg(epicChild.modelData.kindLabel, epicChild.modelData.title, epicChild.modelData.stateLabel)
+                                    onClicked: manual.workspace.openTask(epicChild.modelData.id)
+                                }
+                            }
+                        }
+                        CopyText {
                             objectName: "taskUuid"
                             text: manual.panel.task.id || ""
                             Accessible.name: qsTr("Selected task UUID")
@@ -594,6 +771,51 @@ Item {
                             objectName: "taskCriteria"
                             text: manual.panel.task.acceptance_criteria || ""
                         }
+                        ColumnLayout {
+                            visible: manual.panel.task.kind === "bug"
+                            Layout.fillWidth: true
+                            Caption {
+                                text: qsTr("Expected behavior")
+                                font.bold: true
+                            }
+                            CopyText {
+                                objectName: "bugExpectedBehavior"
+                                text: manual.panel.task.expected_behavior || ""
+                            }
+                            Caption {
+                                text: qsTr("Actual behavior")
+                                font.bold: true
+                            }
+                            CopyText {
+                                objectName: "bugActualBehavior"
+                                text: manual.panel.task.actual_behavior || ""
+                            }
+                            Caption {
+                                text: qsTr("Fix evidence (owner-written)")
+                                font.bold: true
+                            }
+                            CopyText {
+                                objectName: "bugFixEvidence"
+                                visible: (manual.panel.task.fix_evidence || "").length > 0
+                                text: manual.panel.task.fix_evidence || ""
+                            }
+                            UI.StatusLabel {
+                                theme: manual.theme
+                                objectName: "missingFixEvidence"
+                                visible: manual.panel.task.state === "done" && (manual.panel.task.fix_evidence || "").trim().length === 0
+                                text: qsTr("Evidence not provided")
+                                severity: "warning"
+                                Layout.fillWidth: true
+                            }
+                        }
+                        UI.StatusLabel {
+                            theme: manual.theme
+                            objectName: "closedParentNotice"
+                            visible: manual.panel.task.kind !== "epic" && manual.panel.task.parentState === "closed"
+                            text: qsTr("The Epic parent is closed. Reopen the Epic or detach this work before reopening it.")
+                            severity: "warning"
+                            Layout.fillWidth: true
+                        }
                         PanelButton {
                             objectName: "editTaskButton"
                             text: qsTr("Edit task")
@@ -602,6 +824,7 @@ Item {
                             onClicked: manual.panel.editTask(false)
                         }
                         ColumnLayout {
+                            visible: manual.panel.task.kind !== "epic"
                             Layout.fillWidth: true
                             Caption {
                                 text: qsTr("Submitted result and review")
@@ -667,7 +890,7 @@ Item {
                                 objectName: "startButton"
                                 text: qsTr("Start manually")
                                 kind: "primary"
-                                visible: manual.panel.task.state === "queued"
+                                visible: manual.panel.task.kind !== "epic" && manual.panel.task.state === "queued"
                                 enabled: manual.panel.writable && manual.panel.allowed("in_progress")
                                 onClicked: manual.panel.transition("in_progress")
                             }
@@ -675,7 +898,7 @@ Item {
                                 objectName: "doneButton"
                                 text: qsTr("Complete manually")
                                 kind: "primary"
-                                visible: manual.panel.task.state === "in_progress"
+                                visible: manual.panel.task.kind !== "epic" && manual.panel.task.state === "in_progress"
                                 enabled: manual.panel.writable && manual.panel.allowed("done")
                                 onClicked: manual.panel.transition("done")
                             }
@@ -683,22 +906,53 @@ Item {
                                 objectName: "cancelTaskButton"
                                 text: qsTr("Cancel task")
                                 kind: "destructive"
-                                visible: ["backlog", "queued", "in_progress"].includes(manual.panel.task.state)
+                                visible: manual.panel.task.kind !== "epic" && ["backlog", "queued", "in_progress"].includes(manual.panel.task.state)
                                 enabled: manual.panel.writable && manual.panel.allowed("cancelled")
                                 onClicked: manual.panel.transition("cancelled")
                             }
                             PanelButton {
                                 objectName: "reopenButton"
                                 text: qsTr("Return to backlog")
-                                visible: ["in_progress", "done", "cancelled"].includes(manual.panel.task.state)
+                                visible: manual.panel.task.kind !== "epic" && ["in_progress", "done", "cancelled"].includes(manual.panel.task.state)
                                 enabled: manual.panel.writable && manual.panel.allowed("backlog")
                                 onClicked: manual.panel.transition("backlog")
+                            }
+                            PanelButton {
+                                objectName: "startEpicButton"
+                                text: qsTr("Start Epic")
+                                kind: "primary"
+                                visible: manual.panel.task.kind === "epic" && manual.panel.task.state === "open"
+                                enabled: manual.panel.writable && manual.panel.allowed("in_progress")
+                                onClicked: manual.panel.transition("in_progress")
+                            }
+                            PanelButton {
+                                objectName: "pauseEpicButton"
+                                text: qsTr("Return Epic to open")
+                                visible: manual.panel.task.kind === "epic" && manual.panel.task.state === "in_progress"
+                                enabled: manual.panel.writable && manual.panel.allowed("open")
+                                onClicked: manual.panel.transition("open")
+                            }
+                            PanelButton {
+                                objectName: "closeEpicButton"
+                                text: qsTr("Close Epic")
+                                kind: "primary"
+                                visible: manual.panel.task.kind === "epic" && manual.panel.task.state === "in_progress"
+                                enabled: manual.panel.writable && manual.panel.allowed("closed")
+                                onClicked: manual.panel.transition("closed")
+                            }
+                            PanelButton {
+                                objectName: "reopenEpicButton"
+                                text: qsTr("Reopen Epic")
+                                kind: "primary"
+                                visible: manual.panel.task.kind === "epic" && manual.panel.task.state === "closed"
+                                enabled: manual.panel.writable && manual.panel.allowed("open")
+                                onClicked: manual.panel.transition("open")
                             }
                         }
                         Caption {
                             objectName: "queueStartNotice"
                             text: qsTr("Only the queue head can start, with no task already in progress.")
-                            visible: manual.panel.task.state === "queued" && !manual.panel.queueStartEligible
+                            visible: manual.panel.task.kind !== "epic" && manual.panel.task.state === "queued" && !manual.panel.queueStartEligible
                             color: theme.muted
                             wrapMode: Text.Wrap
                             Layout.fillWidth: true
@@ -709,6 +963,7 @@ Item {
                             color: theme.border
                         }
                         ColumnLayout {
+                            visible: manual.panel.task.kind !== "epic"
                             Layout.fillWidth: true
                             Caption {
                                 text: qsTr("Pi commission")
@@ -949,7 +1204,7 @@ Item {
                             color: theme.border
                         }
                         ColumnLayout {
-                            visible: manual.panel.resultHistory.length > 0 || manual.panel.resultHistoryError !== ""
+                            visible: manual.panel.task.kind !== "epic" && (manual.panel.resultHistory.length > 0 || manual.panel.resultHistoryError !== "")
                             Layout.fillWidth: true
                             Caption {
                                 text: qsTr("Submission and review history")

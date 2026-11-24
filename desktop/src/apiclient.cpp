@@ -17,6 +17,9 @@
 
 namespace {
 constexpr qsizetype responseLimit = 32 * 1024 * 1024;
+// Match the daemon's migrated-snapshot budget. Other bounded reads retain the
+// original limit and history explicitly retries oversized pages below it.
+constexpr qsizetype snapshotResponseLimit = 64 * 1024 * 1024;
 constexpr qsizetype frameLimit = 64 * 1024;
 constexpr qsizetype invalidationLimit = 1024;
 bool integer(const QJsonValue &value) {
@@ -28,9 +31,48 @@ bool uuid(const QString &value) { return !QUuid(value).isNull(); }
 bool oneOf(const QString &value, const QStringList &options) {
   return options.contains(value);
 }
+bool validEpicSummary(const QJsonValue &value) {
+  if (!value.isObject())
+    return false;
+  const auto summary = value.toObject();
+  for (const auto *key :
+       {"backlog", "queued", "in_progress", "done", "cancelled"})
+    if (!integer(summary.value(key)))
+      return false;
+  return true;
+}
+bool validWorkType(const QJsonObject &object) {
+  const auto kind = object.value("kind");
+  if (!kind.isString() || !oneOf(kind.toString(), {"epic", "task", "bug"}))
+    return false;
+  const auto state = object.value("state").toString();
+  const bool epic = kind == "epic";
+  if (epic ? !oneOf(state, {"open", "in_progress", "closed"})
+           : !oneOf(state,
+                    {"backlog", "queued", "in_progress", "done", "cancelled"}))
+    return false;
+  const auto parent = object.value("parent_id");
+  if (epic ? !parent.isUndefined()
+           : !(parent.isUndefined() ||
+               (parent.isString() && uuid(parent.toString()))))
+    return false;
+  const bool bug = kind == "bug";
+  for (const auto *key :
+       {"expected_behavior", "actual_behavior", "fix_evidence"}) {
+    const auto field = object.value(key);
+    if (bug ? !(field.isUndefined() || field.isString()) : !field.isUndefined())
+      return false;
+  }
+  const auto summary = object.value("summary");
+  return epic ? validEpicSummary(summary) : summary.isUndefined();
+}
 bool validSnapshot(const QJsonObject &obj) {
   if (!uuid(obj.value("instance_id").toString()) ||
       !integer(obj.value("event_seq")))
+    return false;
+  const auto advertised = obj.value("work_types_version");
+  const bool workTypes = !advertised.isUndefined();
+  if (workTypes && (!integer(advertised) || advertised.toInt() != 1))
     return false;
   for (const auto &collection : {"projects", "tasks", "queues"}) {
     if (!obj.value(collection).isArray())
@@ -63,11 +105,21 @@ bool validSnapshot(const QJsonObject &obj) {
         if (project && (!object.value("archived").isBool() ||
                         !integer(object.value("queue_version"))))
           return false;
-        if (!project && (!uuid(object.value("project_id").toString()) ||
-                         !QStringList{"backlog", "queued", "in_progress",
-                                      "done", "cancelled"}
-                              .contains(object.value("state").toString())))
+        if (!project && !uuid(object.value("project_id").toString()))
           return false;
+        if (!project && workTypes && !validWorkType(object))
+          return false;
+        if (!project && !workTypes) {
+          if (!oneOf(object.value("state").toString(),
+                     {"backlog", "queued", "in_progress", "done", "cancelled"}))
+            return false;
+          // A markerless response is the v6 contract. Do not let unvalidated
+          // v7 fields reach Panel and enable Epic/Bug behavior accidentally.
+          for (const auto *key : {"kind", "parent_id", "expected_behavior",
+                                  "actual_behavior", "fix_evidence", "summary"})
+            if (!object.value(key).isUndefined())
+              return false;
+        }
       }
     }
   }
@@ -266,6 +318,7 @@ bool ApiClient::configure(const QUrl &endpoint, const QString &tokenFile) {
   m_tasks.replace({});
   m_queues.replace({});
   m_instance.clear();
+  m_workTypesVersion = 0;
   m_sequence = m_cursor = 0;
   m_pendingInvalidations.clear();
   m_snapshotInvalidations.clear();
@@ -361,12 +414,13 @@ void ApiClient::reload() {
   m_reconnect.stop();
   m_status = "loading";
   auto *reply = request("GET", "/v1/snapshot");
+  reply->setProperty("snapshotRequestSerial", ++m_snapshotRequestSerial);
   m_snapshot = reply;
   const auto generation = m_generation;
   connect(reply, &QIODevice::readyRead, this, [reply] {
     auto bytes = reply->property("bytes").toByteArray();
     bytes += reply->readAll();
-    if (bytes.size() > responseLimit) {
+    if (bytes.size() > snapshotResponseLimit) {
       reply->setProperty("oversized", true);
       reply->abort();
       return;
@@ -438,6 +492,7 @@ void ApiClient::snapshotFinished(QNetworkReply *reply, quint64 generation) {
     m_cursor = 0;
   }
   m_instance = instance;
+  m_workTypesVersion = obj.value("work_types_version").toInt();
   if (instance == m_mutationInstance &&
       !reply->property("beforeAnswerRetryCheck").toBool())
     m_answerRetryNeedsSnapshot = false;
@@ -457,6 +512,8 @@ void ApiClient::snapshotFinished(QNetworkReply *reply, quint64 generation) {
     m_reloadAgain = false;
     m_coalesce.start();
   }
+  m_appliedSnapshotRequestSerial =
+      reply->property("snapshotRequestSerial").toULongLong();
   emit changed();
 }
 bool ApiClient::snapshotAffectsTask(const QString &project,
@@ -556,16 +613,16 @@ void ApiClient::streamReady(QNetworkReply *reply, quint64 generation) {
 }
 void ApiClient::cancelHistory() { cancel(m_historyReply); }
 void ApiClient::loadHistory(const QString &project, const QString &task,
-                            qint64 after) {
+                            qint64 after, int limit) {
   cancelHistory();
-  if (!m_online || m_stopped || !uuid(project) ||
+  if (!m_online || m_stopped || !uuid(project) || limit < 1 || limit > 20 ||
       (!task.isEmpty() && !uuid(task)))
     return;
   const auto instance = m_instance;
   auto *reply =
       request("GET", "/v1/events?instance_id=" + instance +
-                         "&after=" + QString::number(after) +
-                         "&limit=20&project_id=" + project +
+                         "&after=" + QString::number(after) + "&limit=" +
+                         QString::number(limit) + "&project_id=" + project +
                          (task.isEmpty() ? QString{} : "&task_id=" + task));
   m_historyReply = reply;
   connect(reply, &QIODevice::readyRead, this, [reply] {
@@ -577,54 +634,62 @@ void ApiClient::loadHistory(const QString &project, const QString &task,
       reply->setProperty("bytes", bytes);
     }
   });
-  connect(
-      reply, &QNetworkReply::finished, this, [this, reply, instance, after] {
-        reply->deleteLater();
-        if (reply != m_historyReply)
-          return;
-        m_historyReply = nullptr;
-        const auto obj =
-            QJsonDocument::fromJson(reply->property("bytes").toByteArray())
-                .object();
-        const auto events = obj.value("events");
-        bool valid = reply->error() == QNetworkReply::NoError &&
-                     reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
-                             .toInt() == 200 &&
-                     reply->header(QNetworkRequest::ContentTypeHeader)
-                         .toString()
-                         .startsWith("application/json") &&
-                     !reply->property("oversized").toBool() &&
-                     instance == m_instance &&
-                     obj.value("instance_id").toString() == instance &&
-                     events.isArray() && integer(obj.value("next_cursor")) &&
-                     obj.value("next_cursor").toInteger() >= after &&
-                     events.toArray().size() <= 20;
-        qint64 previous = after;
-        for (const auto &event : events.toArray()) {
-          const auto row = event.toObject();
-          valid = valid && integer(row.value("seq")) &&
-                  row.value("seq").toInteger() > previous &&
-                  row.value("seq").toInteger() <=
-                      obj.value("next_cursor").toInteger() &&
-                  uuid(row.value("project_id").toString()) &&
-                  row.value("action").isString() &&
-                  row.value("source").toString() == "owner_manual" &&
-                  row.value("timestamp").isString() &&
-                  row.value("before").isObject() &&
-                  row.value("after").isObject();
-          previous = row.value("seq").toInteger();
-        }
-        if (valid) {
-          m_historyError.clear();
-          emit historyReceived(events.toArray().toVariantList(),
-                               obj.value("next_cursor").toInteger(),
-                               obj.value("next_cursor").toInteger() <
-                                   m_sequence);
-        } else {
-          m_historyError = tr("History unavailable or invalid");
-        }
-        emit changed();
-      });
+  connect(reply, &QNetworkReply::finished, this,
+          [this, reply, instance, project, task, after, limit] {
+            reply->deleteLater();
+            if (reply != m_historyReply)
+              return;
+            m_historyReply = nullptr;
+            const auto obj =
+                QJsonDocument::fromJson(reply->property("bytes").toByteArray())
+                    .object();
+            const auto events = obj.value("events");
+            bool valid =
+                reply->error() == QNetworkReply::NoError &&
+                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                        .toInt() == 200 &&
+                reply->header(QNetworkRequest::ContentTypeHeader)
+                    .toString()
+                    .startsWith("application/json") &&
+                !reply->property("oversized").toBool() &&
+                instance == m_instance &&
+                obj.value("instance_id").toString() == instance &&
+                events.isArray() && integer(obj.value("next_cursor")) &&
+                obj.value("next_cursor").toInteger() >= after &&
+                events.toArray().size() <= limit;
+            qint64 previous = after;
+            for (const auto &event : events.toArray()) {
+              const auto row = event.toObject();
+              valid = valid && integer(row.value("seq")) &&
+                      row.value("seq").toInteger() > previous &&
+                      row.value("seq").toInteger() <=
+                          obj.value("next_cursor").toInteger() &&
+                      uuid(row.value("project_id").toString()) &&
+                      row.value("action").isString() &&
+                      row.value("source").toString() == "owner_manual" &&
+                      row.value("timestamp").isString() &&
+                      row.value("before").isObject() &&
+                      row.value("after").isObject();
+              previous = row.value("seq").toInteger();
+            }
+            if (valid) {
+              m_historyError.clear();
+              emit historyReceived(events.toArray().toVariantList(),
+                                   obj.value("next_cursor").toInteger(),
+                                   obj.value("next_cursor").toInteger() <
+                                       m_sequence);
+            } else if (instance == m_instance &&
+                       reply->property("oversized").toBool() && limit > 1) {
+              // A page can be oversized even though every individual audit
+              // value is legal. Halve only the encoded page, preserving
+              // cursor/filters.
+              loadHistory(project, task, after, limit / 2);
+              return;
+            } else {
+              m_historyError = tr("History unavailable or invalid");
+            }
+            emit changed();
+          });
   emit changed();
 }
 void ApiClient::loadCurrentResult(const QString &task) {
@@ -1270,8 +1335,12 @@ bool ApiClient::save(const QString &method, const QString &path,
     return false;
   const auto body = QJsonDocument(QJsonObject::fromVariantMap(payload))
                         .toJson(QJsonDocument::Compact);
-  if (body.size() > 256 * 1024)
+  if (body.size() > 256 * 1024) {
+    m_error = tr("Save request is too large; shorten the changed fields");
+    emit changed();
     return false;
+  }
+  m_error.clear();
   m_method = method.toLatin1();
   m_path = path;
   m_body = body;

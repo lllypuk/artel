@@ -68,11 +68,11 @@ func assertResultsV4Recovery(t *testing.T, path string, before Snapshot) {
 	}
 	defer func() { _ = s.Close() }()
 	migrated, err := s.Snapshot(t.Context())
-	if err != nil || !reflect.DeepEqual(before, migrated) {
+	if err != nil || !reflect.DeepEqual(expectedMigratedSnapshot(before), migrated) {
 		t.Fatalf("v4 domain changed: %v", err)
 	}
 	var version int
-	if err := s.db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil || version != 6 {
+	if err := s.db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil || version != 7 {
 		t.Fatalf("version=%d err=%v", version, err)
 	}
 	var redundant int
@@ -106,7 +106,7 @@ func TestCurrentReviewIndexUpgradesV5(t *testing.T) {
 	}
 	defer func() { _ = reopened.Close() }()
 	var version int
-	if err := reopened.db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil || version != 6 {
+	if err := reopened.db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil || version != 7 {
 		t.Fatalf("version=%d err=%v", version, err)
 	}
 	rows, err := reopened.db.QueryContext(t.Context(), `EXPLAIN QUERY PLAN SELECT id FROM task_reviews

@@ -15,6 +15,16 @@ const (
 	InProgress State = "in_progress"
 	Done       State = "done"
 	Cancelled  State = "cancelled"
+	Open       State = "open"
+	Closed     State = "closed"
+)
+
+type Kind string
+
+const (
+	KindEpic Kind = "epic"
+	KindTask Kind = "task"
+	KindBug  Kind = "bug"
 )
 
 type Project struct {
@@ -29,12 +39,19 @@ type Project struct {
 	UpdatedAt    string `json:"updated_at"`
 }
 
+// Work-type fields use explicit storage and transport projections so their
+// additive persistence does not change the existing domain transport contract.
 type Task struct {
 	ID                 string `json:"id"`
 	ProjectID          string `json:"project_id"`
+	Kind               Kind   `json:"-"`
+	ParentID           string `json:"-"`
 	Title              string `json:"title"`
 	Description        string `json:"description"`
 	AcceptanceCriteria string `json:"acceptance_criteria"`
+	ExpectedBehavior   string `json:"-"`
+	ActualBehavior     string `json:"-"`
+	FixEvidence        string `json:"-"`
 	State              State  `json:"state"`
 	Version            int64  `json:"version"`
 	CreatedAt          string `json:"created_at"`

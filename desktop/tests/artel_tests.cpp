@@ -9,6 +9,7 @@
 #include <QClipboard>
 #include <QFile>
 #include <QFileInfo>
+#include <QFontMetricsF>
 #include <QInputMethodEvent>
 #include <QJsonDocument>
 #include <QProcess>
@@ -22,6 +23,7 @@
 #include <QTemporaryDir>
 #include <QUrlQuery>
 #include <QtTest>
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -1253,6 +1255,9 @@ private slots:
       QTest::qWait(20);
       QVERIFY(fits("taskList"));
       QCOMPARE(panel.task().value("id").toString(), fixture.task);
+      const auto taskName = ("task_" + fixture.task).toUtf8();
+      QVERIFY(reveal("taskList", taskName.constData()));
+      QTest::qWait(20);
       QVERIFY(click(window, "task_" + fixture.task));
       QTRY_VERIFY(item(window, "manualBackButton")->isVisible());
     }
@@ -3055,6 +3060,1323 @@ private slots:
                  QString::fromUtf8("Данные ревью несогласованы"));
     QCoreApplication::removeTranslator(&appearance);
   }
+  void workTypeEditSendsOnlyChangedFields() {
+    UiFixture fixture;
+    auto initial = QJsonDocument::fromJson(fixture.state).object();
+    initial.insert("work_types_version", 1);
+    auto tasks = initial.value("tasks").toArray();
+    auto bug = tasks.first().toObject();
+    bug.insert("kind", "bug");
+    const QString large(60 * 1024, 'a');
+    for (const auto *key :
+         {"description", "acceptance_criteria", "expected_behavior",
+          "actual_behavior", "fix_evidence"})
+      bug.insert(key, large);
+    tasks[0] = bug;
+    initial.insert("tasks", tasks);
+    fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    QPointer<QTcpSocket> held;
+    QList<QJsonObject> patches;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("PATCH /v1/tasks/")) {
+        held = socket;
+        patches.append(QJsonDocument::fromJson(
+                           request.mid(request.indexOf("\r\n\r\n") + 4))
+                           .object());
+        return;
+      }
+      fixture.normal(socket, request);
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    QVERIFY(panel.editTask(false));
+    panel.field("title", "Only the title and one cleared field changed");
+    panel.field("expected_behavior", "");
+    QVERIFY(panel.save());
+    QTRY_VERIFY(held);
+    QCOMPARE(patches.size(), 1);
+    const auto patch = patches.first();
+    QCOMPARE(patch.value("expected_version").toInt(), 1);
+    QCOMPARE(patch.value("title").toString(),
+             QString("Only the title and one cleared field changed"));
+    QVERIFY(patch.contains("expected_behavior"));
+    QCOMPARE(patch.value("expected_behavior").toString(), QString());
+    for (const auto *key : {"kind", "description", "acceptance_criteria",
+                            "actual_behavior", "fix_evidence", "parent_id"})
+      QVERIFY(!patch.contains(key));
+    QVERIFY(QJsonDocument(patch).toJson(QJsonDocument::Compact).size() < 1024);
+
+    bug.insert("title", patch.value("title"));
+    bug.insert("expected_behavior", "");
+    bug.insert("version", 2);
+    tasks[0] = bug;
+    initial.insert("tasks", tasks);
+    initial.insert("event_seq", initial.value("event_seq").toInt() + 1);
+    fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    UiFixture::respond(
+        held, 200,
+        QJsonDocument(QJsonObject{{"id", fixture.task}, {"version", 2}})
+            .toJson());
+    QTRY_VERIFY(!client.pending() && !client.loading() && !panel.dirty());
+    QTRY_COMPARE(panel.task().value("version").toInt(), 2);
+
+    QVERIFY(panel.editTask(false));
+    const QString changed(60 * 1024, 'b');
+    for (const auto *key :
+         {"description", "acceptance_criteria", "expected_behavior",
+          "actual_behavior", "fix_evidence"})
+      panel.field(key, changed);
+    QVERIFY(!panel.save());
+    QVERIFY(panel.message().contains("too large"));
+    QCOMPARE(patches.size(), 1);
+    QVERIFY(panel.dirty());
+    client.stop();
+  }
+  void closedParentRemainsUnchangedOptionThroughoutEdit() {
+    UiFixture fixture;
+    const QString closedEpic = "77777777-7777-4777-8777-777777777777";
+    const QString openEpic = "88888888-8888-4888-8888-888888888888";
+    auto initial = QJsonDocument::fromJson(fixture.state).object();
+    initial.insert("work_types_version", 1);
+    auto tasks = initial.value("tasks").toArray();
+    auto child = tasks.first().toObject();
+    child.insert("kind", "bug");
+    child.insert("state", "done");
+    child.insert("parent_id", closedEpic);
+    tasks[0] = child;
+    const auto epicRow = [&](const QString &id, const QString &title,
+                             const QString &state) {
+      return QJsonObject{{"id", id},
+                         {"project_id", fixture.project},
+                         {"kind", "epic"},
+                         {"title", title},
+                         {"description", ""},
+                         {"acceptance_criteria", ""},
+                         {"state", state},
+                         {"version", 1},
+                         {"created_at", "2026-11-17T12:00:00Z"},
+                         {"updated_at", "2026-11-17T12:00:00Z"},
+                         {"summary", QJsonObject{{"backlog", 0},
+                                                 {"queued", 0},
+                                                 {"in_progress", 0},
+                                                 {"done", 0},
+                                                 {"cancelled", 0}}}};
+    };
+    tasks.append(epicRow(closedEpic, "Stored closed parent", "closed"));
+    tasks.append(epicRow(openEpic, "Eligible replacement", "open"));
+    initial.insert("tasks", tasks);
+    fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+
+    // Seed a previous comparison base, then verify the new editor's base is
+    // already installed when setDraft synchronously notifies its observers.
+    QVERIFY(panel.editTask(true, "bug"));
+    panel.field("title", "Previous editor");
+    panel.discard();
+    bool notificationSeen = false;
+    bool unchangedAtNotification = false;
+    bool saveableAtNotification = false;
+    connect(&panel, &Panel::changed, &panel, [&] {
+      if (notificationSeen || panel.editor().value("title").toString() !=
+                                  QString("Design the first screen"))
+        return;
+      notificationSeen = true;
+      const auto options = panel.parentOptions();
+      unchangedAtNotification =
+          options.size() == 3 &&
+          options[1].toMap().value("id").toString() == closedEpic &&
+          options[1].toMap().value("title").toString().contains("unchanged");
+      saveableAtNotification = panel.saveable();
+    });
+    QVERIFY(panel.editTask(false));
+    QVERIFY(notificationSeen);
+    QVERIFY(unchangedAtNotification);
+    QVERIFY(saveableAtNotification);
+    QCOMPARE(panel.parentCandidates().size(), 1);
+    QCOMPARE(panel.parentCandidates().first().toMap().value("id").toString(),
+             openEpic);
+
+    const auto closedOptionRemains = [&] {
+      const auto options = panel.parentOptions();
+      return options.size() == 3 &&
+             options[1].toMap().value("id").toString() == closedEpic &&
+             options[1].toMap().value("title").toString().contains("unchanged");
+    };
+    QVERIFY(closedOptionRemains());
+    panel.field("parent_id", "");
+    QVERIFY(closedOptionRemains());
+    panel.field("parent_id", openEpic);
+    QVERIFY(closedOptionRemains());
+    QCOMPARE(panel.parentCandidates().size(), 1);
+    panel.field("parent_id", closedEpic);
+    QCOMPARE(panel.editor().value("parent_id").toString(), closedEpic);
+    QVERIFY(panel.saveable());
+    client.stop();
+  }
+  void workTypeRebaseUsesReloadedEditableBase() {
+    UiFixture fixture;
+    const QString epic = "77777777-7777-4777-8777-777777777777";
+    const QString originalDescription = "Description retained by the draft";
+    const QString otherDescription = "Description changed by another client";
+    auto initial = QJsonDocument::fromJson(fixture.state).object();
+    initial.insert("work_types_version", 1);
+    auto tasks = initial.value("tasks").toArray();
+    auto bug = tasks.first().toObject();
+    bug.insert("kind", "bug");
+    bug.insert("description", originalDescription);
+    tasks[0] = bug;
+    tasks.append(QJsonObject{{"id", epic},
+                             {"project_id", fixture.project},
+                             {"kind", "epic"},
+                             {"title", "Concurrent parent"},
+                             {"description", ""},
+                             {"acceptance_criteria", ""},
+                             {"state", "in_progress"},
+                             {"version", 1},
+                             {"created_at", "2026-11-17T12:00:00Z"},
+                             {"updated_at", "2026-11-17T12:00:00Z"},
+                             {"summary", QJsonObject{{"backlog", 0},
+                                                     {"queued", 0},
+                                                     {"in_progress", 0},
+                                                     {"done", 0},
+                                                     {"cancelled", 0}}}});
+    initial.insert("tasks", tasks);
+    fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    QList<QJsonObject> patches;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (!request.startsWith("PATCH /v1/tasks/")) {
+        fixture.normal(socket, request);
+        return;
+      }
+      const auto patch =
+          QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n") + 4))
+              .object();
+      patches.append(patch);
+      auto state = QJsonDocument::fromJson(fixture.state).object();
+      auto rows = state.value("tasks").toArray();
+      for (int i = 0; i < rows.size(); ++i) {
+        auto row = rows[i].toObject();
+        if (row.value("id") != fixture.task)
+          continue;
+        if (patches.size() == 1) {
+          row.insert("description", otherDescription);
+          row.insert("parent_id", epic);
+          row.insert("version", 2);
+        } else {
+          for (auto it = patch.begin(); it != patch.end(); ++it)
+            if (it.key() != "expected_version")
+              row.insert(it.key(), it.value());
+          if (patch.contains("parent_id") &&
+              patch.value("parent_id").toString().isEmpty())
+            row.remove("parent_id");
+          row.insert("version", 3);
+        }
+        rows[i] = row;
+      }
+      state.insert("tasks", rows);
+      state.insert("event_seq", state.value("event_seq").toInt() + 1);
+      fixture.state = QJsonDocument(state).toJson(QJsonDocument::Compact);
+      if (patches.size() == 1) {
+        UiFixture::respond(socket, 409,
+                           R"({"code":"conflict","message":"stale"})");
+      } else {
+        UiFixture::respond(
+            socket, 200,
+            QJsonDocument(QJsonObject{{"id", fixture.task}, {"version", 3}})
+                .toJson());
+      }
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    QVERIFY(panel.editTask(false));
+    panel.field("title", "Title retained by the draft");
+    const auto draft = panel.editor();
+    QVERIFY(panel.save());
+    QTRY_VERIFY(panel.conflict());
+    QCOMPARE(patches.size(), 1);
+    panel.reload();
+    QTRY_COMPARE(panel.task().value("description").toString(),
+                 otherDescription);
+    QTRY_COMPARE(panel.task().value("parent_id").toString(), epic);
+    QVERIFY(panel.rebase());
+    QCOMPARE(panel.editor(), draft);
+    QVERIFY(panel.save());
+    QTRY_VERIFY(!client.pending() && !client.loading() && !panel.dirty());
+    QCOMPARE(patches.size(), 2);
+    const auto rebased = patches.last();
+    QCOMPARE(rebased.value("expected_version").toInt(), 2);
+    QCOMPARE(rebased.value("description").toString(), originalDescription);
+    QVERIFY(rebased.contains("parent_id"));
+    QCOMPARE(rebased.value("parent_id").toString(), QString());
+    QTRY_COMPARE(panel.task().value("description").toString(),
+                 originalDescription);
+    QVERIFY(!panel.task().contains("parent_id"));
+    client.stop();
+  }
+  void workTypeParentConflictRebase_data() {
+    QTest::addColumn<bool>("create");
+    QTest::newRow("unchanged existing Bug") << false;
+    QTest::newRow("new Bug") << true;
+  }
+  void workTypeParentConflictRebase() {
+    QFETCH(bool, create);
+    UiFixture fixture;
+    const QString epic = "77777777-7777-4777-8777-777777777777";
+    const QString newBug = "88888888-8888-4888-8888-888888888888";
+    auto initial = QJsonDocument::fromJson(fixture.state).object();
+    initial.insert("work_types_version", 1);
+    auto tasks = initial.value("tasks").toArray();
+    auto bug = tasks.first().toObject();
+    bug.insert("kind", "bug");
+    tasks[0] = bug;
+    tasks.append(QJsonObject{{"id", epic},
+                             {"project_id", fixture.project},
+                             {"kind", "epic"},
+                             {"title", "Parent closes during save"},
+                             {"description", ""},
+                             {"acceptance_criteria", ""},
+                             {"state", "in_progress"},
+                             {"version", 1},
+                             {"created_at", "2026-11-17T12:00:00Z"},
+                             {"updated_at", "2026-11-17T12:00:00Z"},
+                             {"summary", QJsonObject{{"backlog", 0},
+                                                     {"queued", 0},
+                                                     {"in_progress", 0},
+                                                     {"done", 0},
+                                                     {"cancelled", 0}}}});
+    initial.insert("tasks", tasks);
+    fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    QList<QJsonObject> saves;
+    QPointer<QTcpSocket> heldPreConflictSnapshot;
+    QByteArray preConflictSnapshot;
+    bool holdPreConflictSnapshot = false;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/snapshot ") && holdPreConflictSnapshot) {
+        holdPreConflictSnapshot = false;
+        heldPreConflictSnapshot = socket;
+        auto stale = QJsonDocument::fromJson(fixture.state).object();
+        auto staleTasks = stale.value("tasks").toArray();
+        auto staleParent = staleTasks.last().toObject();
+        staleParent.insert("title", "Open parent from delayed snapshot");
+        staleTasks[staleTasks.size() - 1] = staleParent;
+        stale.insert("tasks", staleTasks);
+        preConflictSnapshot =
+            QJsonDocument(stale).toJson(QJsonDocument::Compact);
+        return;
+      }
+      const bool taskSave =
+          (create && request.startsWith("POST /v1/projects/") &&
+           request.contains("/tasks ")) ||
+          (!create && request.startsWith("PATCH /v1/tasks/"));
+      if (!taskSave) {
+        fixture.normal(socket, request);
+        return;
+      }
+      const auto body =
+          QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n") + 4))
+              .object();
+      saves.append(body);
+      if (saves.size() == 1) {
+        UiFixture::respond(
+            socket, 409,
+            R"({"code":"conflict","message":"parent Epic is closed"})");
+        return;
+      }
+      auto state = QJsonDocument::fromJson(fixture.state).object();
+      auto rows = state.value("tasks").toArray();
+      const QString id = create ? newBug : fixture.task;
+      if (create) {
+        auto row = body;
+        if (row.value("parent_id").toString().isEmpty())
+          row.remove("parent_id");
+        row.insert("id", id);
+        row.insert("project_id", fixture.project);
+        row.insert("state", "backlog");
+        row.insert("version", 1);
+        row.insert("created_at", "2026-11-17T12:00:00Z");
+        row.insert("updated_at", "2026-11-17T12:00:00Z");
+        rows.append(row);
+      } else {
+        for (int i = 0; i < rows.size(); ++i) {
+          auto row = rows[i].toObject();
+          if (row.value("id") != id)
+            continue;
+          for (auto it = body.begin(); it != body.end(); ++it)
+            if (it.key() != "expected_version")
+              row.insert(it.key(), it.value());
+          row.insert("version", 2);
+          rows[i] = row;
+        }
+      }
+      state.insert("tasks", rows);
+      state.insert("event_seq", state.value("event_seq").toInt() + 1);
+      fixture.state = QJsonDocument(state).toJson(QJsonDocument::Compact);
+      UiFixture::respond(
+          socket, create ? 201 : 200,
+          QJsonDocument(QJsonObject{{"id", id}, {"version", create ? 1 : 2}})
+              .toJson());
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    if (create) {
+      // A create conflict has no server row, even when another work item was
+      // selected before the editor opened.
+      QVERIFY(panel.selectTask(fixture.task));
+      QVERIFY(panel.editTask(true, "bug"));
+    } else {
+      QVERIFY(panel.selectTask(fixture.task));
+      QVERIFY(panel.editTask(false));
+    }
+    panel.field("title", create ? "New Bug draft retained"
+                                : "Existing Bug draft retained");
+    panel.field("expected_behavior", "Draft field survives parent recovery");
+    panel.field("parent_id", epic);
+    const auto draft = panel.editor();
+    // This GET reads the open parent before the rejected save, but its reply
+    // is delayed until after the 409. Its completion must not authorize rebase.
+    holdPreConflictSnapshot = true;
+    panel.reload();
+    QTRY_VERIFY(heldPreConflictSnapshot);
+    auto remote = QJsonDocument::fromJson(fixture.state).object();
+    auto remoteTasks = remote.value("tasks").toArray();
+    auto parent = remoteTasks.last().toObject();
+    parent.insert("state", "closed");
+    parent.insert("version", 2);
+    remoteTasks[remoteTasks.size() - 1] = parent;
+    remote.insert("tasks", remoteTasks);
+    fixture.state = QJsonDocument(remote).toJson(QJsonDocument::Compact);
+    QVERIFY(panel.save());
+    QTRY_VERIFY(panel.conflict());
+    QCOMPARE(saves.size(), 1);
+    // A 409 alone does not make the cached snapshot a valid adoption base.
+    QVERIFY(!panel.rebaseEligible());
+    QVERIFY(!panel.rebase());
+    QVERIFY(panel.conflict());
+    UiFixture::respond(heldPreConflictSnapshot, 200, preConflictSnapshot);
+    heldPreConflictSnapshot = nullptr;
+    QTRY_COMPARE(panel.parentCandidates().size(), 1);
+    QTRY_COMPARE(
+        panel.parentCandidates().first().toMap().value("title").toString(),
+        QString("(" + epic + ") Open parent from delayed snapshot"));
+    QTRY_VERIFY(!client.loading());
+    // The observable stale reply has been applied and loading has finished;
+    // a completion counter would now incorrectly authorize adoption.
+    QVERIFY(!panel.rebaseEligible());
+    QVERIFY(!panel.rebase());
+    QVERIFY(panel.conflict());
+    if (create) {
+      QVERIFY(!panel.currentText().contains("Design the first screen"));
+      QVERIFY(panel.currentText().contains("No stored work item"));
+      QVERIFY(
+          panel.currentText().contains("Open parent from delayed snapshot"));
+      QVERIFY(panel.currentText().contains("In progress (manual)"));
+    }
+    panel.reload();
+    QTRY_VERIFY(panel.parentCandidates().isEmpty());
+    QTRY_VERIFY(!client.loading());
+    QTRY_VERIFY(panel.rebaseEligible());
+    if (create) {
+      QVERIFY(panel.currentText().contains("Parent closes during save"));
+      QVERIFY(panel.currentText().contains("Closed"));
+    }
+    QVERIFY(panel.rebase());
+    QCOMPARE(panel.editor(), draft);
+    // The retained new attachment is not silently reinterpreted as no parent.
+    const auto unavailableOptions = panel.parentOptions();
+    QCOMPARE(unavailableOptions.size(), 2);
+    QCOMPARE(unavailableOptions[1].toMap().value("id").toString(), epic);
+    QVERIFY(unavailableOptions[1].toMap().value("title").toString().contains(
+        "Unavailable Epic parent"));
+    QVERIFY(!panel.saveable());
+    QVERIFY(panel.message().contains("Selected Epic parent is unavailable"));
+    panel.field("parent_id", "");
+    QVERIFY(panel.saveable());
+
+    // A locally rejected, unsent oversized request keeps the explicit adoption.
+    const QString oversized(60 * 1024, 'x');
+    for (const auto *key :
+         {"description", "acceptance_criteria", "expected_behavior",
+          "actual_behavior", "fix_evidence"})
+      panel.field(key, oversized);
+    QVERIFY(!panel.save());
+    QVERIFY(panel.message().contains("too large"));
+    QVERIFY(!panel.conflict());
+    QCOMPARE(saves.size(), 1);
+    for (const auto *key :
+         {"description", "acceptance_criteria", "expected_behavior",
+          "actual_behavior", "fix_evidence"})
+      panel.field(key, draft.value(key).toString());
+    QVERIFY(panel.saveable());
+    QVERIFY(panel.save());
+    QTRY_VERIFY(!client.pending() && !client.loading() && !panel.dirty());
+    QCOMPARE(saves.size(), 2);
+    QCOMPARE(saves.last().value("title").toString(),
+             draft.value("title").toString());
+    QCOMPARE(saves.last().value("expected_behavior").toString(),
+             QString("Draft field survives parent recovery"));
+    if (create) {
+      QCOMPARE(saves.last().value("kind").toString(), QString("bug"));
+      QVERIFY(!saves.last().contains("expected_version"));
+    } else {
+      QVERIFY(!saves.last().contains("kind"));
+      QCOMPARE(saves.last().value("expected_version").toInt(), 1);
+    }
+    if (create) {
+      QTRY_VERIFY([&] {
+        const auto rows = panel.tasks();
+        return std::any_of(rows.begin(), rows.end(),
+                           [&](const QVariant &value) {
+                             const auto row = value.toMap();
+                             return row.value("id").toString() == newBug &&
+                                    row.value("title").toString() ==
+                                        draft.value("title").toString();
+                           });
+      }());
+    } else {
+      QCOMPARE(panel.task().value("id").toString(), fixture.task);
+      QCOMPARE(panel.task().value("title").toString(),
+               draft.value("title").toString());
+    }
+    client.stop();
+  }
+  void parentCandidateIdsSurviveTitleElision() {
+    UiFixture fixture;
+    const QString firstEpic = "77777777-7777-4777-8777-777777777777";
+    const QString secondEpic = "88888888-8888-4888-8888-888888888888";
+    const QString commonTitle(200, 'R');
+    const QString firstTitle = commonTitle + " first suffix";
+    const QString secondTitle = commonTitle + " second suffix";
+    auto initial = QJsonDocument::fromJson(fixture.state).object();
+    initial.insert("work_types_version", 1);
+    auto tasks = initial.value("tasks").toArray();
+    auto child = tasks.first().toObject();
+    child.insert("kind", "bug");
+    child.insert("parent_id", firstEpic);
+    tasks[0] = child;
+    const auto epicRow = [&](const QString &id, const QString &title) {
+      return QJsonObject{{"id", id},
+                         {"project_id", fixture.project},
+                         {"kind", "epic"},
+                         {"title", title},
+                         {"description", ""},
+                         {"acceptance_criteria", ""},
+                         {"state", "open"},
+                         {"version", 1},
+                         {"created_at", "2026-11-17T12:00:00Z"},
+                         {"updated_at", "2026-11-17T12:00:00Z"},
+                         {"summary", QJsonObject{{"backlog", 0},
+                                                 {"queued", 0},
+                                                 {"in_progress", 0},
+                                                 {"done", 0},
+                                                 {"cancelled", 0}}}};
+    };
+    tasks.append(epicRow(firstEpic, firstTitle));
+    tasks.append(epicRow(secondEpic, secondTitle));
+    initial.insert("tasks", tasks);
+    fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    const QString firstLabel = "(" + firstEpic + ") " + firstTitle;
+    const QString secondLabel = "(" + secondEpic + ") " + secondTitle;
+    QCOMPARE(panel.task().value("parentTitle").toString(), firstTitle);
+    QVERIFY(panel.editTask(false));
+    QCOMPARE(panel.editorParentTitle(), firstTitle);
+    QVERIFY(panel.currentText().contains(firstTitle));
+    panel.discard();
+    QVERIFY(panel.editTask(true, "bug"));
+    const auto candidates = panel.parentCandidates();
+    QCOMPARE(candidates.size(), 2);
+    QCOMPARE(candidates[0].toMap().value("title").toString(), firstLabel);
+    QCOMPARE(candidates[1].toMap().value("title").toString(), secondLabel);
+    QCOMPARE(panel.parentOptions().size(), 3);
+    panel.field("parent_id", secondEpic);
+    QCOMPARE(panel.editorParentTitle(), secondTitle);
+
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance);
+    QVERIFY(window);
+    window->setWidth(1000);
+    window->setHeight(680);
+    auto *parents = item(window, "parentCombo");
+    QVERIFY(parents);
+    QTRY_COMPARE(parents->property("currentText").toString(), secondLabel);
+    QVERIFY(parents->width() <= window->width());
+    auto *popup = parents->property("popup").value<QObject *>();
+    QVERIFY(popup);
+    QVERIFY(QMetaObject::invokeMethod(popup, "open"));
+    QTRY_VERIFY(popup->property("opened").toBool());
+    auto *popupContent = popup->property("contentItem").value<QQuickItem *>();
+    QVERIFY(popupContent);
+    QList<QQuickItem *> optionLabels;
+    std::function<void(QQuickItem *)> collectOptionLabels =
+        [&](QQuickItem *candidate) {
+          const auto text = candidate->property("text").toString();
+          if (candidate->inherits("QQuickText") && text.startsWith("(") &&
+              text.contains(commonTitle))
+            optionLabels.append(candidate);
+          for (auto *child : candidate->childItems())
+            collectOptionLabels(child);
+        };
+    QTRY_VERIFY([&] {
+      optionLabels.clear();
+      collectOptionLabels(popupContent);
+      return optionLabels.size() == 2;
+    }());
+    const QStringList identifiers{firstEpic, secondEpic};
+    for (int i = 0; i < optionLabels.size(); ++i) {
+      const auto *label = optionLabels[i];
+      const QString identifier = "(" + identifiers[i] + ")";
+      QVERIFY(label->isVisible());
+      QVERIFY(label->width() > 0 && label->height() > 0);
+      QVERIFY(label->property("text").toString().startsWith(identifier));
+      QCOMPARE(label->property("elide").toInt(), int(Qt::ElideRight));
+      QVERIFY(label->width() < label->property("implicitWidth").toReal());
+      // ElideRight plus a measured fitting prefix proves that the rendered
+      // delegate, not merely its model string, retains the complete UUID.
+      QVERIFY(QFontMetricsF(label->property("font").value<QFont>())
+                  .horizontalAdvance(identifier) <= label->width());
+    }
+    QVERIFY(QMetaObject::invokeMethod(popup, "close"));
+    QTRY_VERIFY(!popup->property("opened").toBool());
+    client.stop();
+  }
+  void workTypeRoundTripRetainsFieldsAndFiltersPayload_data() {
+    QTest::addColumn<QString>("finalKind");
+    QTest::newRow("Task omits Bug fields") << "task";
+    QTest::newRow("Epic omits parent and Bug fields") << "epic";
+    QTest::newRow("Bug retains all fields") << "bug";
+  }
+  void workTypeRoundTripRetainsFieldsAndFiltersPayload() {
+    QFETCH(QString, finalKind);
+    UiFixture fixture;
+    const QString epic = "77777777-7777-4777-8777-777777777777";
+    auto initial = QJsonDocument::fromJson(fixture.state).object();
+    initial.insert("work_types_version", 1);
+    auto tasks = initial.value("tasks").toArray();
+    auto task = tasks.first().toObject();
+    task.insert("kind", "task");
+    tasks[0] = task;
+    tasks.append(QJsonObject{{"id", epic},
+                             {"project_id", fixture.project},
+                             {"kind", "epic"},
+                             {"title", "Round-trip parent"},
+                             {"description", ""},
+                             {"acceptance_criteria", ""},
+                             {"state", "open"},
+                             {"version", 1},
+                             {"created_at", "2026-11-17T12:00:00Z"},
+                             {"updated_at", "2026-11-17T12:00:00Z"},
+                             {"summary", QJsonObject{{"backlog", 0},
+                                                     {"queued", 0},
+                                                     {"in_progress", 0},
+                                                     {"done", 0},
+                                                     {"cancelled", 0}}}});
+    initial.insert("tasks", tasks);
+    fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    QPointer<QTcpSocket> held;
+    QJsonObject payload;
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("POST /v1/projects/") &&
+          request.contains("/tasks ")) {
+        held = socket;
+        payload = QJsonDocument::fromJson(
+                      request.mid(request.indexOf("\r\n\r\n") + 4))
+                      .object();
+        return;
+      }
+      fixture.normal(socket, request);
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.editTask(true, "bug"));
+    panel.field("title", "Lossless local type switching");
+    panel.field("parent_id", epic);
+    panel.field("expected_behavior", "Expected remains in the draft");
+    panel.field("actual_behavior", "Actual remains in the draft");
+    panel.field("fix_evidence", "Evidence remains in the draft");
+    const auto original = panel.editor();
+    panel.field("kind", "task");
+    panel.field("kind", "epic");
+    panel.field("kind", "bug");
+    QCOMPARE(panel.editor(), original);
+    panel.field("kind", finalKind);
+    QCOMPARE(panel.editor().value("parent_id").toString(), epic);
+    QCOMPARE(panel.editor().value("expected_behavior").toString(),
+             QString("Expected remains in the draft"));
+    QCOMPARE(panel.editor().value("fix_evidence").toString(),
+             QString("Evidence remains in the draft"));
+    QVERIFY(panel.save());
+    QTRY_VERIFY(held);
+    QCOMPARE(payload.value("kind").toString(), finalKind);
+    QCOMPARE(payload.contains("parent_id"), finalKind != "epic");
+    for (const auto *key :
+         {"expected_behavior", "actual_behavior", "fix_evidence"})
+      QCOMPARE(payload.contains(key), finalKind == "bug");
+    QCOMPARE(panel.editor().value("expected_behavior").toString(),
+             QString("Expected remains in the draft"));
+    if (finalKind == "epic") {
+      UiFixture::respond(held, 409, R"({"code":"conflict","message":"stale"})");
+      held = nullptr;
+      QTRY_VERIFY(panel.conflict());
+      QVERIFY(!panel.currentText().contains("Selected Epic parent"));
+      QVERIFY(!panel.currentText().contains("Round-trip parent"));
+    }
+    client.stop();
+  }
+  void legacyRollbackRetainsButBlocksWorkTypeDraft() {
+    UiFixture fixture;
+    const QString epic = "77777777-7777-4777-8777-777777777777";
+    auto initial = QJsonDocument::fromJson(fixture.state).object();
+    initial.insert("work_types_version", 1);
+    auto tasks = initial.value("tasks").toArray();
+    auto task = tasks.first().toObject();
+    task.insert("kind", "task");
+    tasks[0] = task;
+    tasks.append(QJsonObject{{"id", epic},
+                             {"project_id", fixture.project},
+                             {"kind", "epic"},
+                             {"title", "Parent before rollback"},
+                             {"description", ""},
+                             {"acceptance_criteria", ""},
+                             {"state", "open"},
+                             {"version", 1},
+                             {"created_at", "2026-11-17T12:00:00Z"},
+                             {"updated_at", "2026-11-17T12:00:00Z"},
+                             {"summary", QJsonObject{{"backlog", 0},
+                                                     {"queued", 0},
+                                                     {"in_progress", 0},
+                                                     {"done", 0},
+                                                     {"cancelled", 0}}}});
+    initial.insert("tasks", tasks);
+    const auto v7 = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    fixture.state = v7;
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.editTask(true, "bug"));
+    panel.field("title", "Bug retained across backup rollback");
+    panel.field("parent_id", epic);
+    panel.field("expected_behavior", "Do not silently create a Task");
+    const auto draft = panel.editor();
+    QVERIFY(panel.saveable());
+
+    // Restoring the v6 backup can preserve both instance and event sequence.
+    initial.remove("work_types_version");
+    tasks = initial.value("tasks").toArray();
+    tasks = QJsonArray{tasks.first().toObject()}; // The Epic postdates backup.
+    for (int i = 0; i < tasks.size(); ++i) {
+      auto row = tasks[i].toObject();
+      for (const auto *key : {"kind", "parent_id", "expected_behavior",
+                              "actual_behavior", "fix_evidence", "summary"})
+        row.remove(key);
+      tasks[i] = row;
+    }
+    initial.insert("tasks", tasks);
+    fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    client.reload();
+    QTRY_VERIFY(!client.loading() && !panel.workTypesAvailable());
+    QCOMPARE(panel.editor(), draft);
+    QVERIFY(!panel.saveable());
+    QVERIFY(!panel.save());
+    QVERIFY(panel.message().contains("Daemon upgrade required"));
+    QCOMPARE(fixture.mutations.size(), 0);
+    {
+      Appearance appearance(fixture.directory.path(),
+                            fixture.directory.filePath("language"));
+      QQmlApplicationEngine engine;
+      auto *window = load(engine, panel, appearance);
+      QVERIFY(window);
+      const auto *kind = item(window, "kindCombo");
+      QVERIFY(kind);
+      QVERIFY(!kind->isEnabled());
+      QTRY_COMPARE(kind->property("displayText").toString(), QString("Bug"));
+      QCOMPARE(panel.editor().value("kind").toString(), QString("bug"));
+    }
+
+    fixture.state = v7;
+    client.reload();
+    QTRY_VERIFY(!client.loading() && panel.workTypesAvailable());
+    QCOMPARE(panel.editor(), draft);
+    QVERIFY(panel.saveable());
+    QVERIFY(panel.save());
+    QTRY_COMPARE(fixture.mutations.size(), 1);
+    QVERIFY(panel.dirty()); // The fixture's 400 response cannot discard it.
+    client.stop();
+  }
+  void epicCloseUsesActiveSummary() {
+    UiFixture fixture;
+    const QString child = "88888888-8888-4888-8888-888888888888";
+    auto initial = QJsonDocument::fromJson(fixture.state).object();
+    initial.insert("work_types_version", 1);
+    auto tasks = initial.value("tasks").toArray();
+    auto epic = tasks.first().toObject();
+    epic.insert("kind", "epic");
+    epic.insert("state", "in_progress");
+    epic.insert("summary", QJsonObject{{"backlog", 1},
+                                       {"queued", 0},
+                                       {"in_progress", 0},
+                                       {"done", 1},
+                                       {"cancelled", 0}});
+    tasks[0] = epic;
+    tasks.append(QJsonObject{{"id", child},
+                             {"project_id", fixture.project},
+                             {"kind", "task"},
+                             {"parent_id", fixture.task},
+                             {"title", "Terminal child row"},
+                             {"description", ""},
+                             {"acceptance_criteria", ""},
+                             {"state", "done"},
+                             {"version", 1},
+                             {"created_at", "2026-11-17T12:00:00Z"},
+                             {"updated_at", "2026-11-17T12:00:00Z"}});
+    initial.insert("tasks", tasks);
+    fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    const auto children = panel.epicChildren();
+    QCOMPARE(children.size(), 1);
+    QCOMPARE(children.first().toMap().value("parentTitle").toString(),
+             epic.value("title").toString());
+    // The active summary is authoritative. A terminal raw child makes this
+    // fail if Close regresses to rescanning child states instead.
+    QVERIFY(!panel.allowed("closed"));
+    auto current = QJsonDocument::fromJson(fixture.state).object();
+    auto currentTasks = current.value("tasks").toArray();
+    epic = currentTasks.first().toObject();
+    auto summary = epic.value("summary").toObject();
+    summary.insert("backlog", 0);
+    epic.insert("summary", summary);
+    currentTasks[0] = epic;
+    current.insert("tasks", currentTasks);
+    fixture.state = QJsonDocument(current).toJson(QJsonDocument::Compact);
+    client.reload();
+    QTRY_VERIFY(panel.allowed("closed"));
+    client.stop();
+  }
+  void nonEditorConflictDoesNotFenceLaterEditor() {
+    UiFixture fixture;
+    auto initial = QJsonDocument::fromJson(fixture.state).object();
+    initial.insert("work_types_version", 1);
+    auto tasks = initial.value("tasks").toArray();
+    auto epic = tasks.first().toObject();
+    epic.insert("kind", "epic");
+    epic.insert("state", "in_progress");
+    epic.insert("summary", QJsonObject{{"backlog", 0},
+                                       {"queued", 0},
+                                       {"in_progress", 0},
+                                       {"done", 0},
+                                       {"cancelled", 0}});
+    tasks[0] = epic;
+    initial.insert("tasks", tasks);
+    fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if ((request.startsWith("POST /v1/tasks/") &&
+           request.contains("/transition ")) ||
+          (request.startsWith("POST /v1/projects/") &&
+           request.contains("/tasks "))) {
+        UiFixture::respond(socket, 409,
+                           R"({"code":"conflict","message":"stale"})");
+        return;
+      }
+      fixture.normal(socket, request);
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    QVERIFY(panel.allowed("closed"));
+    QVERIFY(panel.transition("closed"));
+    QTRY_VERIFY(client.conflict());
+    QVERIFY(!panel.conflict());
+    QVERIFY(panel.message().contains("reload before trying the action again"));
+
+    panel.reload();
+    QTRY_VERIFY(!client.loading());
+    QVERIFY(panel.editTask(true, "task"));
+    panel.field("title", "Unrelated editor remains saveable");
+    QVERIFY(!panel.conflict());
+    QVERIFY(!panel.rebaseEligible());
+    QVERIFY(panel.saveable());
+
+    // A conflict from the editor's own save retains the existing fence.
+    QVERIFY(panel.save());
+    QTRY_VERIFY(panel.conflict());
+    QVERIFY(!panel.saveable());
+    panel.reload();
+    QTRY_VERIFY(panel.rebaseEligible());
+    client.stop();
+  }
+  void workTypesProductionQml() {
+    UiFixture fixture;
+    const QString epic = "77777777-7777-4777-8777-777777777777";
+    const QString bug = "88888888-8888-4888-8888-888888888888";
+    const QString epicTitle = "Release %1";
+    const QString bugTitle = "Crash on save %2";
+    auto initial = QJsonDocument::fromJson(fixture.state).object();
+    initial.insert("work_types_version", 1);
+    initial.insert("tasks", QJsonArray{});
+    fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    QList<QJsonObject> transitions;
+    QPointer<QTcpSocket> heldCreate;
+    bool holdCreate = false;
+    const auto recalculateSummaries = [&] {
+      auto state = QJsonDocument::fromJson(fixture.state).object();
+      auto tasks = state.value("tasks").toArray();
+      for (int i = 0; i < tasks.size(); ++i) {
+        auto row = tasks[i].toObject();
+        if (row.value("kind") == "epic")
+          row.insert("summary", QJsonObject{{"backlog", 0},
+                                            {"queued", 0},
+                                            {"in_progress", 0},
+                                            {"done", 0},
+                                            {"cancelled", 0}});
+        tasks[i] = row;
+      }
+      for (int i = 0; i < tasks.size(); ++i) {
+        auto row = tasks[i].toObject();
+        if (row.value("kind") != "epic")
+          continue;
+        auto summary = row.value("summary").toObject();
+        for (const auto &childValue : tasks) {
+          const auto child = childValue.toObject();
+          if (child.value("parent_id") != row.value("id"))
+            continue;
+          const auto key = child.value("state").toString();
+          summary.insert(key, summary.value(key).toInt() + 1);
+        }
+        row.insert("summary", summary);
+        tasks[i] = row;
+      }
+      state.insert("tasks", tasks);
+      fixture.state = QJsonDocument(state).toJson(QJsonDocument::Compact);
+    };
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("GET /v1/tasks/") &&
+          request.contains("/results/current ")) {
+        UiFixture::respond(socket, 200, R"({"result":null,"reviews":[]})");
+        return;
+      }
+      if (request.startsWith("GET /v1/tasks/") &&
+          request.contains("/results?")) {
+        UiFixture::respond(
+            socket, 200,
+            R"({"current_result_id":"","entries":[],"next_after":0,"has_more":false})");
+        return;
+      }
+      if (request.startsWith("POST /v1/projects/") &&
+          request.contains("/tasks ")) {
+        if (holdCreate) {
+          heldCreate = socket;
+          return;
+        }
+        const auto body = QJsonDocument::fromJson(
+                              request.mid(request.indexOf("\r\n\r\n") + 4))
+                              .object();
+        const auto id = body.value("kind") == "epic" ? epic : bug;
+        auto state = QJsonDocument::fromJson(fixture.state).object();
+        auto tasks = state.value("tasks").toArray();
+        auto row = body;
+        row.insert("id", id);
+        row.insert("project_id", fixture.project);
+        row.insert("state", body.value("kind") == "epic" ? "open" : "backlog");
+        row.insert("version", 1);
+        row.insert("created_at", "2026-11-17T12:00:00Z");
+        row.insert("updated_at", "2026-11-17T12:00:00Z");
+        tasks.append(row);
+        state.insert("tasks", tasks);
+        state.insert("event_seq", state.value("event_seq").toInt() + 1);
+        fixture.state = QJsonDocument(state).toJson(QJsonDocument::Compact);
+        recalculateSummaries();
+        UiFixture::respond(
+            socket, 201,
+            QJsonDocument(QJsonObject{{"id", id}, {"version", 1}}).toJson());
+        return;
+      }
+      if (request.startsWith("PUT /v1/projects/") &&
+          request.contains("/queue ")) {
+        const auto body = QJsonDocument::fromJson(
+                              request.mid(request.indexOf("\r\n\r\n") + 4))
+                              .object();
+        auto state = QJsonDocument::fromJson(fixture.state).object();
+        const auto ids = body.value("task_ids").toArray();
+        auto tasks = state.value("tasks").toArray();
+        for (int i = 0; i < tasks.size(); ++i) {
+          auto row = tasks[i].toObject();
+          const bool queued = ids.contains(row.value("id"));
+          if (queued && row.value("state") == "backlog")
+            row.insert("state", "queued");
+          else if (!queued && row.value("state") == "queued")
+            row.insert("state", "backlog");
+          tasks[i] = row;
+        }
+        state.insert("tasks", tasks);
+        const auto queueVersion =
+            body.value("expected_queue_version").toInt() + 1;
+        state.insert("queues",
+                     QJsonArray{QJsonObject{{"project_id", fixture.project},
+                                            {"queue_version", queueVersion},
+                                            {"task_ids", ids}}});
+        auto projects = state.value("projects").toArray();
+        auto project = projects.first().toObject();
+        project.insert("queue_version", queueVersion);
+        projects[0] = project;
+        state.insert("projects", projects);
+        state.insert("event_seq", state.value("event_seq").toInt() + 1);
+        fixture.state = QJsonDocument(state).toJson(QJsonDocument::Compact);
+        recalculateSummaries();
+        UiFixture::respond(
+            socket, 200,
+            QJsonDocument(QJsonObject{{"project_id", fixture.project},
+                                      {"queue_version", queueVersion},
+                                      {"task_ids", ids}})
+                .toJson());
+        return;
+      }
+      if (request.startsWith("POST /v1/tasks/") &&
+          request.contains("/transition ")) {
+        const auto body = QJsonDocument::fromJson(
+                              request.mid(request.indexOf("\r\n\r\n") + 4))
+                              .object();
+        transitions.append(body);
+        const auto id = request.split(' ').at(1).split('/').at(3);
+        auto state = QJsonDocument::fromJson(fixture.state).object();
+        auto tasks = state.value("tasks").toArray();
+        int version = 0;
+        for (int i = 0; i < tasks.size(); ++i) {
+          auto row = tasks[i].toObject();
+          if (row.value("id").toString() != QString::fromUtf8(id))
+            continue;
+          version = row.value("version").toInt() + 1;
+          row.insert("state", body.value("state"));
+          row.insert("version", version);
+          tasks[i] = row;
+        }
+        state.insert("tasks", tasks);
+        state.insert("event_seq", state.value("event_seq").toInt() + 1);
+        fixture.state = QJsonDocument(state).toJson(QJsonDocument::Compact);
+        recalculateSummaries();
+        UiFixture::respond(
+            socket, 200,
+            QJsonDocument(QJsonObject{{"id", QString::fromUtf8(id)},
+                                      {"version", version}})
+                .toJson());
+        return;
+      }
+      fixture.normal(socket, request);
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    QCoreApplication::installTranslator(&appearance);
+    connect(&appearance, &Appearance::changed, &engine,
+            &QQmlEngine::retranslate);
+    connect(&appearance, &Appearance::changed, &panel, &Panel::changed);
+    auto *window = load(engine, panel, appearance);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.workTypesAvailable());
+    QVERIFY(!panel.workTypesUpgradeRequired());
+    QVERIFY(panel.selectProject(fixture.project));
+
+    // An empty v7 work snapshot permits Epic as its first work row. Use the
+    // production button and global Save shortcut rather than a test-only QML.
+    auto *createEpic = item(window, "createEpicButton");
+    createEpic->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_Space);
+    QTRY_COMPARE(panel.editor().value("kind").toString(), QString("epic"));
+    QVERIFY(enter(window, "nameField", epicTitle));
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_COMPARE(panel.tasks().size(), 1);
+    QTRY_VERIFY(!panel.dirty() && !client.pending() && !client.loading());
+    QTRY_VERIFY(item(window, "task_" + epic));
+    QVERIFY(click(window, "task_" + epic));
+    QTRY_COMPARE(panel.task().value("id").toString(), epic);
+    QCOMPARE(panel.task().value("kindLabel").toString(), QString("Epic"));
+    QVERIFY(
+        item(window, "taskType")->property("text").toString().contains("Epic"));
+    QVERIFY(item(window, "noEpicChildren")->isVisible());
+    auto *startEpic = item(window, "startEpicButton");
+    startEpic->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_Space);
+    QTRY_COMPARE(panel.task().value("state").toString(),
+                 QString("in_progress"));
+    QVERIFY(!transitions.last().contains("expected_result_id"));
+
+    QVERIFY(click(window, "createBugButton"));
+    QCOMPARE(panel.editor().value("kind").toString(), QString("bug"));
+    QCOMPARE(panel.parentCandidates().size(), 1);
+    const auto verifyReveal = [&](const QString &name) {
+      auto *control = item(window, name);
+      auto *scroll = item(window, "detailsScroll");
+      QVERIFY(control && scroll);
+      auto *viewport = scroll->property("contentItem").value<QQuickItem *>();
+      QVERIFY(viewport);
+      auto *content = viewport->property("contentItem").value<QQuickItem *>();
+      QVERIFY(content);
+      viewport->setProperty("contentY",
+                            viewport->property("contentHeight").toReal());
+      control->forceActiveFocus();
+      QTRY_VERIFY([&] {
+        const qreal top = control->mapToItem(content, 0, 0).y();
+        const qreal scroll = viewport->property("contentY").toReal();
+        return control->hasActiveFocus() && top >= scroll - 1 &&
+               top + control->height() <= scroll + viewport->height() + 1;
+      }());
+    };
+    verifyReveal("kindCombo");
+    auto *parents = item(window, "parentCombo");
+    verifyReveal("parentCombo");
+    QCOMPARE(parents->property("count").toInt(), 2);
+    parents->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_Down);
+    QTRY_COMPARE(panel.editor().value("parent_id").toString(), epic);
+    panel.field("kind", "task");
+    QCOMPARE(panel.editor().value("parent_id").toString(), epic);
+    panel.field("kind", "bug");
+    QCOMPARE(panel.editor().value("parent_id").toString(), epic);
+    QVERIFY(enter(window, "nameField", bugTitle));
+    QVERIFY(enter(window, "expectedBehaviorField", "Saved text remains"));
+    QVERIFY(enter(window, "actualBehaviorField", "The window closes"));
+    const auto bugDraft = panel.editor();
+    panel.field("kind", "bug");
+    QCOMPARE(panel.editor(), bugDraft);
+    item(window, "actualBehaviorField")->forceActiveFocus();
+    panel.reload();
+    QTRY_VERIFY(!client.loading());
+    QCOMPARE(panel.editor(), bugDraft);
+    const auto mutationsBeforeHiddenDraft = fixture.mutations.size();
+    QVERIFY(click(window, "teamNavButton"));
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTest::keyClick(window, Qt::Key_Escape);
+    QCOMPARE(panel.editor(), bugDraft);
+    QCOMPARE(fixture.mutations.size(), mutationsBeforeHiddenDraft);
+    QVERIFY(click(window, "returnToEditorButton"));
+    QCOMPARE(panel.editor(), bugDraft);
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_COMPARE(panel.tasks().size(), 2);
+    QTRY_VERIFY(!panel.dirty() && !client.pending() && !client.loading());
+    QTRY_VERIFY(item(window, "task_" + bug));
+    QVERIFY(click(window, "task_" + bug));
+    QTRY_COMPARE(panel.task().value("id").toString(), bug);
+    QCOMPARE(panel.task().value("parentTitle").toString(), epicTitle);
+    QCOMPARE(item(window, "taskParent")->property("text").toString(),
+             QString("Epic parent: %1 (In progress (manual))").arg(epicTitle));
+    QCOMPARE(item(window, "bugExpectedBehavior")->property("text").toString(),
+             QString("Saved text remains"));
+    QCOMPARE(item(window, "bugActualBehavior")->property("text").toString(),
+             QString("The window closes"));
+
+    // Epic in_progress does not consume the executable queue/current slot.
+    QVERIFY(click(window, "queue_" + bug));
+    QTRY_COMPARE(panel.task().value("state").toString(), QString("queued"));
+    QTRY_VERIFY(item(window, "startButton")->isEnabled());
+    item(window, "startButton")->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_Space);
+    QTRY_COMPARE(panel.task().value("state").toString(),
+                 QString("in_progress"));
+    QTRY_VERIFY(item(window, "doneButton")->isEnabled());
+    item(window, "doneButton")->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_Space);
+    QTRY_COMPARE(panel.task().value("state").toString(), QString("done"));
+    QVERIFY(item(window, "missingFixEvidence")->isVisible());
+    QCOMPARE(item(window, "missingFixEvidence")->property("text").toString(),
+             QString("Evidence not provided"));
+    writeFile(fixture.directory.filePath("language"), "ru\n");
+    appearance.refresh();
+    QTRY_COMPARE(
+        item(window, "missingFixEvidence")->property("text").toString(),
+        QString::fromUtf8("Доказательство не указано"));
+    writeFile(fixture.directory.filePath("language"), "en\n");
+    appearance.refresh();
+
+    QVERIFY(click(window, "task_" + epic));
+    QTRY_VERIFY(item(window, "epicChild_" + bug));
+    QCOMPARE(item(window, "epicChild_" + bug)->property("text").toString(),
+             QString("Bug · %1 · Completed manually").arg(bugTitle));
+    QTRY_VERIFY(item(window, "epicSummary")
+                    ->property("text")
+                    .toString()
+                    .contains("Done 1"));
+    QTRY_VERIFY(item(window, "closeEpicButton")->isEnabled());
+    QVERIFY(click(window, "closeEpicButton"));
+    QTRY_COMPARE(panel.task().value("state").toString(), QString("closed"));
+    QVERIFY(item(window, "reopenEpicButton")->isVisible());
+
+    // A closed current parent remains visible but is not a new candidate;
+    // stale reopen and incompatible parent edits are blocked in C++ too.
+    QVERIFY(click(window, "task_" + bug));
+    QTRY_VERIFY(item(window, "closedParentNotice")->isVisible());
+    QVERIFY(item(window, "reopenButton")->isVisible());
+    QVERIFY(!item(window, "reopenButton")->isEnabled());
+    QVERIFY(!panel.allowed("backlog"));
+    QVERIFY(click(window, "editTaskButton"));
+    QVERIFY(panel.parentCandidates().isEmpty());
+    QCOMPARE(panel.parentOptions().size(), 2);
+    QCOMPARE(panel.parentOptions()[1].toMap().value("id").toString(), epic);
+    QVERIFY(panel.parentOptions()[1].toMap().value("title").toString().contains(
+        "unchanged"));
+    QCOMPARE(panel.editorParentTitle(), epicTitle);
+    QCOMPARE(panel.editorParentState(), QString("closed"));
+    QVERIFY(item(window, "editorCurrentParent")->isVisible());
+    QCOMPARE(item(window, "editorCurrentParent")->property("text").toString(),
+             QString("Current Epic parent: %1 (Closed)").arg(epicTitle));
+    QVERIFY(panel.saveable()); // Unchanged closed parent remains a valid no-op.
+    panel.field("parent_id", epic); // Explicit current UUID is a valid no-op.
+    QCOMPARE(panel.editor().value("parent_id").toString(), epic);
+    panel.field("parent_id", fixture.task);
+    QCOMPARE(panel.editor().value("parent_id").toString(), epic);
+    panel.discard();
+
+    // The immutable kind is locked both in production QML and C++ while a
+    // create is pending or has an uncertain outcome; ordinary text stays live.
+    QVERIFY(click(window, "createTaskButton"));
+    QVERIFY(enter(window, "nameField", "Pending kind lock"));
+    holdCreate = true;
+    QVERIFY(panel.save());
+    QTRY_VERIFY(heldCreate && client.pending());
+    QVERIFY(!item(window, "kindCombo")->isEnabled());
+    panel.field("kind", "bug");
+    QCOMPARE(panel.editor().value("kind").toString(), QString("task"));
+    panel.field("title", "Text remains editable while pending");
+    QCOMPARE(panel.editor().value("title").toString(),
+             QString("Text remains editable while pending"));
+    heldCreate->disconnectFromHost();
+    heldCreate = nullptr;
+    QTRY_VERIFY(panel.uncertain());
+    QVERIFY(!item(window, "kindCombo")->isEnabled());
+    panel.field("kind", "bug");
+    QCOMPARE(panel.editor().value("kind").toString(), QString("task"));
+    client.stop();
+    QVERIFY(!item(window, "createEpicButton")->isEnabled());
+    QVERIFY(!panel.editTask(true, "epic"));
+
+    QFile qml(":/ManualWorkspace.qml");
+    QVERIFY(qml.open(QIODevice::ReadOnly));
+    const auto source = QString::fromUtf8(qml.readAll());
+    QVERIFY(!source.contains("Authorization"));
+    QVERIFY(!source.contains("ownerRequest"));
+    QVERIFY(!source.contains("token", Qt::CaseInsensitive));
+    QCoreApplication::removeTranslator(&appearance);
+  }
+  void legacyDaemonProductionQml() {
+    UiFixture fixture;
+    auto initial = QJsonDocument::fromJson(fixture.state).object();
+    initial.insert("tasks", QJsonArray{});
+    fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if (request.startsWith("POST /v1/projects/") &&
+          request.contains("/tasks ")) {
+        const auto body = QJsonDocument::fromJson(
+                              request.mid(request.indexOf("\r\n\r\n") + 4))
+                              .object();
+        QVERIFY(!body.contains("kind"));
+        QVERIFY(!body.contains("parent_id"));
+        QVERIFY(!body.contains("fix_evidence"));
+        auto state = QJsonDocument::fromJson(fixture.state).object();
+        state.insert("tasks", QJsonArray{QJsonObject{
+                                  {"id", fixture.task},
+                                  {"project_id", fixture.project},
+                                  {"title", body.value("title")},
+                                  {"description", body.value("description")},
+                                  {"acceptance_criteria",
+                                   body.value("acceptance_criteria")},
+                                  {"state", "backlog"},
+                                  {"version", 1},
+                                  {"created_at", "2026-11-17T12:00:00Z"},
+                                  {"updated_at", "2026-11-17T12:00:00Z"}}});
+        state.insert("event_seq", state.value("event_seq").toInt() + 1);
+        fixture.state = QJsonDocument(state).toJson(QJsonDocument::Compact);
+        UiFixture::respond(
+            socket, 201,
+            QJsonDocument(QJsonObject{{"id", fixture.task}, {"version", 1}})
+                .toJson());
+        return;
+      }
+      fixture.normal(socket, request);
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    Appearance appearance(fixture.directory.path(),
+                          fixture.directory.filePath("language"));
+    QQmlApplicationEngine engine;
+    auto *window = load(engine, panel, appearance);
+    QVERIFY(window);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QCOMPARE(client.workTypesVersion(), 0);
+    QVERIFY(panel.workTypesUpgradeRequired());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(item(window, "workTypesUpgradeNotice")->isVisible());
+    QVERIFY(!item(window, "createEpicButton")->isEnabled());
+    QVERIFY(!item(window, "createBugButton")->isEnabled());
+    QVERIFY(!panel.editTask(true, "epic"));
+    QVERIFY(!panel.editTask(true, "bug"));
+    QCOMPARE(panel.creationKinds().size(), 1);
+    QTest::qWait(50);
+    QVERIFY(click(window, "createTaskButton"));
+    QCOMPARE(panel.editor().value("kind").toString(), QString("task"));
+    QVERIFY(!item(window, "kindCombo")->isEnabled());
+    panel.field("kind", "epic");
+    QCOMPARE(panel.editor().value("kind").toString(), QString("task"));
+    QVERIFY(enter(window, "nameField", "Legacy first task"));
+    QVERIFY(click(window, "saveButton"));
+    QTRY_COMPARE(panel.tasks().size(), 1);
+    QTRY_VERIFY(!panel.dirty() && !client.pending() && !client.loading());
+    QTRY_VERIFY(item(window, "task_" + fixture.task));
+    QVERIFY(click(window, "task_" + fixture.task));
+    QCOMPARE(panel.task().value("kind").toString(), QString("task"));
+    QCOMPARE(panel.task().value("kindLabel").toString(), QString("Task"));
+    QVERIFY(
+        item(window, "taskType")->property("text").toString().contains("Task"));
+    client.stop();
+  }
   void realQmlCrudQueueConflictHistoryAndClose() {
     Daemon daemon;
     daemon.start();
@@ -3209,6 +4531,9 @@ private slots:
     QTRY_VERIFY(!other.pending() && !other.loading());
     QVERIFY(click(window, "saveButton"));
     QTRY_VERIFY(panel.conflict());
+    QTRY_VERIFY(item(window, "rebaseButton")->isVisible());
+    QTRY_VERIFY(!item(window, "rebaseButton")->isEnabled());
+    QVERIFY(!panel.rebaseEligible());
     if (const auto capture = qEnvironmentVariable("ARTEL_STATE_SCREENSHOT");
         !capture.isEmpty()) {
       QTest::qWait(100);
@@ -3219,6 +4544,8 @@ private slots:
     QTRY_VERIFY(!client.loading());
     QTRY_COMPARE(panel.task().value("description").toString(),
                  QString("Другой редактор"));
+    QTRY_VERIFY(panel.rebaseEligible());
+    QTRY_VERIFY(item(window, "rebaseButton")->isEnabled());
     QVERIFY(click(window, "rebaseButton"));
     QVERIFY(click(window, "saveButton"));
     QTRY_VERIFY(!panel.dirty());

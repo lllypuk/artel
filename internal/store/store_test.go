@@ -49,7 +49,7 @@ func TestSQLitePragmasAndConstraints(t *testing.T) {
 	for _, pair := range []struct {
 		name string
 		want int
-	}{{"foreign_keys", 1}, {"busy_timeout", 5000}, {"synchronous", 2}, {"user_version", 6}} {
+	}{{"foreign_keys", 1}, {"busy_timeout", 5000}, {"synchronous", 2}, {"user_version", 7}} {
 		var got int
 		if err := s.db.QueryRowContext(t.Context(), "PRAGMA "+pair.name).Scan(&got); err != nil {
 			t.Fatal(err)
@@ -67,7 +67,7 @@ func TestSQLitePragmasAndConstraints(t *testing.T) {
 		args  []any
 	}{
 		{"INSERT INTO projects(id,root_path,archived,record) VALUES('duplicate','/test',0,'{}')", nil},
-		{"INSERT INTO tasks(id,project_id,state,record) VALUES('orphan','missing','backlog','{}')", nil},
+		{"INSERT INTO tasks(id,project_id,kind,parent_id,state,record) VALUES('orphan','missing','task',NULL,'backlog','{}')", nil},
 		{"INSERT INTO queue_entries(project_id,position,task_id) VALUES(?,-1,?)", []any{p.ID, task.ID}},
 		{"INSERT INTO queue_entries(project_id,position,task_id) VALUES(?,0,'missing')", []any{p.ID}},
 		{"UPDATE tasks SET state='invalid' WHERE id=?", []any{task.ID}},
@@ -82,7 +82,7 @@ func TestSQLitePragmasAndConstraints(t *testing.T) {
 	if _, err := s.db.ExecContext(t.Context(), "UPDATE tasks SET state='in_progress' WHERE id=?", task.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.ExecContext(t.Context(), "INSERT INTO tasks(id,project_id,state,record) VALUES('second',?,'in_progress','{}')", p.ID); err == nil {
+	if _, err := s.db.ExecContext(t.Context(), "INSERT INTO tasks(id,project_id,kind,parent_id,state,record) VALUES('second',?,'task',NULL,'in_progress','{}')", p.ID); err == nil {
 		t.Fatal("two in_progress rows accepted")
 	}
 	// Composite queue FK rejects a real task owned by a different project.

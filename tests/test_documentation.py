@@ -36,7 +36,7 @@ class DocumentationTests(unittest.TestCase):
                 with self.subTest(document=name, target=target):
                     self.assertTrue((ROOT / target).is_file())
 
-    def test_instruction_links_survive_ralphex_move(self):
+    def test_instruction_links_survive_plan_archival(self):
         active_plan = 'docs/plans/20261117-artel-v2-pi-observer.md'
         moved_plan = 'docs/plans/completed/20261117-artel-v2-pi-observer.md'
         with tempfile.TemporaryDirectory(prefix='artel-plan-move-') as directory:

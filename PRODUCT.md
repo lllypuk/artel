@@ -29,11 +29,19 @@ Artel combines owner-managed persistent project/task state with explicitly conne
 
 ## Capabilities and Constraints
 
-Implemented: manual project/task create/edit/archive, criteria, ordered queues, explicit manual state transitions, audit history, concurrent-edit conflict handling, uncertain-request recovery; opt-in Pi registration/candidates, explicit project/runtime binding, activity and freshness, revocation/pruning, best-effort navigation to a claimed agterm session.
+Implemented: manual project/work create/edit/archive, immutable Epic/Task/Bug types, optional same-project Epic grouping for Task/Bug, criteria, ordered executable queues, explicit manual state transitions, computed Epic summaries, audit history, concurrent-edit conflict handling, uncertain-request recovery; opt-in Pi registration/candidates, explicit project/runtime binding, activity and freshness, revocation/pruning, best-effort navigation to a claimed agterm session.
+
+Epic has independent open/in-progress/closed states and never occupies an
+executable queue slot. Bug expected/actual behavior and fix evidence are optional;
+empty evidence does not block manual completion. Evidence text is an owner-written
+record, not independent verification or a mandatory proof gate. Existing work
+survives the additive SQLite migration as Task without an Epic parent.
 
 Separate from observation, the owner can enable task-message delivery to one bound Pi session (4a) and opt into task questions and asynchronous answers (4b). The agent is already running; delivery does not prove execution.
 
-Next proposed MVP slice: link the reviewed Git candidate and an external revmux result to the task. The owner decides whether to accept it. See the [roadmap](docs/roadmap.md).
+The next product slice is the separately planned global Board; it is not
+implemented by Epic grouping, and Team remains the startup screen. See the
+[roadmap](docs/roadmap.md).
 
 Not implemented: automatic assignment, agent launch/control, automated queue execution, approval inbox, MR/CI orchestration, remote access, Android, macOS implementation. Do not invent timelines, token budgets, productivity metrics or completed-task evidence from telemetry.
 

@@ -36,6 +36,7 @@ class ApiClient : public QObject {
   Q_PROPERTY(QString status READ status NOTIFY changed)
   Q_PROPERTY(QString error READ error NOTIFY changed)
   Q_PROPERTY(bool online READ online NOTIFY changed)
+  Q_PROPERTY(int workTypesVersion READ workTypesVersion NOTIFY changed)
   Q_PROPERTY(bool loading READ loading NOTIFY changed)
   Q_PROPERTY(bool pending READ pending NOTIFY changed)
   Q_PROPERTY(bool uncertain READ uncertain NOTIFY changed)
@@ -56,7 +57,8 @@ public:
                               const QByteArray &body = {},
                               const QByteArray &key = {}) const;
   bool historyLoading() const { return m_historyReply; }
-  void loadHistory(const QString &project, const QString &task, qint64 after);
+  void loadHistory(const QString &project, const QString &task, qint64 after,
+                   int limit = 20);
   void cancelHistory();
   // The bounded candidate read and its bounded review pages are independent
   // from history. Decisions stay pending until every current review page ends.
@@ -109,6 +111,8 @@ public:
                                        : m_messagesError;
   }
   bool online() const { return m_online; }
+  // Zero is the legacy v6 snapshot contract; v7 explicitly advertises 1.
+  int workTypesVersion() const { return m_workTypesVersion; }
   bool loading() const { return m_snapshot; }
   bool pending() const { return m_mutation; }
   bool uncertain() const { return m_uncertain; }
@@ -125,6 +129,12 @@ public:
   QString instance() const { return m_instance; }
   qint64 sequence() const { return m_sequence; }
   qint64 streamCursor() const { return m_cursor; }
+  // Request serials distinguish a post-conflict refresh from an older GET
+  // that happened to finish later. Applied advances only with a valid snapshot.
+  quint64 snapshotRequestSerial() const { return m_snapshotRequestSerial; }
+  quint64 appliedSnapshotRequestSerial() const {
+    return m_appliedSnapshotRequestSerial;
+  }
   // Scope is exposed only for the latest accepted snapshot. Unknown coverage
   // must always invalidate task-scoped reads conservatively.
   bool snapshotScopeKnown() const { return m_snapshotScopeKnown; }
@@ -190,7 +200,8 @@ private:
                 *m_deliveryReply = nullptr, *m_questionsReply = nullptr,
                 *m_questionStatusReply = nullptr;
   QTimer m_reconnect, m_coalesce;
-  quint64 m_generation = 0, m_draftRevision = 0, m_sentRevision = 0;
+  quint64 m_generation = 0, m_draftRevision = 0, m_sentRevision = 0,
+          m_snapshotRequestSerial = 0, m_appliedSnapshotRequestSerial = 0;
   QString m_instance, m_status = QStringLiteral("disconnected"), m_error,
                       m_historyError, m_currentResultError, m_resultsError,
                       m_messagesError;
@@ -200,6 +211,7 @@ private:
   qint64 m_sequence = 0, m_cursor = 0;
   bool m_online = false, m_uncertain = false, m_conflict = false,
        m_reloadAgain = false, m_stopped = true;
+  int m_workTypesVersion = 0;
   bool m_answerRetryNeedsSnapshot = false;
   int m_timeout = 5000;
   QVariantMap m_draft;

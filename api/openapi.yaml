@@ -253,10 +253,10 @@ paths:
             schema: {$ref: '#/components/schemas/CreateTask'}
       responses:
         '201':
-          description: Created in backlog
+          description: Created Task/Bug in backlog or Epic in open
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/Task'}
+              schema: {$ref: '#/components/schemas/LegacyTask'}
         default: {$ref: '#/components/responses/Error'}
   /v1/tasks/{id}:
     parameters: [{$ref: '#/components/parameters/ID'}]
@@ -270,10 +270,10 @@ paths:
             schema: {$ref: '#/components/schemas/EditTask'}
       responses:
         '200':
-          description: Updated or unchanged task; project/state immutable here
+          description: Updated or unchanged work; project/kind/state immutable here
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/Task'}
+              schema: {$ref: '#/components/schemas/LegacyTask'}
         default: {$ref: '#/components/responses/Error'}
   /v1/tasks/{task_id}/results:
     parameters: [{$ref: '#/components/parameters/TaskID'}]
@@ -451,7 +451,7 @@ paths:
               additionalProperties: false
               required: [state, expected_version]
               properties:
-                state: {enum: [backlog, in_progress, done, cancelled]}
+                state: {enum: [backlog, in_progress, done, cancelled, open, closed]}
                 expected_version: {$ref: '#/components/schemas/Version'}
                 expected_queue_version:
                   description: Required when leaving queued; only the first queued task may start.
@@ -461,10 +461,10 @@ paths:
                   $ref: '#/components/schemas/ExpectedResultID'
       responses:
         '200':
-          description: Task manually transitioned
+          description: Work manually transitioned
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/Task'}
+              schema: {$ref: '#/components/schemas/LegacyTask'}
         default: {$ref: '#/components/responses/Error'}
   /v1/projects/{id}/queue:
     parameters: [{$ref: '#/components/parameters/ID'}]
@@ -562,7 +562,7 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
     TooLarge:
-      description: Request over 256 KiB or snapshot over 32 MiB
+      description: Request over 256 KiB or snapshot over 64 MiB (with v6 migration headroom)
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
@@ -850,7 +850,7 @@ components:
         name: {type: string, minLength: 1, maxLength: 120}
         root_path: {type: string}
         description: {type: string, description: At most 16 KiB UTF-8}
-        archived: {type: boolean, description: Archive requires no queued/in_progress tasks; unarchive rechecks root uniqueness}
+        archived: {type: boolean, description: Archive requires no queued/in_progress Task/Bug rows; in-progress Epics are allowed; unarchive rechecks root uniqueness}
     Project:
       type: object
       additionalProperties: false
@@ -873,6 +873,27 @@ components:
         title: {type: string, minLength: 1, maxLength: 200}
         description: {type: string, description: At most 64 KiB UTF-8}
         acceptance_criteria: {type: string, description: At most 64 KiB UTF-8}
+        kind: {type: string, enum: [epic, task, bug], description: Omitted kind preserves the legacy Task default}
+        parent_id: {type: string, description: 'Empty detaches; otherwise an open/in_progress Epic UUID in the same project'}
+        expected_behavior: {type: string, description: 'Bug only; at most 64 KiB UTF-8'}
+        actual_behavior: {type: string, description: 'Bug only; at most 64 KiB UTF-8'}
+        fix_evidence: {type: string, description: 'Bug only; owner-written evidence, at most 64 KiB UTF-8'}
+      allOf:
+        - anyOf:
+            - required: [kind]
+              properties:
+                kind: {type: string, enum: [bug]}
+            - not:
+                anyOf:
+                  - {required: [expected_behavior]}
+                  - {required: [actual_behavior]}
+                  - {required: [fix_evidence]}
+        - anyOf:
+            - not: {required: [kind]}
+            - required: [kind]
+              properties:
+                kind: {type: string, enum: [task, bug]}
+            - not: {required: [parent_id]}
     EditTask:
       type: object
       additionalProperties: false
@@ -882,7 +903,11 @@ components:
         title: {type: string, minLength: 1, maxLength: 200}
         description: {type: string, description: At most 64 KiB UTF-8}
         acceptance_criteria: {type: string, description: At most 64 KiB UTF-8}
-    Task:
+        parent_id: {type: string, description: 'Omitted preserves parent; empty detaches; changing the relationship requires an open/in_progress Epic, while explicitly naming the unchanged current parent remains a valid no-op even if that Epic is closed'}
+        expected_behavior: {type: string, description: 'Bug only; at most 64 KiB UTF-8'}
+        actual_behavior: {type: string, description: 'Bug only; at most 64 KiB UTF-8'}
+        fix_evidence: {type: string, description: 'Bug only; owner-written evidence, at most 64 KiB UTF-8'}
+    LegacyTask:
       type: object
       additionalProperties: false
       required: [id, project_id, title, description, acceptance_criteria, state, version, created_at, updated_at]
@@ -892,10 +917,81 @@ components:
         title: {type: string}
         description: {type: string}
         acceptance_criteria: {type: string}
-        state: {enum: [backlog, queued, in_progress, done, cancelled]}
+        state: {enum: [backlog, queued, in_progress, done, cancelled, open, closed]}
         version: {$ref: '#/components/schemas/Version'}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+    Epic:
+      title: Epic
+      required: [summary]
+      properties:
+        kind: {type: string, enum: [epic]}
+        state: {type: string, enum: [open, in_progress, closed]}
+        summary: {$ref: '#/components/schemas/EpicSummary'}
+      not:
+        anyOf:
+          - {required: [parent_id]}
+          - {required: [expected_behavior]}
+          - {required: [actual_behavior]}
+          - {required: [fix_evidence]}
+    TaskWork:
+      title: Task
+      properties:
+        kind: {type: string, enum: [task]}
+        state: {type: string, enum: [backlog, queued, in_progress, done, cancelled]}
+      not:
+        anyOf:
+          - {required: [summary]}
+          - {required: [expected_behavior]}
+          - {required: [actual_behavior]}
+          - {required: [fix_evidence]}
+    Bug:
+      title: Bug
+      properties:
+        kind: {type: string, enum: [bug]}
+        state: {type: string, enum: [backlog, queued, in_progress, done, cancelled]}
+      not:
+        required: [summary]
+    Task:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, kind, title, description, acceptance_criteria, state, version, created_at, updated_at]
+      discriminator:
+        propertyName: kind
+        mapping:
+          epic: '#/components/schemas/Epic'
+          task: '#/components/schemas/TaskWork'
+          bug: '#/components/schemas/Bug'
+      oneOf:
+        - {$ref: '#/components/schemas/Epic'}
+        - {$ref: '#/components/schemas/TaskWork'}
+        - {$ref: '#/components/schemas/Bug'}
+      properties:
+        id: {$ref: '#/components/schemas/UUID'}
+        project_id: {$ref: '#/components/schemas/UUID'}
+        kind: {type: string, enum: [epic, task, bug]}
+        parent_id: {$ref: '#/components/schemas/UUID'}
+        title: {type: string}
+        description: {type: string}
+        acceptance_criteria: {type: string}
+        expected_behavior: {type: string}
+        actual_behavior: {type: string}
+        fix_evidence: {type: string}
+        state: {type: string, enum: [backlog, queued, in_progress, done, cancelled, open, closed]}
+        version: {$ref: '#/components/schemas/Version'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        summary: {$ref: '#/components/schemas/EpicSummary'}
+    EpicSummary:
+      type: object
+      additionalProperties: false
+      required: [backlog, queued, in_progress, done, cancelled]
+      properties:
+        backlog: {type: integer, minimum: 0}
+        queued: {type: integer, minimum: 0}
+        in_progress: {type: integer, minimum: 0}
+        done: {type: integer, minimum: 0}
+        cancelled: {type: integer, minimum: 0}
     Queue:
       type: object
       additionalProperties: false
@@ -991,10 +1087,11 @@ components:
     Snapshot:
       type: object
       additionalProperties: false
-      required: [instance_id, event_seq, projects, tasks, queues]
+      required: [instance_id, event_seq, work_types_version, projects, tasks, queues]
       properties:
         instance_id: {$ref: '#/components/schemas/UUID'}
         event_seq: {type: integer, minimum: 0}
+        work_types_version: {type: integer, enum: [1]}
         projects: {type: array, items: {$ref: '#/components/schemas/Project'}}
         tasks: {type: array, items: {$ref: '#/components/schemas/Task'}}
         queues: {type: array, items: {$ref: '#/components/schemas/Queue'}}

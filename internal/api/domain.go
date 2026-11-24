@@ -18,7 +18,9 @@ import (
 	"github.com/lllypuk/artel/internal/store"
 )
 
-const MaxSnapshot = 32 * 1024 * 1024
+// A v6 snapshot could already occupy the former 32 MiB limit. Keep headroom
+// for the mandatory kind and work_types_version fields added during migration.
+const MaxSnapshot = 64 * 1024 * 1024
 
 type server struct {
 	ctx   context.Context
@@ -164,9 +166,11 @@ func commandFields(c *app.Command) map[string]any {
 	case app.EditProject:
 		allowed = map[string]any{"name": &c.Name, "root_path": &c.RootPath, "description": &c.Description, "archived": &c.Archived, "expected_version": &c.ExpectedVersion}
 	case app.CreateTask:
-		allowed = map[string]any{"title": &c.Title, "description": &c.Description, "acceptance_criteria": &c.AcceptanceCriteria}
+		allowed = map[string]any{"title": &c.Title, "description": &c.Description, "acceptance_criteria": &c.AcceptanceCriteria,
+			"kind": &c.Kind, "parent_id": &c.ParentID, "expected_behavior": &c.ExpectedBehavior, "actual_behavior": &c.ActualBehavior, "fix_evidence": &c.FixEvidence}
 	case app.EditTask:
-		allowed = map[string]any{"title": &c.Title, "description": &c.Description, "acceptance_criteria": &c.AcceptanceCriteria, "expected_version": &c.ExpectedVersion}
+		allowed = map[string]any{"title": &c.Title, "description": &c.Description, "acceptance_criteria": &c.AcceptanceCriteria,
+			"parent_id": &c.ParentID, "expected_behavior": &c.ExpectedBehavior, "actual_behavior": &c.ActualBehavior, "fix_evidence": &c.FixEvidence, "expected_version": &c.ExpectedVersion}
 	case app.Transition:
 		allowed = map[string]any{"state": &c.State, "expected_version": &c.ExpectedVersion, "expected_queue_version": &c.ExpectedQueueVersion, "expected_result_id": &c.ExpectedResultID}
 	case app.ReplaceQueue:
@@ -189,6 +193,9 @@ func validateCommand(c app.Command, fields map[string]json.RawMessage) error {
 	if c.Action == app.ReplaceQueue && (c.ExpectedQueueVersion < 1 || c.TaskIDs == nil) {
 		return domain.Invalid("task_ids and expected_queue_version required")
 	}
+	if c.ParentID != nil && *c.ParentID != "" && !validUUID(*c.ParentID) {
+		return domain.Invalid("invalid parent UUID")
+	}
 	if c.Action == app.Transition {
 		return validateTransitionCommand(c)
 	}
@@ -200,7 +207,8 @@ func validateCommand(c app.Command, fields map[string]json.RawMessage) error {
 	return nil
 }
 func validateTransitionCommand(c app.Command) error {
-	if c.State != domain.Backlog && c.State != domain.InProgress && c.State != domain.Done && c.State != domain.Cancelled {
+	if c.State != domain.Backlog && c.State != domain.InProgress && c.State != domain.Done && c.State != domain.Cancelled &&
+		c.State != domain.Open && c.State != domain.Closed {
 		return domain.Invalid("invalid target state")
 	}
 	if c.ExpectedResultID != nil && *c.ExpectedResultID != "" && !validUUID(*c.ExpectedResultID) {

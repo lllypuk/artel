@@ -53,6 +53,25 @@ func TestDiagnostics(t *testing.T) {
 	}
 }
 
+func TestDiagnosticSnapshotMigrationBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "private", "owner.token")
+	if _, err := local.InitToken(path); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"instance_id":"11111111-1111-4111-8111-111111111111","event_seq":0,"projects":[],"tasks":[{"description":"` + strings.Repeat("x", 32*1024*1024) + `"}],"queues":[]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+	var out, diagnostic bytes.Buffer
+	if code := run([]string{"snapshot", "--json", "--endpoint", server.URL, "--token-file", path}, &out, &diagnostic); code != 0 {
+		t.Fatalf("migrated snapshot rejected: %s", diagnostic.String())
+	}
+	if out.Len() <= 32*1024*1024 || strings.TrimSpace(out.String()) != body {
+		t.Fatal("migrated snapshot was truncated or changed")
+	}
+}
+
 func TestDiagnosticBadResponses(t *testing.T) {
 	for _, mode := range []string{"json", "redirect", "large", "empty", "array"} {
 		t.Run(mode, func(t *testing.T) {
@@ -68,7 +87,7 @@ func TestDiagnosticBadResponses(t *testing.T) {
 					w.Header().Set("Location", "http://example.com")
 					w.WriteHeader(302)
 				case "large":
-					_, _ = w.Write([]byte(strings.Repeat(" ", 32*1024*1024+1)))
+					_, _ = w.Write([]byte(strings.Repeat(" ", 64*1024*1024+1)))
 				}
 			}))
 			defer server.Close()

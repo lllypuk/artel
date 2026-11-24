@@ -113,6 +113,9 @@ func questionTaskOpen(ctx context.Context, tx *sql.Tx, taskID, projectID string)
 		}
 		return err
 	}
+	if err := requireExecutableDeliveryTask(ctx, tx, taskID); err != nil {
+		return err
+	}
 	if archived != 0 || state == string(domain.Done) || state == string(domain.Cancelled) {
 		return observerError("closed")
 	}
