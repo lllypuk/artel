@@ -109,7 +109,11 @@ public:
   bool hasAnswerDrafts() const { return !m_answers.isEmpty(); }
   bool uncertain() const { return m_client->uncertain(); }
   bool canAbandon() const { return m_client->canAbandon(); }
-  bool conflict() const { return m_client->conflict() && !m_adopted; }
+  bool conflict() const {
+    return m_client->conflict() && !m_adopted && m_conflictTracked &&
+           !m_kind.isEmpty() && m_conflictEditorId == m_editorId &&
+           m_conflictEditorKind == m_kind;
+  }
   bool rebaseEligible() const;
   bool busy() const { return m_client->pending(); }
   bool retryable() const { return m_client->canRetry(); }

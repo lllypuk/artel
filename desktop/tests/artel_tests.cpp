@@ -9,6 +9,7 @@
 #include <QClipboard>
 #include <QFile>
 #include <QFileInfo>
+#include <QFontMetricsF>
 #include <QInputMethodEvent>
 #include <QJsonDocument>
 #include <QProcess>
@@ -3626,12 +3627,44 @@ private slots:
     auto *parents = item(window, "parentCombo");
     QVERIFY(parents);
     QTRY_COMPARE(parents->property("currentText").toString(), secondLabel);
-    // The full title is intentionally elided at compact width; the leading
-    // UUID remains in the visible prefix for both indistinguishable titles.
-    QVERIFY(parents->property("currentText")
-                .toString()
-                .startsWith("(" + secondEpic + ")"));
     QVERIFY(parents->width() <= window->width());
+    auto *popup = parents->property("popup").value<QObject *>();
+    QVERIFY(popup);
+    QVERIFY(QMetaObject::invokeMethod(popup, "open"));
+    QTRY_VERIFY(popup->property("opened").toBool());
+    auto *popupContent = popup->property("contentItem").value<QQuickItem *>();
+    QVERIFY(popupContent);
+    QList<QQuickItem *> optionLabels;
+    std::function<void(QQuickItem *)> collectOptionLabels =
+        [&](QQuickItem *candidate) {
+          const auto text = candidate->property("text").toString();
+          if (candidate->inherits("QQuickText") && text.startsWith("(") &&
+              text.contains(commonTitle))
+            optionLabels.append(candidate);
+          for (auto *child : candidate->childItems())
+            collectOptionLabels(child);
+        };
+    QTRY_VERIFY([&] {
+      optionLabels.clear();
+      collectOptionLabels(popupContent);
+      return optionLabels.size() == 2;
+    }());
+    const QStringList identifiers{firstEpic, secondEpic};
+    for (int i = 0; i < optionLabels.size(); ++i) {
+      const auto *label = optionLabels[i];
+      const QString identifier = "(" + identifiers[i] + ")";
+      QVERIFY(label->isVisible());
+      QVERIFY(label->width() > 0 && label->height() > 0);
+      QVERIFY(label->property("text").toString().startsWith(identifier));
+      QCOMPARE(label->property("elide").toInt(), int(Qt::ElideRight));
+      QVERIFY(label->width() < label->property("implicitWidth").toReal());
+      // ElideRight plus a measured fitting prefix proves that the rendered
+      // delegate, not merely its model string, retains the complete UUID.
+      QVERIFY(QFontMetricsF(label->property("font").value<QFont>())
+                  .horizontalAdvance(identifier) <= label->width());
+    }
+    QVERIFY(QMetaObject::invokeMethod(popup, "close"));
+    QTRY_VERIFY(!popup->property("opened").toBool());
     client.stop();
   }
   void workTypeRoundTripRetainsFieldsAndFiltersPayload_data() {
@@ -3712,6 +3745,13 @@ private slots:
       QCOMPARE(payload.contains(key), finalKind == "bug");
     QCOMPARE(panel.editor().value("expected_behavior").toString(),
              QString("Expected remains in the draft"));
+    if (finalKind == "epic") {
+      UiFixture::respond(held, 409, R"({"code":"conflict","message":"stale"})");
+      held = nullptr;
+      QTRY_VERIFY(panel.conflict());
+      QVERIFY(!panel.currentText().contains("Selected Epic parent"));
+      QVERIFY(!panel.currentText().contains("Round-trip parent"));
+    }
     client.stop();
   }
   void legacyRollbackRetainsButBlocksWorkTypeDraft() {
@@ -3852,10 +3892,68 @@ private slots:
     QTRY_VERIFY(panel.allowed("closed"));
     client.stop();
   }
+  void nonEditorConflictDoesNotFenceLaterEditor() {
+    UiFixture fixture;
+    auto initial = QJsonDocument::fromJson(fixture.state).object();
+    initial.insert("work_types_version", 1);
+    auto tasks = initial.value("tasks").toArray();
+    auto epic = tasks.first().toObject();
+    epic.insert("kind", "epic");
+    epic.insert("state", "in_progress");
+    epic.insert("summary", QJsonObject{{"backlog", 0},
+                                       {"queued", 0},
+                                       {"in_progress", 0},
+                                       {"done", 0},
+                                       {"cancelled", 0}});
+    tasks[0] = epic;
+    initial.insert("tasks", tasks);
+    fixture.state = QJsonDocument(initial).toJson(QJsonDocument::Compact);
+    fixture.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+      if ((request.startsWith("POST /v1/tasks/") &&
+           request.contains("/transition ")) ||
+          (request.startsWith("POST /v1/projects/") &&
+           request.contains("/tasks "))) {
+        UiFixture::respond(socket, 409,
+                           R"({"code":"conflict","message":"stale"})");
+        return;
+      }
+      fixture.normal(socket, request);
+    };
+    ApiClient client;
+    QVERIFY(client.configure(fixture.endpoint(), fixture.tokenPath()));
+    Panel panel(&client);
+    client.reload();
+    QTRY_VERIFY(panel.writable());
+    QVERIFY(panel.selectProject(fixture.project));
+    QVERIFY(panel.selectTask(fixture.task));
+    QVERIFY(panel.allowed("closed"));
+    QVERIFY(panel.transition("closed"));
+    QTRY_VERIFY(client.conflict());
+    QVERIFY(!panel.conflict());
+    QVERIFY(panel.message().contains("reload before trying the action again"));
+
+    panel.reload();
+    QTRY_VERIFY(!client.loading());
+    QVERIFY(panel.editTask(true, "task"));
+    panel.field("title", "Unrelated editor remains saveable");
+    QVERIFY(!panel.conflict());
+    QVERIFY(!panel.rebaseEligible());
+    QVERIFY(panel.saveable());
+
+    // A conflict from the editor's own save retains the existing fence.
+    QVERIFY(panel.save());
+    QTRY_VERIFY(panel.conflict());
+    QVERIFY(!panel.saveable());
+    panel.reload();
+    QTRY_VERIFY(panel.rebaseEligible());
+    client.stop();
+  }
   void workTypesProductionQml() {
     UiFixture fixture;
     const QString epic = "77777777-7777-4777-8777-777777777777";
     const QString bug = "88888888-8888-4888-8888-888888888888";
+    const QString epicTitle = "Release %1";
+    const QString bugTitle = "Crash on save %2";
     auto initial = QJsonDocument::fromJson(fixture.state).object();
     initial.insert("work_types_version", 1);
     initial.insert("tasks", QJsonArray{});
@@ -4032,7 +4130,7 @@ private slots:
     createEpic->forceActiveFocus();
     QTest::keyClick(window, Qt::Key_Space);
     QTRY_COMPARE(panel.editor().value("kind").toString(), QString("epic"));
-    QVERIFY(enter(window, "nameField", "Release"));
+    QVERIFY(enter(window, "nameField", epicTitle));
     QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
     QTRY_COMPARE(panel.tasks().size(), 1);
     QTRY_VERIFY(!panel.dirty() && !client.pending() && !client.loading());
@@ -4082,7 +4180,7 @@ private slots:
     QCOMPARE(panel.editor().value("parent_id").toString(), epic);
     panel.field("kind", "bug");
     QCOMPARE(panel.editor().value("parent_id").toString(), epic);
-    QVERIFY(enter(window, "nameField", "Crash on save"));
+    QVERIFY(enter(window, "nameField", bugTitle));
     QVERIFY(enter(window, "expectedBehaviorField", "Saved text remains"));
     QVERIFY(enter(window, "actualBehaviorField", "The window closes"));
     const auto bugDraft = panel.editor();
@@ -4106,7 +4204,9 @@ private slots:
     QTRY_VERIFY(item(window, "task_" + bug));
     QVERIFY(click(window, "task_" + bug));
     QTRY_COMPARE(panel.task().value("id").toString(), bug);
-    QCOMPARE(panel.task().value("parentTitle").toString(), QString("Release"));
+    QCOMPARE(panel.task().value("parentTitle").toString(), epicTitle);
+    QCOMPARE(item(window, "taskParent")->property("text").toString(),
+             QString("Epic parent: %1 (In progress (manual))").arg(epicTitle));
     QCOMPARE(item(window, "bugExpectedBehavior")->property("text").toString(),
              QString("Saved text remains"));
     QCOMPARE(item(window, "bugActualBehavior")->property("text").toString(),
@@ -4137,6 +4237,8 @@ private slots:
 
     QVERIFY(click(window, "task_" + epic));
     QTRY_VERIFY(item(window, "epicChild_" + bug));
+    QCOMPARE(item(window, "epicChild_" + bug)->property("text").toString(),
+             QString("Bug · %1 · Completed manually").arg(bugTitle));
     QTRY_VERIFY(item(window, "epicSummary")
                     ->property("text")
                     .toString()
@@ -4159,9 +4261,11 @@ private slots:
     QCOMPARE(panel.parentOptions()[1].toMap().value("id").toString(), epic);
     QVERIFY(panel.parentOptions()[1].toMap().value("title").toString().contains(
         "unchanged"));
-    QCOMPARE(panel.editorParentTitle(), QString("Release"));
+    QCOMPARE(panel.editorParentTitle(), epicTitle);
     QCOMPARE(panel.editorParentState(), QString("closed"));
     QVERIFY(item(window, "editorCurrentParent")->isVisible());
+    QCOMPARE(item(window, "editorCurrentParent")->property("text").toString(),
+             QString("Current Epic parent: %1 (Closed)").arg(epicTitle));
     QVERIFY(panel.saveable()); // Unchanged closed parent remains a valid no-op.
     panel.field("parent_id", epic); // Explicit current UUID is a valid no-op.
     QCOMPARE(panel.editor().value("parent_id").toString(), epic);

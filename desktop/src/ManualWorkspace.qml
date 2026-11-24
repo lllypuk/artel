@@ -568,7 +568,7 @@ Item {
                         UI.StatusLabel {
                             theme: manual.theme
                             objectName: "editorCurrentParent"
-                            text: qsTr("Current Epic parent: %1 (%2)").arg(manual.panel.editorParentTitle).arg(manual.panel.stateLabel(manual.panel.editorParentState))
+                            text: qsTr("Current Epic parent: %1 (%2)").arg(manual.panel.editorParentTitle, manual.panel.stateLabel(manual.panel.editorParentState))
                             visible: parentCombo.visible && manual.panel.editorParentTitle !== ""
                             severity: manual.panel.editorParentState === "closed" ? "warning" : "info"
                             Layout.fillWidth: true
@@ -720,7 +720,7 @@ Item {
                         CopyText {
                             objectName: "taskParent"
                             visible: manual.panel.task.kind !== "epic"
-                            text: manual.panel.task.parentTitle ? qsTr("Epic parent: %1 (%2)").arg(manual.panel.task.parentTitle).arg(manual.panel.stateLabel(manual.panel.task.parentState || "")) : qsTr("Epic parent: none")
+                            text: manual.panel.task.parentTitle ? qsTr("Epic parent: %1 (%2)").arg(manual.panel.task.parentTitle, manual.panel.stateLabel(manual.panel.task.parentState || "")) : qsTr("Epic parent: none")
                         }
                         CopyText {
                             objectName: "epicSummary"
@@ -749,7 +749,7 @@ Item {
                                     id: epicChild
                                     required property var modelData
                                     objectName: "epicChild_" + epicChild.modelData.id
-                                    text: qsTr("%1 · %2 · %3").arg(epicChild.modelData.kindLabel).arg(epicChild.modelData.title).arg(epicChild.modelData.stateLabel)
+                                    text: qsTr("%1 · %2 · %3").arg(epicChild.modelData.kindLabel, epicChild.modelData.title, epicChild.modelData.stateLabel)
                                     onClicked: manual.workspace.openTask(epicChild.modelData.id)
                                 }
                             }

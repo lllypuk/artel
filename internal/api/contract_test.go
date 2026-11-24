@@ -126,6 +126,33 @@ func TestWorkTypeOpenAPISchema(t *testing.T) {
 	}
 }
 
+func TestCreateTaskOpenAPIKindConstraints(t *testing.T) {
+	create := contract(t).Components.Schemas["CreateTask"].Value
+	for _, test := range []struct {
+		name  string
+		body  map[string]any
+		valid bool
+	}{
+		{name: "omitted kind remains Task", body: map[string]any{"title": "Legacy"}, valid: true},
+		{name: "omitted kind accepts Task parent", body: map[string]any{"title": "Legacy", "parent_id": ""}, valid: true},
+		{name: "Task accepts parent", body: map[string]any{"title": "Task", "kind": "task", "parent_id": ""}, valid: true},
+		{name: "Bug accepts empty fields", body: map[string]any{"title": "Bug", "kind": "bug", "parent_id": "", "expected_behavior": "", "actual_behavior": "", "fix_evidence": ""}, valid: true},
+		{name: "Epic accepts common fields", body: map[string]any{"title": "Epic", "kind": "epic", "description": ""}, valid: true},
+		{name: "Epic rejects empty parent", body: map[string]any{"title": "Epic", "kind": "epic", "parent_id": ""}},
+		{name: "Epic rejects empty Bug field", body: map[string]any{"title": "Epic", "kind": "epic", "fix_evidence": ""}},
+		{name: "Task rejects empty Bug field", body: map[string]any{"title": "Task", "kind": "task", "expected_behavior": ""}},
+		{name: "omitted kind rejects empty Bug field", body: map[string]any{"title": "Legacy", "fix_evidence": ""}},
+		{name: "omitted kind rejects populated Bug field", body: map[string]any{"title": "Legacy", "actual_behavior": "not applicable"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := create.VisitJSON(test.body)
+			if (err == nil) != test.valid {
+				t.Fatalf("schema validity = %v, error = %v", err == nil, err)
+			}
+		})
+	}
+}
+
 func TestWorkTypeOpenAPIDiscriminator(t *testing.T) {
 	doc := contract(t)
 	task := doc.Components.Schemas["Task"].Value

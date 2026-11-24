@@ -878,6 +878,22 @@ components:
         expected_behavior: {type: string, description: 'Bug only; at most 64 KiB UTF-8'}
         actual_behavior: {type: string, description: 'Bug only; at most 64 KiB UTF-8'}
         fix_evidence: {type: string, description: 'Bug only; owner-written evidence, at most 64 KiB UTF-8'}
+      allOf:
+        - anyOf:
+            - required: [kind]
+              properties:
+                kind: {type: string, enum: [bug]}
+            - not:
+                anyOf:
+                  - {required: [expected_behavior]}
+                  - {required: [actual_behavior]}
+                  - {required: [fix_evidence]}
+        - anyOf:
+            - not: {required: [kind]}
+            - required: [kind]
+              properties:
+                kind: {type: string, enum: [task, bug]}
+            - not: {required: [parent_id]}
     EditTask:
       type: object
       additionalProperties: false

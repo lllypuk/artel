@@ -949,7 +949,8 @@ QString Panel::currentText() const {
     auto text = tr("No stored work item (create draft).");
     const auto parent =
         find(m_client->tasks(), editor().value("parent_id").toString());
-    if (!parent.isEmpty())
+    const auto workKind = editor().value("kind", "task").toString();
+    if ((workKind == "task" || workKind == "bug") && !parent.isEmpty())
       text += tr("\nSelected Epic parent: %1 (%2)")
                   .arg(parentTitle(parent),
                        stateLabel(parent.value("state").toString()));
